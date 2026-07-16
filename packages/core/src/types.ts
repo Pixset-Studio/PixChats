@@ -10,6 +10,7 @@ export interface Profile {
   verified_at: string | null;
   last_seen: string | null;
   created_at: string;
+  public_identity_key: string | null;
 }
 
 export type ChatType = 'direct' | 'group' | 'channel';

@@ -1,8 +1,8 @@
 import type { UserRole } from '@pixchats/core';
 
 const ROLE_ICON: Record<UserRole, string | null> = {
-  developer: '⚙️',
-  admin: '🛡️',
+  developer: '⚙',
+  admin: '🛡',
   moderator: '🔧',
   user: null,
 };
@@ -28,10 +28,10 @@ export function NameBadges({ role, isVerified }: NameBadgesProps) {
   const roleIcon = ROLE_ICON[role];
 
   return (
-    <span style={{ display: 'inline-flex', gap: 4, marginLeft: 6 }}>
+    <span style={{ display: 'inline-flex', gap: 5, marginLeft: 6, verticalAlign: 'middle' }}>
       {isVerified && (
-        <span title="Верифицирован" style={{ color: '#2b8aef' }}>
-          ✔️
+        <span title="Верифицирован" className="badge-check">
+          ✔
         </span>
       )}
       {roleIcon && <span title={ROLE_TITLE[role]}>{roleIcon}</span>}

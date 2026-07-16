@@ -16,7 +16,7 @@ export interface AdminStatsOverview {
 
 export async function getAdminStats(): Promise<AdminStatsOverview> {
   const supabase = getSupabaseClient();
-  const { data, error } = await supabase.from('admin_stats_overview').select('*').single();
+  const { data, error } = await supabase.rpc('get_admin_stats_overview');
   if (error) throw error;
   return data as AdminStatsOverview;
 }

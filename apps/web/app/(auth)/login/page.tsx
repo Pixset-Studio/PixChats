@@ -28,37 +28,59 @@ export default function LoginPage() {
   }
 
   return (
-    <main style={{ maxWidth: 400, margin: '80px auto', fontFamily: 'sans-serif' }}>
-      <h1>Вход в PixChats</h1>
-
-      <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <div>
-          <label>Email</label>
-          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
-        </div>
-        <div>
-          <label>Пароль</label>
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+    <main className="page-center">
+      <div className="container-narrow">
+        <div style={{ textAlign: 'center', marginBottom: 24 }}>
+          <span className="brand">
+            PixChats<span className="brand-dot" />
+          </span>
         </div>
 
-        {error && <p style={{ color: 'crimson' }}>{error}</p>}
+        <div className="card">
+          <h1 style={{ fontFamily: 'var(--font-display)', fontSize: 20, marginTop: 0 }}>Вход</h1>
 
-        <button type="submit" disabled={loading}>
-          {loading ? 'Входим...' : 'Войти'}
-        </button>
-      </form>
+          <form onSubmit={handleSubmit}>
+            <div className="field">
+              <label>Email</label>
+              <input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+            </div>
+            <div className="field">
+              <label>Пароль</label>
+              <input
+                className="input"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+              />
+            </div>
 
-      <hr style={{ margin: '24px 0' }} />
+            {error && <p className="error">{error}</p>}
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <button onClick={() => signInWithGoogle(buildAppUrl('/chats/'))}>Войти через Google</button>
-        <button onClick={() => signInWithVK(buildAppUrl('/chats/'))}>Войти через VK</button>
-        <button onClick={() => signInWithYandex(buildAppUrl('/chats/'))}>Войти через Яндекс</button>
+            <button type="submit" className="btn btn-primary" disabled={loading}>
+              {loading ? 'Входим…' : 'Войти'}
+            </button>
+          </form>
+
+          <hr className="divider" />
+
+          <div className="btn-row">
+            <button className="btn" onClick={() => signInWithGoogle(buildAppUrl('/chats/'))}>
+              Продолжить с Google
+            </button>
+            <button className="btn" onClick={() => signInWithVK(buildAppUrl('/chats/'))}>
+              Продолжить с VK
+            </button>
+            <button className="btn" onClick={() => signInWithYandex(buildAppUrl('/chats/'))}>
+              Продолжить с Яндекс
+            </button>
+          </div>
+        </div>
+
+        <p className="muted-link">
+          Нет аккаунта? <Link href="/register">Зарегистрироваться</Link>
+        </p>
       </div>
-
-      <p style={{ marginTop: 16 }}>
-        Нет аккаунта? <Link href="/register">Зарегистрироваться</Link>
-      </p>
     </main>
   );
 }

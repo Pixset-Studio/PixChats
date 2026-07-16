@@ -71,58 +71,38 @@ function ChatWindowInner() {
     setDraft('');
   }
 
-  if (!chat || !me) return <p style={{ padding: 24 }}>Загрузка...</p>;
+  if (!chat || !me) return <p style={{ padding: 24, color: 'var(--text-muted)' }}>Загрузка…</p>;
 
   return (
-    <main style={{ maxWidth: 600, margin: '0 auto', fontFamily: 'sans-serif', display: 'flex', flexDirection: 'column', height: '100vh' }}>
-      <header style={{ padding: 16, borderBottom: '1px solid #eee' }}>
-        <Link href="/chats/">← Назад</Link>
-        <h2 style={{ margin: '4px 0' }}>
+    <main className="chat-shell">
+      <header className="chat-header">
+        <Link href="/chats/" style={{ color: 'var(--text-muted)', fontSize: 13, textDecoration: 'none' }}>
+          ← Назад
+        </Link>
+        <h2>
           {chat.title ?? 'Личный чат'}
-          {chat.is_verified && <span style={{ color: '#2b8aef', marginLeft: 4 }}>✔️</span>}
+          {chat.is_verified && <span className="badge-check" style={{ marginLeft: 4 }}>✔</span>}
         </h2>
       </header>
 
-      <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
+      <div className="chat-messages">
         {messages.map((m) => (
-          <div
-            key={m.id}
-            style={{
-              textAlign: m.sender_id === me.id ? 'right' : 'left',
-              margin: '6px 0',
-            }}
-          >
-            <span
-              style={{
-                display: 'inline-block',
-                padding: '6px 12px',
-                borderRadius: 12,
-                background: m.sender_id === me.id ? '#2b8aef' : '#eee',
-                color: m.sender_id === me.id ? '#fff' : '#000',
-                maxWidth: '70%',
-              }}
-            >
-              {m.text}
-            </span>
+          <div key={m.id} className={`bubble-row ${m.sender_id === me.id ? 'mine' : ''}`}>
+            <span className="bubble">{m.text}</span>
           </div>
         ))}
         <div ref={bottomRef} />
       </div>
 
       {canWrite ? (
-        <form onSubmit={handleSend} style={{ display: 'flex', gap: 8, padding: 16, borderTop: '1px solid #eee' }}>
-          <input
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            placeholder="Сообщение..."
-            style={{ flex: 1 }}
-          />
-          <button type="submit">Отправить</button>
+        <form onSubmit={handleSend} className="chat-composer">
+          <input className="input" value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Сообщение…" />
+          <button type="submit" className="btn btn-primary" style={{ width: 'auto', padding: '10px 20px' }}>
+            Отправить
+          </button>
         </form>
       ) : (
-        <p style={{ textAlign: 'center', color: '#888', padding: 16 }}>
-          Вы подписчик канала — писать могут только владелец и администраторы
-        </p>
+        <p className="subscriber-notice">Вы подписчик канала — писать могут только владелец и администраторы</p>
       )}
     </main>
   );
@@ -134,7 +114,7 @@ function ChatWindowInner() {
  */
 export default function ChatWindowPage() {
   return (
-    <Suspense fallback={<p style={{ padding: 24 }}>Загрузка...</p>}>
+    <Suspense fallback={<p style={{ padding: 24, color: 'var(--text-muted)' }}>Загрузка…</p>}>
       <ChatWindowInner />
     </Suspense>
   );

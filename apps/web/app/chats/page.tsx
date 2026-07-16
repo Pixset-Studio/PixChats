@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { getSupabaseClient, getCurrentProfile, hasActiveSession, signOut } from '@pixchats/core';
+import { getSupabaseClient, getCurrentProfile, hasActiveSession, signOut, ensureKeyBundle } from '@pixchats/core';
 import type { Chat, Profile } from '@pixchats/core';
 import { NameBadges } from '../../components/NameBadges';
 
@@ -32,6 +32,7 @@ export default function ChatsPage() {
         return;
       }
       setProfile(me);
+      await ensureKeyBundle(me);
 
       const supabase = getSupabaseClient();
       const { data: memberRows } = await supabase
@@ -48,45 +49,69 @@ export default function ChatsPage() {
     })();
   }, [router]);
 
-  if (loading) return <p style={{ padding: 24 }}>Загрузка...</p>;
+  if (loading) return <p style={{ padding: 24, color: 'var(--text-muted)' }}>Загрузка…</p>;
   if (!profile) return null;
 
   return (
-    <main style={{ maxWidth: 600, margin: '40px auto', fontFamily: 'sans-serif' }}>
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h1>
-          @{profile.username}
-          <NameBadges role={profile.role} isVerified={profile.is_verified} />
-        </h1>
-        <button onClick={async () => { await signOut(); router.push('/login'); }}>Выйти</button>
+    <main className="container-wide">
+      <header className="app-header">
+        <div className="profile-line">
+          <div className="avatar">{profile.display_name.slice(0, 1).toUpperCase()}</div>
+          <div>
+            <div style={{ fontWeight: 600 }}>
+              @{profile.username}
+              <NameBadges role={profile.role} isVerified={profile.is_verified} />
+            </div>
+            <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>{profile.display_name}</div>
+          </div>
+        </div>
+        <button
+          className="btn btn-ghost"
+          style={{ width: 'auto' }}
+          onClick={async () => {
+            await signOut();
+            router.push('/login');
+          }}
+        >
+          Выйти
+        </button>
       </header>
 
-      <p>{profile.display_name}</p>
-
       {(profile.role === 'admin' || profile.role === 'developer' || profile.role === 'moderator') && (
-        <Link href="/admin" style={{ display: 'inline-block', margin: '12px 0' }}>
-          ⚙️ Панель управления
+        <Link href="/admin" className="btn" style={{ width: 'auto', display: 'inline-flex', marginBottom: 12 }}>
+          ⚙ Панель управления
         </Link>
       )}
 
-      <h2>Ваши чаты</h2>
-      <Link href="/chats/new" style={{ display: 'inline-block', margin: '8px 0' }}>+ Новая группа/канал</Link>
-      {chats.length === 0 && <p>Пока нет ни одного чата, группы или канала.</p>}
-      <ul style={{ listStyle: 'none', padding: 0 }}>
-        {chats.map((chat) => (
-          <li key={chat.id} style={{ padding: '8px 0', borderBottom: '1px solid #eee' }}>
-            <Link href={`/chat/?id=${chat.id}`} style={{ color: 'inherit', textDecoration: 'none' }}>
-              <strong>{chat.title ?? TYPE_LABEL[chat.type]}</strong>
-              {chat.is_verified && <span style={{ color: '#2b8aef', marginLeft: 4 }}>✔️</span>}
-              <span style={{ color: '#888', marginLeft: 8, fontSize: 12 }}>
-                {TYPE_LABEL[chat.type]}
-                {chat.visibility ? ` · ${chat.visibility === 'public' ? 'публичный' : 'приватный'}` : ''}
-                {chat.username ? ` · @${chat.username}` : ''}
-              </span>
-            </Link>
-          </li>
-        ))}
-      </ul>
+      <div className="section-title">Ваши чаты</div>
+      <Link href="/chats/new" className="btn btn-primary" style={{ width: 'auto', display: 'inline-flex', marginBottom: 16 }}>
+        + Новая группа / канал
+      </Link>
+
+      {chats.length === 0 ? (
+        <div className="empty-state">Пока нет ни одного чата, группы или канала.</div>
+      ) : (
+        <ul className="chat-list">
+          {chats.map((chat) => (
+            <li key={chat.id}>
+              <Link href={`/chat/?id=${chat.id}`} className="chat-item">
+                <div className="avatar">{(chat.title ?? '#').slice(0, 1).toUpperCase()}</div>
+                <div style={{ flex: 1 }}>
+                  <div>
+                    <strong>{chat.title ?? TYPE_LABEL[chat.type]}</strong>
+                    {chat.is_verified && <span className="badge-check" style={{ marginLeft: 4 }}>✔</span>}
+                  </div>
+                  <div className="chat-item-meta">
+                    {TYPE_LABEL[chat.type]}
+                    {chat.visibility ? ` · ${chat.visibility === 'public' ? 'публичный' : 'приватный'}` : ''}
+                    {chat.username ? ` · @${chat.username}` : ''}
+                  </div>
+                </div>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
     </main>
   );
 }

@@ -13,11 +13,11 @@
 ## Запуск
 
 1. Создать проект на supabase.com (бесплатный тариф)
-2. Применить миграцию:
-   ```
-   supabase link --project-ref <ref>
-   supabase db push
-   ```
+2. Применить миграции **строго по порядку** в SQL Editor (каждый файл — отдельным запросом):
+   - `0001_init.sql`
+   - `0002_role_security.sql`
+   - `0003_auto_create_profile.sql`
+   - `0004_fix_admin_stats_security.sql`
 3. Включить в Supabase Dashboard → Authentication → Providers:
    - Email (по умолчанию включён)
    - Google (нативно, нужны Client ID/Secret из Google Cloud Console)

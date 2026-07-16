@@ -54,33 +54,33 @@ export async function signUpWithEmail({ email, password, username, displayName }
     );
   }
 
+  // username/display_name передаются как metadata — профиль создаст триггер на БД
+  // (см. 0003_auto_create_profile.sql), это работает независимо от того, требуется
+  // ли подтверждение email (пока не подтверждён — активной сессии нет).
   const { data: authData, error: authError } = await supabase.auth.signUp({
     email,
     password,
+    options: { data: { username, display_name: displayName } },
   });
   if (authError) throw authError;
   if (!authData.user) throw new Error('Не удалось создать пользователя');
 
-  const { error: profileError } = await supabase.from('profiles').insert({
-    id: authData.user.id,
-    username,
-    display_name: displayName,
-  });
-  if (profileError) throw profileError;
-
-  // Генерируем identity key bundle локально (приватные ключи остаются на устройстве)
-  // и загружаем публичную часть в профиль — задел под E2E-шифрование в Фазе 2.
-  const bundle = await generateAndStoreKeyBundle(authData.user.id);
-  const { error: keysError } = await supabase
-    .from('profiles')
-    .update({
-      public_identity_key: bundle.identityPublicKey,
-      public_signed_prekey: bundle.signedPreKeyPublic,
-      signed_prekey_signature: bundle.signedPreKeySignature,
-      public_one_time_prekeys: bundle.oneTimePreKeysPublic,
-    })
-    .eq('id', authData.user.id);
-  if (keysError) throw keysError;
+  // Генерация и загрузка identity key bundle возможна только если сессия уже активна
+  // (email подтверждать не требуется — auto-confirm включён в настройках Supabase).
+  // Если сессии нет, ключи будут сгенерированы при первом входе — см. ensureKeyBundle().
+  if (authData.session) {
+    const bundle = await generateAndStoreKeyBundle(authData.user.id);
+    const { error: keysError } = await supabase
+      .from('profiles')
+      .update({
+        public_identity_key: bundle.identityPublicKey,
+        public_signed_prekey: bundle.signedPreKeyPublic,
+        signed_prekey_signature: bundle.signedPreKeySignature,
+        public_one_time_prekeys: bundle.oneTimePreKeysPublic,
+      })
+      .eq('id', authData.user.id);
+    if (keysError) throw keysError;
+  }
 
   return authData;
 }
@@ -130,6 +130,28 @@ export async function signInWithYandex(redirectTo?: string) {
 export async function signOut() {
   const supabase = getSupabaseClient();
   const { error } = await supabase.auth.signOut();
+  if (error) throw error;
+}
+
+/**
+ * Проверяет, есть ли у профиля уже загруженный identity key bundle, и если нет —
+ * генерирует и загружает. Нужно на случай, если при регистрации не было активной
+ * сессии (email ещё не подтверждён) — тогда ключи появятся при первом успешном входе.
+ */
+export async function ensureKeyBundle(profile: Profile): Promise<void> {
+  if (profile.public_identity_key) return;
+
+  const supabase = getSupabaseClient();
+  const bundle = await generateAndStoreKeyBundle(profile.id);
+  const { error } = await supabase
+    .from('profiles')
+    .update({
+      public_identity_key: bundle.identityPublicKey,
+      public_signed_prekey: bundle.signedPreKeyPublic,
+      signed_prekey_signature: bundle.signedPreKeySignature,
+      public_one_time_prekeys: bundle.oneTimePreKeysPublic,
+    })
+    .eq('id', profile.id);
   if (error) throw error;
 }
 

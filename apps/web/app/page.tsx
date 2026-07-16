@@ -19,5 +19,11 @@ export default function HomePage() {
     })();
   }, [router]);
 
-  return null;
+  return (
+    <main className="page-center">
+      <span className="brand">
+        PixChats<span className="brand-dot" />
+      </span>
+    </main>
+  );
 }

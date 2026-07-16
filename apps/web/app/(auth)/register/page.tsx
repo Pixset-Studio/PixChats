@@ -14,9 +14,9 @@ export default function RegisterPage() {
   const [password, setPassword] = useState('');
   const [usernameStatus, setUsernameStatus] = useState<'idle' | 'checking' | 'ok' | 'taken' | 'invalid'>('idle');
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  // Проверка username с debounce
   useEffect(() => {
     if (!username) {
       setUsernameStatus('idle');
@@ -46,8 +46,12 @@ export default function RegisterPage() {
 
     setLoading(true);
     try {
-      await signUpWithEmail({ email, password, username, displayName });
-      router.push('/chats');
+      const result = await signUpWithEmail({ email, password, username, displayName });
+      if (result.session) {
+        router.push('/chats');
+      } else {
+        setNotice('Мы отправили письмо для подтверждения на ваш email. Перейдите по ссылке из письма, затем войдите.');
+      }
     } catch (err: any) {
       setError(err.message ?? 'Не удалось зарегистрироваться');
     } finally {
@@ -55,70 +59,93 @@ export default function RegisterPage() {
     }
   }
 
-  const usernameHint: Record<typeof usernameStatus, string> = {
+  const usernameHintClass =
+    usernameStatus === 'ok' ? 'hint hint-ok' : usernameStatus === 'checking' ? 'hint hint-checking' : 'hint hint-error';
+  const usernameHintText: Record<typeof usernameStatus, string> = {
     idle: '',
-    checking: 'Проверяем...',
+    checking: 'Проверяем…',
     ok: '✓ Юзернейм свободен',
     taken: '✗ Уже занят',
     invalid: '✗ 5-32 символа: латиница, цифры, _',
   };
 
   return (
-    <main style={{ maxWidth: 400, margin: '80px auto', fontFamily: 'sans-serif' }}>
-      <h1>Регистрация в PixChats</h1>
+    <main className="page-center">
+      <div className="container-narrow">
+        <div style={{ textAlign: 'center', marginBottom: 24 }}>
+          <span className="brand">
+            PixChats<span className="brand-dot" />
+          </span>
+        </div>
 
-      <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-        <div>
-          <label>Юзернейм</label>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-            <span>@</span>
-            <input
-              value={username}
-              onChange={(e) => setUsername(e.target.value.replace(/\s/g, ''))}
-              placeholder="pixset"
-              required
-            />
+        <div className="card">
+          <h1 style={{ fontFamily: 'var(--font-display)', fontSize: 20, marginTop: 0 }}>Регистрация</h1>
+
+          <form onSubmit={handleSubmit}>
+            <div className="field">
+              <label>Юзернейм</label>
+              <div className="input-prefix">
+                <span>@</span>
+                <input
+                  className="input"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value.replace(/\s/g, ''))}
+                  placeholder="pixset"
+                  required
+                />
+              </div>
+              {usernameStatus !== 'idle' && <p className={usernameHintClass}>{usernameHintText[usernameStatus]}</p>}
+            </div>
+
+            <div className="field">
+              <label>Отображаемое имя</label>
+              <input className="input" value={displayName} onChange={(e) => setDisplayName(e.target.value)} required />
+            </div>
+
+            <div className="field">
+              <label>Email</label>
+              <input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+            </div>
+
+            <div className="field">
+              <label>Пароль</label>
+              <input
+                className="input"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                minLength={8}
+              />
+            </div>
+
+            {error && <p className="error">{error}</p>}
+            {notice && <p className="notice">{notice}</p>}
+
+            <button type="submit" className="btn btn-primary" disabled={loading}>
+              {loading ? 'Регистрируем…' : 'Зарегистрироваться'}
+            </button>
+          </form>
+
+          <hr className="divider" />
+
+          <div className="btn-row">
+            <button className="btn" onClick={() => signInWithGoogle(buildAppUrl('/chats/'))}>
+              Продолжить с Google
+            </button>
+            <button className="btn" onClick={() => signInWithVK(buildAppUrl('/chats/'))}>
+              Продолжить с VK
+            </button>
+            <button className="btn" onClick={() => signInWithYandex(buildAppUrl('/chats/'))}>
+              Продолжить с Яндекс
+            </button>
           </div>
-          {usernameStatus !== 'idle' && (
-            <small style={{ color: usernameStatus === 'ok' ? 'green' : usernameStatus === 'checking' ? 'gray' : 'crimson' }}>
-              {usernameHint[usernameStatus]}
-            </small>
-          )}
         </div>
 
-        <div>
-          <label>Отображаемое имя</label>
-          <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} required />
-        </div>
-
-        <div>
-          <label>Email</label>
-          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
-        </div>
-
-        <div>
-          <label>Пароль</label>
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={8} />
-        </div>
-
-        {error && <p style={{ color: 'crimson' }}>{error}</p>}
-
-        <button type="submit" disabled={loading}>
-          {loading ? 'Регистрация...' : 'Зарегистрироваться'}
-        </button>
-      </form>
-
-      <hr style={{ margin: '24px 0' }} />
-
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <button onClick={() => signInWithGoogle(buildAppUrl('/chats/'))}>Войти через Google</button>
-        <button onClick={() => signInWithVK(buildAppUrl('/chats/'))}>Войти через VK</button>
-        <button onClick={() => signInWithYandex(buildAppUrl('/chats/'))}>Войти через Яндекс</button>
+        <p className="muted-link">
+          Уже есть аккаунт? <Link href="/login">Войти</Link>
+        </p>
       </div>
-
-      <p style={{ marginTop: 16 }}>
-        Уже есть аккаунт? <Link href="/login">Войти</Link>
-      </p>
     </main>
   );
 }
