@@ -35,6 +35,19 @@
 update profiles set role = 'developer', is_verified = true where username = 'pixset';
 ```
 
+## Деплой на GitHub Pages (бесплатно, без карты, без экранов выбора тарифа)
+
+1. Создать репозиторий на GitHub (публичный — тогда Pages бесплатны без каких-либо условий) и запушить туда весь код
+2. **Settings → Secrets and variables → Actions → New repository secret**, добавить:
+   - `NEXT_PUBLIC_SUPABASE_URL`
+   - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+3. **Settings → Pages → Source** → выбрать **GitHub Actions** (не "Deploy from a branch")
+4. Запушить любой коммит в `main` — workflow `.github/workflows/deploy.yml` соберёт статическую версию и опубликует её автоматически
+5. Через 1-2 минуты сайт будет доступен по адресу `https://<ваш-username>.github.io/<имя-репозитория>/`
+6. **Обязательно**: в Supabase → Authentication → URL Configuration → Redirect URLs добавить `https://<ваш-username>.github.io/<имя-репозитория>/chats/` — иначе OAuth-вход (Google/VK/Яндекс) откажется редиректить обратно на сайт после входа
+
+Важно: из-за GitHub Pages пришлось убрать динамический маршрут `/chats/[id]` и заменить на `/chat/?id=...` — статический экспорт не умеет заранее сгенерировать страницу под каждый будущий UUID чата, а с query-параметром это один и тот же статический файл для всех чатов, id читается на клиенте. На поведении внутри приложения это никак не сказалось.
+
 ## Дальше — Фаза 2 (E2E-шифрование)
 - Замена заглушки `packages/core/src/crypto.ts` и `messages.ts` на настоящий libsignal-client (X3DH + Double Ratchet)
 - Миграция локального хранения приватных ключей с localStorage на IndexedDB

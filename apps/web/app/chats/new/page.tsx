@@ -25,7 +25,7 @@ export default function NewChatPage() {
         title,
         username: visibility === 'public' ? username : undefined,
       });
-      router.push(`/chats/${chat.id}`);
+      router.push(`/chat/?id=${chat.id}`);
     } catch (err: any) {
       setError(err.message ?? 'Не удалось создать');
     } finally {

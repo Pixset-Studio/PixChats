@@ -74,7 +74,7 @@ export default function ChatsPage() {
       <ul style={{ listStyle: 'none', padding: 0 }}>
         {chats.map((chat) => (
           <li key={chat.id} style={{ padding: '8px 0', borderBottom: '1px solid #eee' }}>
-            <a href={`/chats/${chat.id}`} style={{ color: 'inherit', textDecoration: 'none' }}>
+            <a href={`/chat/?id=${chat.id}`} style={{ color: 'inherit', textDecoration: 'none' }}>
               <strong>{chat.title ?? TYPE_LABEL[chat.type]}</strong>
               {chat.is_verified && <span style={{ color: '#2b8aef', marginLeft: 4 }}>✔️</span>}
               <span style={{ color: '#888', marginLeft: 8, fontSize: 12 }}>

@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { signInWithEmail, signInWithGoogle, signInWithVK, signInWithYandex } from '@pixchats/core';
+import { buildAppUrl } from '../../../lib/url';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -49,9 +50,9 @@ export default function LoginPage() {
       <hr style={{ margin: '24px 0' }} />
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <button onClick={() => signInWithGoogle(window.location.origin + '/chats')}>Войти через Google</button>
-        <button onClick={() => signInWithVK(window.location.origin + '/chats')}>Войти через VK</button>
-        <button onClick={() => signInWithYandex(window.location.origin + '/chats')}>Войти через Яндекс</button>
+        <button onClick={() => signInWithGoogle(buildAppUrl('/chats/'))}>Войти через Google</button>
+        <button onClick={() => signInWithVK(buildAppUrl('/chats/'))}>Войти через VK</button>
+        <button onClick={() => signInWithYandex(buildAppUrl('/chats/'))}>Войти через Яндекс</button>
       </div>
 
       <p style={{ marginTop: 16 }}>
