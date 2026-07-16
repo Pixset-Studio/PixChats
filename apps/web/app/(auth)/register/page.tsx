@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { signUpWithEmail, signInWithGoogle, signInWithVK, signInWithYandex, checkUsernameAvailable } from '@pixchats/core';
 import { buildAppUrl } from '../../../lib/url';
 
@@ -116,7 +117,7 @@ export default function RegisterPage() {
       </div>
 
       <p style={{ marginTop: 16 }}>
-        Уже есть аккаунт? <a href="/login">Войти</a>
+        Уже есть аккаунт? <Link href="/login">Войти</Link>
       </p>
     </main>
   );

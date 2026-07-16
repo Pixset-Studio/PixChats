@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { getSupabaseClient, getCurrentProfile, hasActiveSession, signOut } from '@pixchats/core';
 import type { Chat, Profile } from '@pixchats/core';
 import { NameBadges } from '../../components/NameBadges';
@@ -63,18 +64,18 @@ export default function ChatsPage() {
       <p>{profile.display_name}</p>
 
       {(profile.role === 'admin' || profile.role === 'developer' || profile.role === 'moderator') && (
-        <a href="/admin" style={{ display: 'inline-block', margin: '12px 0' }}>
+        <Link href="/admin" style={{ display: 'inline-block', margin: '12px 0' }}>
           ⚙️ Панель управления
-        </a>
+        </Link>
       )}
 
       <h2>Ваши чаты</h2>
-      <a href="/chats/new" style={{ display: 'inline-block', margin: '8px 0' }}>+ Новая группа/канал</a>
+      <Link href="/chats/new" style={{ display: 'inline-block', margin: '8px 0' }}>+ Новая группа/канал</Link>
       {chats.length === 0 && <p>Пока нет ни одного чата, группы или канала.</p>}
       <ul style={{ listStyle: 'none', padding: 0 }}>
         {chats.map((chat) => (
           <li key={chat.id} style={{ padding: '8px 0', borderBottom: '1px solid #eee' }}>
-            <a href={`/chat/?id=${chat.id}`} style={{ color: 'inherit', textDecoration: 'none' }}>
+            <Link href={`/chat/?id=${chat.id}`} style={{ color: 'inherit', textDecoration: 'none' }}>
               <strong>{chat.title ?? TYPE_LABEL[chat.type]}</strong>
               {chat.is_verified && <span style={{ color: '#2b8aef', marginLeft: 4 }}>✔️</span>}
               <span style={{ color: '#888', marginLeft: 8, fontSize: 12 }}>
@@ -82,7 +83,7 @@ export default function ChatsPage() {
                 {chat.visibility ? ` · ${chat.visibility === 'public' ? 'публичный' : 'приватный'}` : ''}
                 {chat.username ? ` · @${chat.username}` : ''}
               </span>
-            </a>
+            </Link>
           </li>
         ))}
       </ul>

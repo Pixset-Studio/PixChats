@@ -23,15 +23,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
 
       - name: Install dependencies
         run: npm install
 
       - name: Build (static export)
         env:
-          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
-          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          # URL и anon key Supabase — публичные по своей природе значения (защита не в их
+          # секретности, а в RLS-политиках БД), поэтому их можно смело хранить прямо в коде.
+          NEXT_PUBLIC_SUPABASE_URL: https://kibhezfpafhitcvpkquu.supabase.co
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtpYmhlemZwYWZoaXRjdnBrcXV1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQxOTI4NjUsImV4cCI6MjA5OTc2ODg2NX0.HO1uskn4k7AWmFNFpFXd2vdgO8BKYz_bb8lpj2znSoI
           # Имя репозитория подставляется автоматически — правьте, если репозиторий назвали иначе
           NEXT_PUBLIC_BASE_PATH: /${{ github.event.repository.name }}
         run: npm run build --workspace=apps/web

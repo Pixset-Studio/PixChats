@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
+import Link from 'next/link';
 import {
   getSupabaseClient,
   getCurrentProfile,
@@ -75,7 +76,7 @@ function ChatWindowInner() {
   return (
     <main style={{ maxWidth: 600, margin: '0 auto', fontFamily: 'sans-serif', display: 'flex', flexDirection: 'column', height: '100vh' }}>
       <header style={{ padding: 16, borderBottom: '1px solid #eee' }}>
-        <a href="/chats/">← Назад</a>
+        <Link href="/chats/">← Назад</Link>
         <h2 style={{ margin: '4px 0' }}>
           {chat.title ?? 'Личный чат'}
           {chat.is_verified && <span style={{ color: '#2b8aef', marginLeft: 4 }}>✔️</span>}

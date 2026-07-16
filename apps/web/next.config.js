@@ -5,6 +5,10 @@ const nextConfig = {
   images: {
     unoptimized: true,        // next/image без серверной оптимизации — на статике её нет
   },
+  // @pixchats/core — локальный workspace-пакет, экспортируется как сырой .ts (см. main в его package.json).
+  // Next.js по умолчанию транспилирует только код внутри apps/web, поэтому пакет нужно явно перечислить,
+  // иначе сборка падает на попытке распарсить TypeScript-синтаксис как обычный JS.
+  transpilePackages: ['@pixchats/core'],
   // GitHub Pages отдаёт публичный (не user/organization) репозиторий по адресу
   // https://<username>.github.io/<repo-name>/ — значит все ссылки на статику должны
   // учитывать этот префикс. Задаётся переменной окружения при сборке в CI (см. workflow).
