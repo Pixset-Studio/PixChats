@@ -11,6 +11,20 @@ export interface Profile {
   last_seen: string | null;
   created_at: string;
   public_identity_key: string | null;
+  theme: 'dark' | 'light';
+  privacy_who_can_message: 'everyone' | 'friends_only';
+  privacy_show_last_seen: boolean;
+}
+
+export type FriendshipStatus = 'pending' | 'accepted';
+
+export interface Friendship {
+  id: string;
+  requester_id: string;
+  addressee_id: string;
+  status: FriendshipStatus;
+  created_at: string;
+  responded_at: string | null;
 }
 
 export type ChatType = 'direct' | 'group' | 'channel';

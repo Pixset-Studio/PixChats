@@ -33,6 +33,10 @@ export default function ChatsPage() {
       }
       setProfile(me);
       await ensureKeyBundle(me);
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('pixchats:theme', me.theme);
+        document.documentElement.setAttribute('data-theme', me.theme);
+      }
 
       const supabase = getSupabaseClient();
       const { data: memberRows } = await supabase
@@ -56,7 +60,16 @@ export default function ChatsPage() {
     <main className="container-wide">
       <header className="app-header">
         <div className="profile-line">
-          <div className="avatar">{profile.display_name.slice(0, 1).toUpperCase()}</div>
+          <div
+          className="avatar"
+          style={{
+            backgroundImage: profile.avatar_url ? `url(${profile.avatar_url})` : undefined,
+            backgroundSize: 'cover',
+            backgroundPosition: 'center',
+          }}
+        >
+          {!profile.avatar_url && profile.display_name.slice(0, 1).toUpperCase()}
+        </div>
           <div>
             <div style={{ fontWeight: 600 }}>
               @{profile.username}
@@ -78,10 +91,16 @@ export default function ChatsPage() {
       </header>
 
       {(profile.role === 'admin' || profile.role === 'developer' || profile.role === 'moderator') && (
-        <Link href="/admin" className="btn" style={{ width: 'auto', display: 'inline-flex', marginBottom: 12 }}>
+        <Link href="/admin" className="btn" style={{ width: 'auto', display: 'inline-flex', marginBottom: 12, marginRight: 8 }}>
           ⚙ Панель управления
         </Link>
       )}
+      <Link href="/friends" className="btn" style={{ width: 'auto', display: 'inline-flex', marginBottom: 12, marginRight: 8 }}>
+        👥 Друзья
+      </Link>
+      <Link href="/settings" className="btn" style={{ width: 'auto', display: 'inline-flex', marginBottom: 12 }}>
+        ⚙ Настройки
+      </Link>
 
       <div className="section-title">Ваши чаты</div>
       <Link href="/chats/new" className="btn btn-primary" style={{ width: 'auto', display: 'inline-flex', marginBottom: 16 }}>

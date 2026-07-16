@@ -4,3 +4,5 @@ export * from './types';
 export * from './chats';
 export * from './admin';
 export * from './messages';
+export * from './profile';
+export * from './social';

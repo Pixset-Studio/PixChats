@@ -19,6 +19,20 @@
   --pixel-cut: 4px;
 }
 
+[data-theme='light'] {
+  --bg: #f5f5f8;
+  --surface: #ffffff;
+  --surface-raised: #eeeef3;
+  --border: #dcdce3;
+  --text: #171923;
+  --text-muted: #6b7080;
+  --accent: #6c5ce7;
+  --accent-hover: #5b4bd6;
+  --verified: #2b7fe0;
+  --success: #1f9d72;
+  --danger: #d43f5a;
+}
+
 * {
   box-sizing: border-box;
 }

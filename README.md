@@ -9,6 +9,8 @@
 - Создание групп/каналов (публичных/приватных), вступление в публичные
 - Окно чата: сообщения в реальном времени (Supabase Realtime), отправка, различение subscriber (read-only в каналах)
 - Админ-панель `/admin`: метрики, статус систем, логи ошибок, поиск пользователей, выдача верификации, назначение ролей (только developer)
+- Настройки `/settings`: смена аватара (Supabase Storage), юзернейма, отображаемого имени, тема (тёмная/светлая), приватность (кто может писать первым, показывать ли last seen)
+- Друзья `/friends`: поиск по @username, заявки (входящие/исходящие), принятие/отклонение, список друзей с кнопкой "Написать" (создаёт личный чат)
 
 ## Запуск
 
@@ -18,6 +20,8 @@
    - `0002_role_security.sql`
    - `0003_auto_create_profile.sql`
    - `0004_fix_admin_stats_security.sql`
+   - `0005_fix_chat_members_recursion.sql`
+   - `0006_friends_privacy_avatars.sql`
 3. Включить в Supabase Dashboard → Authentication → Providers:
    - Email (по умолчанию включён)
    - Google (нативно, нужны Client ID/Secret из Google Cloud Console)

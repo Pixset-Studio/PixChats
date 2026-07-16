@@ -54,6 +54,21 @@ export async function createDirectChat(otherUserId: string): Promise<Chat> {
   const userId = sessionData.session?.user.id;
   if (!userId) throw new Error('Нужно войти в аккаунт');
 
+  // Проверка приватности: если у собеседника стоит "только друзья", а мы не друзья — отказ.
+  const { data: otherProfile, error: profileError } = await supabase
+    .from('profiles')
+    .select('privacy_who_can_message')
+    .eq('id', otherUserId)
+    .single();
+  if (profileError) throw profileError;
+
+  if (otherProfile.privacy_who_can_message === 'friends_only') {
+    const { data: friendCheck } = await supabase.rpc('are_friends', { p_user_a: userId, p_user_b: otherUserId });
+    if (!friendCheck) {
+      throw new Error('Этот пользователь принимает сообщения только от друзей');
+    }
+  }
+
   // Ищем уже существующий direct-чат между этими двумя пользователями
   const { data: myChats } = await supabase
     .from('chat_members')
