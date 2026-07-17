@@ -3,18 +3,18 @@
 Вставляются в Supabase Dashboard → Authentication → Email Templates.
 Для каждого шаблона — своя вкладка (Confirm signup, Magic Link, и т.д.), поля Subject и Message.
 
-## Confirm signup (подтверждение регистрации)
+## Confirm signup (подтверждение регистрации кодом)
 
 **Subject:**
 ```
-Подтвердите регистрацию в PixChats
+Код подтверждения PixChats
 ```
 
 **Message body:**
 ```html
 <h2>Добро пожаловать в PixChats!</h2>
-<p>Чтобы завершить регистрацию, подтвердите свой email — просто перейдите по ссылке ниже:</p>
-<p><a href="{{ .ConfirmationURL }}">Подтвердить email</a></p>
+<p>Введите этот код в приложении, чтобы подтвердить регистрацию:</p>
+<h1 style="letter-spacing: 4px;">{{ .Token }}</h1>
 <p>Если вы не регистрировались в PixChats, просто проигнорируйте это письмо.</p>
 <p>— Команда Pixset Studio</p>
 ```

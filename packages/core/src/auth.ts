@@ -34,6 +34,7 @@ export interface SignUpParams {
   password: string;
   username: string;
   displayName: string;
+  privacyAccepted: boolean;
 }
 
 /**
@@ -42,7 +43,7 @@ export interface SignUpParams {
  * дозаписываются в profiles через updateProfileKeys — на этапе регистрации
  * достаточно базовых полей.
  */
-export async function signUpWithEmail({ email, password, username, displayName }: SignUpParams) {
+export async function signUpWithEmail({ email, password, username, displayName, privacyAccepted }: SignUpParams) {
   const supabase = getSupabaseClient();
 
   const usernameCheck = await checkUsernameAvailable(username);
@@ -53,14 +54,17 @@ export async function signUpWithEmail({ email, password, username, displayName }
         : 'Этот юзернейм уже занят'
     );
   }
+  if (!privacyAccepted) {
+    throw new Error('Нужно принять политику конфиденциальности');
+  }
 
-  // username/display_name передаются как metadata — профиль создаст триггер на БД
-  // (см. 0003_auto_create_profile.sql), это работает независимо от того, требуется
-  // ли подтверждение email (пока не подтверждён — активной сессии нет).
+  // username/display_name/privacy_accepted передаются как metadata — профиль создаст
+  // триггер на БД (см. 0003/0012), это работает независимо от того, требуется ли
+  // подтверждение email (пока не подтверждён — активной сессии нет).
   const { data: authData, error: authError } = await supabase.auth.signUp({
     email,
     password,
-    options: { data: { username, display_name: displayName } },
+    options: { data: { username, display_name: displayName, privacy_accepted: 'true' } },
   });
   if (authError) throw authError;
   if (!authData.user) throw new Error('Не удалось создать пользователя');
@@ -92,7 +96,13 @@ export async function signInWithEmail(email: string, password: string) {
   return data;
 }
 
-/** Отправляет код для входа на email существующего аккаунта (не создаёт нового пользователя). */
+/** Подтверждение регистрации кодом из письма (вместо перехода по ссылке). */
+export async function verifySignupCode(email: string, code: string) {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase.auth.verifyOtp({ email, token: code, type: 'signup' });
+  if (error) throw error;
+  return data;
+}
 export async function requestLoginCode(email: string): Promise<void> {
   const supabase = getSupabaseClient();
   const { error } = await supabase.auth.signInWithOtp({

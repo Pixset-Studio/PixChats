@@ -2,12 +2,9 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import Link from 'next/link';
 import {
   getCurrentProfile,
   hasActiveSession,
-  searchUsers,
-  sendFriendRequest,
   acceptFriendRequest,
   removeFriendship,
   getFriends,
@@ -18,6 +15,7 @@ import {
 import type { Profile, FriendWithProfile } from '@pixchats/core';
 import { UserRow } from '../../components/UserRow';
 import { BottomNav } from '../../components/BottomNav';
+import { resolveLastSeenLabel } from '../../lib/lastSeen';
 
 export default function FriendsPage() {
   const router = useRouter();
@@ -26,13 +24,28 @@ export default function FriendsPage() {
   const [incoming, setIncoming] = useState<FriendWithProfile[]>([]);
   const [outgoing, setOutgoing] = useState<FriendWithProfile[]>([]);
   const [query, setQuery] = useState('');
-  const [results, setResults] = useState<Profile[]>([]);
+  const [lastSeenLabels, setLastSeenLabels] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
 
+  async function loadLastSeenLabels(viewerId: string, profiles: Profile[]) {
+    const entries = await Promise.all(
+      profiles.map(async (p) => [p.id, await resolveLastSeenLabel(p, viewerId)] as const)
+    );
+    setLastSeenLabels((prev) => ({ ...prev, ...Object.fromEntries(entries) }));
+  }
+
   async function reload(userId: string) {
-    setFriends(await getFriends(userId));
-    setIncoming(await getIncomingRequests(userId));
-    setOutgoing(await getOutgoingRequests(userId));
+    const f = await getFriends(userId);
+    const inc = await getIncomingRequests(userId);
+    const out = await getOutgoingRequests(userId);
+    setFriends(f);
+    setIncoming(inc);
+    setOutgoing(out);
+    await loadLastSeenLabels(userId, [
+      ...f.map((x) => x.friend_profile),
+      ...inc.map((x) => x.friend_profile),
+      ...out.map((x) => x.friend_profile),
+    ]);
   }
 
   useEffect(() => {
@@ -51,22 +64,6 @@ export default function FriendsPage() {
       await reload(profile.id);
     })();
   }, [router]);
-
-  async function handleSearch() {
-    if (!me || !query) return;
-    setResults(await searchUsers(query, me.id));
-  }
-
-  async function handleAdd(userId: string) {
-    if (!me) return;
-    setError(null);
-    try {
-      await sendFriendRequest(me.id, userId);
-      await reload(me.id);
-    } catch (err: any) {
-      setError(err.message ?? 'Не удалось отправить заявку');
-    }
-  }
 
   async function handleAccept(friendshipId: string) {
     if (!me) return;
@@ -92,6 +89,16 @@ export default function FriendsPage() {
 
   if (!me) return null;
 
+  // Поиск теперь только по уже добавленным друзьям — искать новых людей можно через поиск на странице чатов.
+  const q = query.trim().toLowerCase();
+  const filteredFriends = q
+    ? friends.filter(
+        (f) =>
+          f.friend_profile.display_name.toLowerCase().includes(q) ||
+          f.friend_profile.username.toLowerCase().includes(q)
+      )
+    : friends;
+
   return (
     <>
       <main className="container-wide with-bottom-nav">
@@ -101,26 +108,16 @@ export default function FriendsPage() {
 
         {error && <p className="error">{error}</p>}
 
-        <div className="section-title">Добавить в друзья</div>
-        <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-          <input className="input" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="@username" />
-          <button className="btn" style={{ width: 'auto' }} onClick={handleSearch}>
-            Найти
-          </button>
-        </div>
-        <div style={{ marginBottom: 16 }}>
-          {results.map((user) => (
-            <UserRow
-              key={user.id}
-              profile={user}
-              action={
-                <button className="btn" style={{ width: 'auto', padding: '6px 12px' }} onClick={() => handleAdd(user.id)}>
-                  + Добавить
-                </button>
-              }
-            />
-          ))}
-        </div>
+        <input
+          className="input"
+          style={{ marginBottom: 16 }}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Поиск среди друзей…"
+        />
+        <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: -12, marginBottom: 16 }}>
+          Чтобы добавить нового друга — найдите человека через поиск на странице «Чаты».
+        </p>
 
         {incoming.length > 0 && (
           <>
@@ -130,6 +127,7 @@ export default function FriendsPage() {
                 <UserRow
                   key={req.id}
                   profile={req.friend_profile}
+                  lastSeenLabel={lastSeenLabels[req.friend_profile.id]}
                   action={
                     <div style={{ display: 'flex', gap: 8 }}>
                       <button className="btn btn-primary" style={{ width: 'auto', padding: '6px 12px' }} onClick={() => handleAccept(req.id)}>
@@ -154,6 +152,7 @@ export default function FriendsPage() {
                 <UserRow
                   key={req.id}
                   profile={req.friend_profile}
+                  lastSeenLabel={lastSeenLabels[req.friend_profile.id]}
                   action={
                     <button className="btn" style={{ width: 'auto', padding: '6px 12px' }} onClick={() => handleRemove(req.id)}>
                       Отменить
@@ -166,14 +165,17 @@ export default function FriendsPage() {
         )}
 
         <div className="section-title">Мои друзья</div>
-        {friends.length === 0 ? (
-          <div className="empty-state">Пока никого нет — найдите друзей по @username выше.</div>
+        {filteredFriends.length === 0 ? (
+          <div className="empty-state">
+            {friends.length === 0 ? 'Пока никого нет — найдите друзей через поиск на странице «Чаты».' : 'Никого не найдено.'}
+          </div>
         ) : (
           <div>
-            {friends.map((f) => (
+            {filteredFriends.map((f) => (
               <UserRow
                 key={f.id}
                 profile={f.friend_profile}
+                lastSeenLabel={lastSeenLabels[f.friend_profile.id]}
                 action={
                   <div style={{ display: 'flex', gap: 8 }}>
                     <button className="btn btn-primary" style={{ width: 'auto', padding: '6px 12px' }} onClick={() => handleMessage(f.friend_profile.id)}>

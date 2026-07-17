@@ -5,6 +5,7 @@ export interface Profile {
   username: string;          // без @, отображать как @username в UI
   display_name: string;
   avatar_url: string | null;
+  bio: string | null;
   role: UserRole;
   is_verified: boolean;
   verified_at: string | null;
@@ -13,7 +14,7 @@ export interface Profile {
   public_identity_key: string | null;
   theme: 'dark' | 'light';
   privacy_who_can_message: 'everyone' | 'friends_only';
-  privacy_show_last_seen: boolean;
+  privacy_show_last_seen: 'everyone' | 'friends_only' | 'nobody';
 }
 
 export type FriendshipStatus = 'pending' | 'accepted';

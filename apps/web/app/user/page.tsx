@@ -6,7 +6,7 @@ import Link from 'next/link';
 import { getCurrentProfile, getSupabaseClient, createDirectChat, sendFriendRequest, areFriends } from '@pixchats/core';
 import type { Profile } from '@pixchats/core';
 import { NameBadges } from '../../components/NameBadges';
-import { formatLastSeen } from '../../lib/lastSeen';
+import { resolveLastSeenLabel } from '../../lib/lastSeen';
 
 function UserProfileInner() {
   const searchParams = useSearchParams();
@@ -16,6 +16,7 @@ function UserProfileInner() {
   const [me, setMe] = useState<Profile | null>(null);
   const [user, setUser] = useState<Profile | null>(null);
   const [isFriend, setIsFriend] = useState(false);
+  const [lastSeenLabel, setLastSeenLabel] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -36,7 +37,10 @@ function UserProfileInner() {
       const { data: userRow } = await supabase.from('profiles').select('*').eq('id', userId).single();
       setUser(userRow);
 
-      if (userRow) setIsFriend(await areFriends(profile.id, userRow.id));
+      if (userRow) {
+        setIsFriend(await areFriends(profile.id, userRow.id));
+        setLastSeenLabel(await resolveLastSeenLabel(userRow, profile.id));
+      }
     })();
   }, [userId, router]);
 
@@ -88,8 +92,11 @@ function UserProfileInner() {
           <NameBadges role={user.role} isVerified={user.is_verified} />
         </h2>
         <div className="username">
-          @{user.username} · {formatLastSeen(user)}
+          @{user.username} · {lastSeenLabel}
         </div>
+        {user.bio && (
+          <p style={{ maxWidth: 420, margin: '12px auto 0', color: 'var(--text-muted)', fontSize: 14 }}>{user.bio}</p>
+        )}
 
         {error && <p className="error">{error}</p>}
         {notice && <p className="notice">{notice}</p>}

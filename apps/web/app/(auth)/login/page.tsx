@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
@@ -12,6 +12,7 @@ import {
   verifyLoginCode,
 } from '@pixchats/core';
 import { buildAppUrl } from '../../../lib/url';
+import { isRussianVisitor } from '../../../lib/geo';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -25,6 +26,11 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [hideGoogle, setHideGoogle] = useState(false);
+
+  useEffect(() => {
+    isRussianVisitor().then(setHideGoogle);
+  }, []);
 
   async function handlePasswordSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -162,9 +168,11 @@ export default function LoginPage() {
           <hr className="divider" />
 
           <div className="btn-row">
-            <button className="btn" onClick={() => signInWithGoogle(buildAppUrl('/chats/'))}>
-              Продолжить с Google
-            </button>
+            {!hideGoogle && (
+              <button className="btn" onClick={() => signInWithGoogle(buildAppUrl('/chats/'))}>
+                Продолжить с Google
+              </button>
+            )}
             <button className="btn" onClick={() => signInWithVK(buildAppUrl('/chats/'))}>
               Продолжить с VK
             </button>

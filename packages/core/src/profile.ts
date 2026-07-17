@@ -5,9 +5,10 @@ import type { Profile } from './types';
 export interface UpdateProfileParams {
   displayName?: string;
   username?: string;
+  bio?: string;
 }
 
-/** Смена отображаемого имени и/или юзернейма (с проверкой доступности). */
+/** Смена отображаемого имени, юзернейма и/или описания профиля. */
 export async function updateProfile(userId: string, params: UpdateProfileParams): Promise<void> {
   const supabase = getSupabaseClient();
   const patch: Record<string, string> = {};
@@ -25,6 +26,9 @@ export async function updateProfile(userId: string, params: UpdateProfileParams)
   }
   if (params.displayName) {
     patch.display_name = params.displayName;
+  }
+  if (params.bio !== undefined) {
+    patch.bio = params.bio;
   }
 
   if (Object.keys(patch).length === 0) return;
@@ -67,7 +71,7 @@ export async function setTheme(userId: string, theme: 'dark' | 'light'): Promise
 
 export interface PrivacySettings {
   privacy_who_can_message: 'everyone' | 'friends_only';
-  privacy_show_last_seen: boolean;
+  privacy_show_last_seen: 'everyone' | 'friends_only' | 'nobody';
 }
 
 export async function updatePrivacySettings(userId: string, settings: PrivacySettings): Promise<void> {

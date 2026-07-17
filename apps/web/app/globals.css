@@ -37,6 +37,49 @@
   box-sizing: border-box;
 }
 
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.container-wide,
+.page-center .container-narrow,
+.chat-shell {
+  animation: fadeInUp 0.25s ease;
+}
+
+.bubble-row {
+  animation: fadeInUp 0.18s ease;
+}
+
+.chat-item-preview,
+.list-row,
+.folder-tab,
+.stat-card {
+  transition: background 0.15s ease, transform 0.12s ease, border-color 0.15s ease;
+}
+.chat-item-preview:active {
+  transform: scale(0.99);
+}
+
+.card {
+  animation: fadeIn 0.2s ease;
+}
+
 html,
 body {
   padding: 0;
@@ -45,6 +88,7 @@ body {
   color: var(--text);
   font-family: var(--font-body);
   -webkit-font-smoothing: antialiased;
+  transition: background 0.2s ease, color 0.2s ease;
 }
 
 a {
@@ -387,6 +431,17 @@ select.input:focus {
   background: var(--accent);
   color: #fff;
   border-radius: 14px 14px 4px 14px;
+}
+
+.bubble-time {
+  display: inline-block;
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, 0.7);
+  margin-left: 8px;
+  vertical-align: bottom;
+}
+.bubble-row:not(.mine) .bubble-time {
+  color: var(--text-muted);
 }
 
 .chat-composer {

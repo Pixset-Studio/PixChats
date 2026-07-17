@@ -1,14 +1,14 @@
 import type { Profile } from '@pixchats/core';
 import { NameBadges } from './NameBadges';
-import { formatLastSeen } from '../lib/lastSeen';
 
 interface UserRowProps {
   profile: Profile;
+  lastSeenLabel?: string;
   action?: React.ReactNode;
 }
 
 /** Аватар слева, отображаемое имя + (username) сверху, время последнего захода снизу — как в Telegram. */
-export function UserRow({ profile, action }: UserRowProps) {
+export function UserRow({ profile, lastSeenLabel, action }: UserRowProps) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0' }}>
       <div
@@ -30,7 +30,7 @@ export function UserRow({ profile, action }: UserRowProps) {
           {profile.display_name} <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>(@{profile.username})</span>
           <NameBadges role={profile.role} isVerified={profile.is_verified} />
         </div>
-        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{formatLastSeen(profile)}</div>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{lastSeenLabel ?? '\u00A0'}</div>
       </div>
       {action && <div style={{ flexShrink: 0 }}>{action}</div>}
     </div>

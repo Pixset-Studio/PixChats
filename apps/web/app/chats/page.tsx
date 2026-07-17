@@ -10,8 +10,11 @@ import {
   ensureKeyBundle,
   getLastMessagesForChats,
   getDirectChatPartners,
+  globalSearch,
+  createDirectChat,
+  joinPublicChat,
 } from '@pixchats/core';
-import type { Chat, Profile, Message } from '@pixchats/core';
+import type { Chat, Profile, Message, SearchResult } from '@pixchats/core';
 import { NameBadges } from '../../components/NameBadges';
 import { VerifiedBadge } from '../../components/VerifiedBadge';
 import { BottomNav } from '../../components/BottomNav';
@@ -40,6 +43,10 @@ export default function ChatsPage() {
   const [partners, setPartners] = useState<Record<string, Profile>>({});
   const [folder, setFolder] = useState<Folder>('all');
   const [loading, setLoading] = useState(true);
+
+  const [query, setQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [searching, setSearching] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -76,6 +83,37 @@ export default function ChatsPage() {
     })();
   }, [router]);
 
+  // Поиск с debounce
+  useEffect(() => {
+    if (!profile) return;
+    if (!query.trim()) {
+      setSearchResults([]);
+      return;
+    }
+    setSearching(true);
+    const timeout = setTimeout(async () => {
+      try {
+        setSearchResults(await globalSearch(query, profile.id));
+      } finally {
+        setSearching(false);
+      }
+    }, 350);
+    return () => clearTimeout(timeout);
+  }, [query, profile]);
+
+  async function handleOpenUser(userId: string) {
+    router.push(`/user/?id=${userId}`);
+  }
+
+  async function handleOpenChat(chat: Chat) {
+    try {
+      await joinPublicChat(chat);
+    } catch {
+      // уже участник — просто открываем
+    }
+    router.push(`/chat/?id=${chat.id}`);
+  }
+
   if (loading) return <p style={{ padding: 24, color: 'var(--text-muted)' }}>Загрузка…</p>;
   if (!profile) return null;
 
@@ -85,6 +123,8 @@ export default function ChatsPage() {
     const tb = previews[b.id]?.sent_at ?? b.created_at;
     return new Date(tb).getTime() - new Date(ta).getTime();
   });
+
+  const isSearchMode = query.trim().length > 0;
 
   return (
     <>
@@ -98,22 +138,97 @@ export default function ChatsPage() {
           </Link>
         </header>
 
-        <div className="folder-tabs">
-          <button className={`folder-tab ${folder === 'all' ? 'active' : ''}`} onClick={() => setFolder('all')}>
-            Все
-          </button>
-          <button className={`folder-tab ${folder === 'direct' ? 'active' : ''}`} onClick={() => setFolder('direct')}>
-            Личные
-          </button>
-          <button className={`folder-tab ${folder === 'group' ? 'active' : ''}`} onClick={() => setFolder('group')}>
-            Группы
-          </button>
-          <button className={`folder-tab ${folder === 'channel' ? 'active' : ''}`} onClick={() => setFolder('channel')}>
-            Каналы
-          </button>
-        </div>
+        <input
+          className="input"
+          style={{ marginBottom: 12 }}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Поиск: @юзернейм или имя/название…"
+        />
 
-        {sorted.length === 0 ? (
+        {!isSearchMode && (
+          <div className="folder-tabs">
+            <button className={`folder-tab ${folder === 'all' ? 'active' : ''}`} onClick={() => setFolder('all')}>
+              Все
+            </button>
+            <button className={`folder-tab ${folder === 'direct' ? 'active' : ''}`} onClick={() => setFolder('direct')}>
+              Личные
+            </button>
+            <button className={`folder-tab ${folder === 'group' ? 'active' : ''}`} onClick={() => setFolder('group')}>
+              Группы
+            </button>
+            <button className={`folder-tab ${folder === 'channel' ? 'active' : ''}`} onClick={() => setFolder('channel')}>
+              Каналы
+            </button>
+          </div>
+        )}
+
+        {isSearchMode ? (
+          searching ? (
+            <p style={{ color: 'var(--text-muted)' }}>Ищем…</p>
+          ) : searchResults.length === 0 ? (
+            <div className="empty-state">Ничего не найдено.</div>
+          ) : (
+            <div>
+              {searchResults.map((result) =>
+                result.kind === 'user' ? (
+                  <div
+                    key={`user-${result.profile.id}`}
+                    className="chat-item-preview"
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => handleOpenUser(result.profile.id)}
+                  >
+                    <div
+                      className="avatar"
+                      style={{
+                        backgroundImage: result.profile.avatar_url ? `url(${result.profile.avatar_url})` : undefined,
+                        backgroundSize: 'cover',
+                        backgroundPosition: 'center',
+                      }}
+                    >
+                      {!result.profile.avatar_url && result.profile.display_name.slice(0, 1).toUpperCase()}
+                    </div>
+                    <div className="chat-item-body">
+                      <div className="chat-item-name">
+                        {result.profile.display_name}
+                        <NameBadges role={result.profile.role} isVerified={result.profile.is_verified} />
+                      </div>
+                      <div className="chat-item-preview-text">@{result.profile.username} · пользователь</div>
+                    </div>
+                  </div>
+                ) : (
+                  <div
+                    key={`chat-${result.chat.id}`}
+                    className="chat-item-preview"
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => handleOpenChat(result.chat)}
+                  >
+                    <div
+                      className="avatar"
+                      style={{
+                        backgroundImage: result.chat.avatar_url ? `url(${result.chat.avatar_url})` : undefined,
+                        backgroundSize: 'cover',
+                        backgroundPosition: 'center',
+                      }}
+                    >
+                      {!result.chat.avatar_url && (result.chat.title ?? '#').slice(0, 1).toUpperCase()}
+                    </div>
+                    <div className="chat-item-body">
+                      <div className="chat-item-name">
+                        {result.chat.title}
+                        {result.chat.is_verified && <VerifiedBadge size={14} />}
+                      </div>
+                      <div className="chat-item-preview-text">
+                        {TYPE_LABEL[result.chat.type]}
+                        {result.chat.username ? ` · @${result.chat.username}` : ''}
+                      </div>
+                    </div>
+                  </div>
+                )
+              )}
+            </div>
+          )
+        ) : sorted.length === 0 ? (
           <div className="empty-state">Пока пусто в этой папке.</div>
         ) : (
           <div>

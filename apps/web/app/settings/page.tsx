@@ -20,10 +20,11 @@ export default function SettingsPage() {
   const [profile, setProfile] = useState<Profile | null>(null);
 
   const [displayName, setDisplayName] = useState('');
+  const [bio, setBio] = useState('');
   const [username, setUsername] = useState('');
   const [theme, setThemeState] = useState<'dark' | 'light'>('dark');
   const [whoCanMessage, setWhoCanMessage] = useState<'everyone' | 'friends_only'>('everyone');
-  const [showLastSeen, setShowLastSeen] = useState(true);
+  const [showLastSeen, setShowLastSeen] = useState<'everyone' | 'friends_only' | 'nobody'>('everyone');
 
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -44,6 +45,7 @@ export default function SettingsPage() {
       setProfile(me);
       setDisplayName(me.display_name);
       setUsername(me.username);
+      setBio(me.bio ?? '');
       setThemeState(me.theme);
       setWhoCanMessage(me.privacy_who_can_message);
       setShowLastSeen(me.privacy_show_last_seen);
@@ -55,7 +57,7 @@ export default function SettingsPage() {
     if (!profile) return;
     setError(null);
     try {
-      await updateProfile(profile.id, { displayName, username });
+      await updateProfile(profile.id, { displayName, username, bio });
       setNotice('Профиль обновлён');
     } catch (err: any) {
       setError(err.message ?? 'Не удалось сохранить');
@@ -160,6 +162,16 @@ export default function SettingsPage() {
             <label>Отображаемое имя</label>
             <input className="input" value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
           </div>
+          <div className="field">
+            <label>О себе</label>
+            <textarea
+              className="input"
+              value={bio}
+              onChange={(e) => setBio(e.target.value)}
+              rows={3}
+              placeholder="Пара слов о себе…"
+            />
+          </div>
           <button type="submit" className="btn btn-primary" style={{ width: 'auto' }}>
             Сохранить
           </button>
@@ -200,10 +212,18 @@ export default function SettingsPage() {
           </select>
         </div>
 
-        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, marginBottom: 16 }}>
-          <input type="checkbox" checked={showLastSeen} onChange={(e) => setShowLastSeen(e.target.checked)} />
-          Показывать моё время последнего захода
-        </label>
+        <div className="field">
+          <label>Кто видит моё время последнего захода</label>
+          <select
+            className="input"
+            value={showLastSeen}
+            onChange={(e) => setShowLastSeen(e.target.value as any)}
+          >
+            <option value="everyone">Всем</option>
+            <option value="friends_only">Друзьям</option>
+            <option value="nobody">Некому</option>
+          </select>
+        </div>
 
         <button className="btn btn-primary" style={{ width: 'auto' }} onClick={handleSavePrivacy}>
           Сохранить приватность
