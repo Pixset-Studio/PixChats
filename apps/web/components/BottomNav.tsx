@@ -5,7 +5,7 @@ import { usePathname } from 'next/navigation';
 
 const TABS = [
   { href: '/chats/', label: 'Чаты', icon: '💬' },
-  { href: '/friends/', label: 'Контакты', icon: '👤' },
+  { href: '/friends/', label: 'Друзья', icon: '👤' },
   { href: '/settings/', label: 'Настройки', icon: '⚙' },
   { href: '/profile/', label: 'Профиль', icon: '◆' },
 ];

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { formatLastSeen } from '../../lib/lastSeen';
 import {
   getSupabaseClient,
   getCurrentProfile,
@@ -18,6 +19,7 @@ function ChatWindowInner() {
   const router = useRouter();
   const [me, setMe] = useState<Profile | null>(null);
   const [chat, setChat] = useState<Chat | null>(null);
+  const [otherProfile, setOtherProfile] = useState<Profile | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [draft, setDraft] = useState('');
   const [canWrite, setCanWrite] = useState(true);
@@ -41,6 +43,18 @@ function ChatWindowInner() {
       const supabase = getSupabaseClient();
       const { data: chatRow } = await supabase.from('chats').select('*').eq('id', chatId).single();
       setChat(chatRow);
+
+      if (chatRow?.type === 'direct') {
+        const { data: memberRows } = await supabase
+          .from('chat_members')
+          .select('user_id')
+          .eq('chat_id', chatId);
+        const otherId = (memberRows ?? []).map((r) => r.user_id).find((id) => id !== profile.id);
+        if (otherId) {
+          const { data: otherRow } = await supabase.from('profiles').select('*').eq('id', otherId).single();
+          setOtherProfile(otherRow);
+        }
+      }
 
       const { data: memberRow } = await supabase
         .from('chat_members')
@@ -79,10 +93,35 @@ function ChatWindowInner() {
         <Link href="/chats/" style={{ color: 'var(--text-muted)', fontSize: 13, textDecoration: 'none' }}>
           ← Назад
         </Link>
-        <h2>
-          {chat.title ?? 'Личный чат'}
-          {chat.is_verified && <span className="badge-check" style={{ marginLeft: 4 }}>✔</span>}
-        </h2>
+        {chat.type === 'direct' && otherProfile ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div
+              className="avatar"
+              style={{
+                width: 36,
+                height: 36,
+                fontSize: 14,
+                backgroundImage: otherProfile.avatar_url ? `url(${otherProfile.avatar_url})` : undefined,
+                backgroundSize: 'cover',
+                backgroundPosition: 'center',
+              }}
+            >
+              {!otherProfile.avatar_url && otherProfile.display_name.slice(0, 1).toUpperCase()}
+            </div>
+            <div>
+              <h2 style={{ fontSize: 15 }}>
+                {otherProfile.display_name}
+                {otherProfile.is_verified && <span className="badge-check" style={{ marginLeft: 4 }}>✔</span>}
+              </h2>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{formatLastSeen(otherProfile)}</div>
+            </div>
+          </div>
+        ) : (
+          <h2>
+            {chat.title ?? 'Чат'}
+            {chat.is_verified && <span className="badge-check" style={{ marginLeft: 4 }}>✔</span>}
+          </h2>
+        )}
       </header>
 
       <div className="chat-messages">

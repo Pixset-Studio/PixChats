@@ -1,5 +1,5 @@
 import { getSupabaseClient } from './supabaseClient';
-import type { Chat, ChatType, ChatVisibility } from './types';
+import type { Chat, ChatType, ChatVisibility, Profile } from './types';
 
 export interface CreateChatParams {
   type: Extract<ChatType, 'group' | 'channel'>;
@@ -103,7 +103,33 @@ export async function createDirectChat(otherUserId: string): Promise<Chat> {
   return chat as Chat;
 }
 
-/** Поиск публичных групп/каналов по названию или @username. */
+/** Для списка direct-чатов: профиль собеседника по каждому chat_id (не свой). */
+export async function getDirectChatPartners(chatIds: string[], myUserId: string): Promise<Record<string, Profile>> {
+  if (chatIds.length === 0) return {};
+  const supabase = getSupabaseClient();
+
+  const { data: memberRows, error: memberError } = await supabase
+    .from('chat_members')
+    .select('chat_id, user_id')
+    .in('chat_id', chatIds)
+    .neq('user_id', myUserId);
+  if (memberError) throw memberError;
+
+  const partnerIds = Array.from(new Set((memberRows ?? []).map((r) => r.user_id)));
+  if (partnerIds.length === 0) return {};
+
+  const { data: profiles, error: profileError } = await supabase.from('profiles').select('*').in('id', partnerIds);
+  if (profileError) throw profileError;
+
+  const profileById: Record<string, Profile> = {};
+  for (const p of profiles ?? []) profileById[p.id] = p as Profile;
+
+  const result: Record<string, Profile> = {};
+  for (const row of memberRows ?? []) {
+    if (profileById[row.user_id]) result[row.chat_id] = profileById[row.user_id];
+  }
+  return result;
+}
 export async function searchPublicChats(query: string): Promise<Chat[]> {
   const supabase = getSupabaseClient();
   const { data, error } = await supabase

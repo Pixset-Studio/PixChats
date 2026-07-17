@@ -26,6 +26,7 @@
    - `0005_fix_chat_members_recursion.sql`
    - `0006_friends_privacy_avatars.sql`
    - `0007_fix_chats_returning_rls.sql`
+   - `0008_fix_direct_chat_members_insert.sql`
 3. Включить в Supabase Dashboard → Authentication → Providers:
    - Email (по умолчанию включён)
    - Google (нативно, нужны Client ID/Secret из Google Cloud Console)

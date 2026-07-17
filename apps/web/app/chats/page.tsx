@@ -9,6 +9,7 @@ import {
   hasActiveSession,
   ensureKeyBundle,
   getLastMessagesForChats,
+  getDirectChatPartners,
 } from '@pixchats/core';
 import type { Chat, Profile, Message } from '@pixchats/core';
 import { NameBadges } from '../../components/NameBadges';
@@ -35,6 +36,7 @@ export default function ChatsPage() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [chats, setChats] = useState<Chat[]>([]);
   const [previews, setPreviews] = useState<Record<string, Message>>({});
+  const [partners, setPartners] = useState<Record<string, Profile>>({});
   const [folder, setFolder] = useState<Folder>('all');
   const [loading, setLoading] = useState(true);
 
@@ -65,6 +67,9 @@ export default function ChatsPage() {
         const { data: chatRows } = await supabase.from('chats').select('*').in('id', chatIds);
         setChats(chatRows ?? []);
         setPreviews(await getLastMessagesForChats(chatIds));
+
+        const directIds = (chatRows ?? []).filter((c) => c.type === 'direct').map((c) => c.id);
+        setPartners(await getDirectChatPartners(directIds, me.id));
       }
       setLoading(false);
     })();
@@ -113,23 +118,28 @@ export default function ChatsPage() {
           <div>
             {sorted.map((chat) => {
               const preview = previews[chat.id];
+              const partner = chat.type === 'direct' ? partners[chat.id] : null;
+              const displayName = partner ? partner.display_name : chat.title ?? TYPE_LABEL[chat.type];
+              const avatarUrl = partner ? partner.avatar_url : chat.avatar_url;
+              const isVerified = partner ? partner.is_verified : chat.is_verified;
+
               return (
                 <Link key={chat.id} href={`/chat/?id=${chat.id}`} className="chat-item-preview">
                   <div
                     className="avatar"
                     style={{
-                      backgroundImage: chat.avatar_url ? `url(${chat.avatar_url})` : undefined,
+                      backgroundImage: avatarUrl ? `url(${avatarUrl})` : undefined,
                       backgroundSize: 'cover',
                       backgroundPosition: 'center',
                     }}
                   >
-                    {!chat.avatar_url && (chat.title ?? '#').slice(0, 1).toUpperCase()}
+                    {!avatarUrl && displayName.slice(0, 1).toUpperCase()}
                   </div>
                   <div className="chat-item-body">
                     <div className="chat-item-top-row">
                       <span className="chat-item-name">
-                        {chat.title ?? TYPE_LABEL[chat.type]}
-                        {chat.is_verified && <span className="badge-check" style={{ marginLeft: 4 }}>✔</span>}
+                        {displayName}
+                        {isVerified && <span className="badge-check" style={{ marginLeft: 4 }}>✔</span>}
                       </span>
                       {preview && <span className="chat-item-time">{formatTime(preview.sent_at)}</span>}
                     </div>

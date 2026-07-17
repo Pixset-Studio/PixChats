@@ -16,7 +16,7 @@ import {
   createDirectChat,
 } from '@pixchats/core';
 import type { Profile, FriendWithProfile } from '@pixchats/core';
-import { NameBadges } from '../../components/NameBadges';
+import { UserRow } from '../../components/UserRow';
 import { BottomNav } from '../../components/BottomNav';
 
 export default function FriendsPage() {
@@ -94,99 +94,102 @@ export default function FriendsPage() {
 
   return (
     <>
-    <main className="container-wide with-bottom-nav">
-      <header className="app-header">
-        <h1 style={{ fontFamily: 'var(--font-display)', fontSize: 20, margin: 0 }}>Друзья</h1>
-        <Link href="/chats/" className="btn btn-ghost" style={{ width: 'auto' }}>
-          ← К чатам
-        </Link>
-      </header>
+      <main className="container-wide with-bottom-nav">
+        <header className="app-header">
+          <h1 style={{ fontFamily: 'var(--font-display)', fontSize: 20, margin: 0 }}>Друзья</h1>
+        </header>
 
-      {error && <p className="error">{error}</p>}
+        {error && <p className="error">{error}</p>}
 
-      <div className="section-title">Добавить в друзья</div>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-        <input className="input" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="@username" />
-        <button className="btn" style={{ width: 'auto' }} onClick={handleSearch}>
-          Найти
-        </button>
-      </div>
-      <ul className="list-plain" style={{ marginBottom: 24 }}>
-        {results.map((user) => (
-          <li key={user.id} className="list-row" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span>
-              @{user.username}
-              <NameBadges role={user.role} isVerified={user.is_verified} />
-            </span>
-            <button className="btn" style={{ width: 'auto', padding: '6px 12px' }} onClick={() => handleAdd(user.id)}>
-              + Добавить
-            </button>
-          </li>
-        ))}
-      </ul>
-
-      {incoming.length > 0 && (
-        <>
-          <div className="section-title">Входящие заявки</div>
-          <ul className="list-plain" style={{ marginBottom: 24 }}>
-            {incoming.map((req) => (
-              <li key={req.id} className="list-row" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span>@{req.friend_profile.username}</span>
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <button className="btn btn-primary" style={{ width: 'auto', padding: '6px 12px' }} onClick={() => handleAccept(req.id)}>
-                    Принять
-                  </button>
-                  <button className="btn" style={{ width: 'auto', padding: '6px 12px' }} onClick={() => handleRemove(req.id)}>
-                    Отклонить
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
-
-      {outgoing.length > 0 && (
-        <>
-          <div className="section-title">Исходящие заявки</div>
-          <ul className="list-plain" style={{ marginBottom: 24 }}>
-            {outgoing.map((req) => (
-              <li key={req.id} className="list-row" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span>@{req.friend_profile.username} — ожидает ответа</span>
-                <button className="btn" style={{ width: 'auto', padding: '6px 12px' }} onClick={() => handleRemove(req.id)}>
-                  Отменить
+        <div className="section-title">Добавить в друзья</div>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+          <input className="input" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="@username" />
+          <button className="btn" style={{ width: 'auto' }} onClick={handleSearch}>
+            Найти
+          </button>
+        </div>
+        <div style={{ marginBottom: 16 }}>
+          {results.map((user) => (
+            <UserRow
+              key={user.id}
+              profile={user}
+              action={
+                <button className="btn" style={{ width: 'auto', padding: '6px 12px' }} onClick={() => handleAdd(user.id)}>
+                  + Добавить
                 </button>
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
-
-      <div className="section-title">Мои друзья</div>
-      {friends.length === 0 ? (
-        <div className="empty-state">Пока никого нет — найдите друзей по @username выше.</div>
-      ) : (
-        <ul className="list-plain">
-          {friends.map((f) => (
-            <li key={f.id} className="list-row" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span>
-                @{f.friend_profile.username}
-                <NameBadges role={f.friend_profile.role} isVerified={f.friend_profile.is_verified} />
-              </span>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <button className="btn btn-primary" style={{ width: 'auto', padding: '6px 12px' }} onClick={() => handleMessage(f.friend_profile.id)}>
-                  Написать
-                </button>
-                <button className="btn" style={{ width: 'auto', padding: '6px 12px' }} onClick={() => handleRemove(f.id)}>
-                  Удалить
-                </button>
-              </div>
-            </li>
+              }
+            />
           ))}
-        </ul>
-      )}
-    </main>
-    <BottomNav />
+        </div>
+
+        {incoming.length > 0 && (
+          <>
+            <div className="section-title">Входящие заявки</div>
+            <div style={{ marginBottom: 16 }}>
+              {incoming.map((req) => (
+                <UserRow
+                  key={req.id}
+                  profile={req.friend_profile}
+                  action={
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button className="btn btn-primary" style={{ width: 'auto', padding: '6px 12px' }} onClick={() => handleAccept(req.id)}>
+                        Принять
+                      </button>
+                      <button className="btn" style={{ width: 'auto', padding: '6px 12px' }} onClick={() => handleRemove(req.id)}>
+                        Отклонить
+                      </button>
+                    </div>
+                  }
+                />
+              ))}
+            </div>
+          </>
+        )}
+
+        {outgoing.length > 0 && (
+          <>
+            <div className="section-title">Исходящие заявки</div>
+            <div style={{ marginBottom: 16 }}>
+              {outgoing.map((req) => (
+                <UserRow
+                  key={req.id}
+                  profile={req.friend_profile}
+                  action={
+                    <button className="btn" style={{ width: 'auto', padding: '6px 12px' }} onClick={() => handleRemove(req.id)}>
+                      Отменить
+                    </button>
+                  }
+                />
+              ))}
+            </div>
+          </>
+        )}
+
+        <div className="section-title">Мои друзья</div>
+        {friends.length === 0 ? (
+          <div className="empty-state">Пока никого нет — найдите друзей по @username выше.</div>
+        ) : (
+          <div>
+            {friends.map((f) => (
+              <UserRow
+                key={f.id}
+                profile={f.friend_profile}
+                action={
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button className="btn btn-primary" style={{ width: 'auto', padding: '6px 12px' }} onClick={() => handleMessage(f.friend_profile.id)}>
+                      Написать
+                    </button>
+                    <button className="btn" style={{ width: 'auto', padding: '6px 12px' }} onClick={() => handleRemove(f.id)}>
+                      Удалить
+                    </button>
+                  </div>
+                }
+              />
+            ))}
+          </div>
+        )}
+      </main>
+      <BottomNav />
     </>
   );
 }
