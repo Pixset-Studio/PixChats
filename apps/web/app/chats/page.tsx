@@ -13,6 +13,7 @@ import {
 } from '@pixchats/core';
 import type { Chat, Profile, Message } from '@pixchats/core';
 import { NameBadges } from '../../components/NameBadges';
+import { VerifiedBadge } from '../../components/VerifiedBadge';
 import { BottomNav } from '../../components/BottomNav';
 
 const TYPE_LABEL: Record<Chat['type'], string> = {
@@ -139,7 +140,7 @@ export default function ChatsPage() {
                     <div className="chat-item-top-row">
                       <span className="chat-item-name">
                         {displayName}
-                        {isVerified && <span className="badge-check" style={{ marginLeft: 4 }}>✔</span>}
+                        {isVerified && <VerifiedBadge size={14} />}
                       </span>
                       {preview && <span className="chat-item-time">{formatTime(preview.sent_at)}</span>}
                     </div>

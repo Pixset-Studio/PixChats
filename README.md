@@ -14,6 +14,8 @@
 - Вход по одноразовому коду с почты (`/login`, переключатель "Пароль / Код с почты") — как 2FA-альтернатива паролю
 - Нижняя навигация (Чаты / Контакты / Настройки / Профиль) и папки чатов (Все / Личные / Группы / Каналы) — ближе к Telegram
 - Русские шаблоны писем — см. `supabase/email-templates-ru.md`, вставить вручную в Authentication → Email Templates
+- Профиль чата `/chat-info` (клик по шапке группы/канала) и профиль пользователя `/user` (клик по шапке личного чата) — просмотр, для owner/admin группы/канала доступно редактирование (аватар, название, описание, юзернейм)
+- Кастомная галочка верификации (`components/VerifiedBadge.tsx`, файл `public/badges/verified.png`) — используется везде вместо emoji ✔
 
 ## Запуск
 
@@ -27,6 +29,8 @@
    - `0006_friends_privacy_avatars.sql`
    - `0007_fix_chats_returning_rls.sql`
    - `0008_fix_direct_chat_members_insert.sql`
+   - `0009_fix_bootstrap_role_trigger.sql`
+   - `0010_chat_avatars_storage.sql`
 3. Включить в Supabase Dashboard → Authentication → Providers:
    - Email (по умолчанию включён)
    - Google (нативно, нужны Client ID/Secret из Google Cloud Console)

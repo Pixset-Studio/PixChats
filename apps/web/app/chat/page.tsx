@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { formatLastSeen } from '../../lib/lastSeen';
+import { VerifiedBadge } from '../../components/VerifiedBadge';
 import {
   getSupabaseClient,
   getCurrentProfile,
@@ -94,7 +95,7 @@ function ChatWindowInner() {
           ← Назад
         </Link>
         {chat.type === 'direct' && otherProfile ? (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <Link href={`/user/?id=${otherProfile.id}`} style={{ display: 'flex', alignItems: 'center', gap: 10, color: 'inherit', textDecoration: 'none' }}>
             <div
               className="avatar"
               style={{
@@ -111,16 +112,18 @@ function ChatWindowInner() {
             <div>
               <h2 style={{ fontSize: 15 }}>
                 {otherProfile.display_name}
-                {otherProfile.is_verified && <span className="badge-check" style={{ marginLeft: 4 }}>✔</span>}
+                {otherProfile.is_verified && <VerifiedBadge size={14} />}
               </h2>
               <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{formatLastSeen(otherProfile)}</div>
             </div>
-          </div>
+          </Link>
         ) : (
-          <h2>
-            {chat.title ?? 'Чат'}
-            {chat.is_verified && <span className="badge-check" style={{ marginLeft: 4 }}>✔</span>}
-          </h2>
+          <Link href={`/chat-info/?id=${chat.id}`} style={{ color: 'inherit', textDecoration: 'none' }}>
+            <h2>
+              {chat.title ?? 'Чат'}
+              {chat.is_verified && <VerifiedBadge size={14} />}
+            </h2>
+          </Link>
         )}
       </header>
 
