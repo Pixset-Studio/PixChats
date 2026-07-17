@@ -92,6 +92,24 @@ export async function signInWithEmail(email: string, password: string) {
   return data;
 }
 
+/** Отправляет код для входа на email существующего аккаунта (не создаёт нового пользователя). */
+export async function requestLoginCode(email: string): Promise<void> {
+  const supabase = getSupabaseClient();
+  const { error } = await supabase.auth.signInWithOtp({
+    email,
+    options: { shouldCreateUser: false },
+  });
+  if (error) throw error;
+}
+
+/** Проверяет введённый пользователем код из письма и завершает вход. */
+export async function verifyLoginCode(email: string, code: string) {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase.auth.verifyOtp({ email, token: code, type: 'email' });
+  if (error) throw error;
+  return data;
+}
+
 /** Google — нативный провайдер Supabase, включается тумблером в Dashboard. */
 export async function signInWithGoogle(redirectTo?: string) {
   const supabase = getSupabaseClient();

@@ -454,3 +454,131 @@ select.input:focus {
 .role-badge {
   margin-left: 8px;
 }
+
+/* ---------- bottom nav (Telegram-style) ---------- */
+.bottom-nav {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: space-around;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  padding: 8px 0 calc(8px + env(safe-area-inset-bottom));
+  z-index: 10;
+}
+
+.bottom-nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  text-decoration: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 4px 16px;
+  flex: 1;
+  max-width: 120px;
+}
+.bottom-nav-item.active {
+  color: var(--accent);
+}
+.bottom-nav-icon {
+  font-size: 20px;
+}
+
+.with-bottom-nav {
+  padding-bottom: 76px;
+}
+
+/* ---------- chat folders (Telegram-style tabs) ---------- */
+.folder-tabs {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 12px;
+  margin-bottom: 8px;
+}
+.folder-tab {
+  flex-shrink: 0;
+  padding: 6px 14px;
+  border-radius: 16px 16px 16px 4px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.folder-tab.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+/* ---------- chat list item, Telegram-style with preview ---------- */
+.chat-item-preview {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 4px;
+  text-decoration: none;
+  color: var(--text);
+  border-bottom: 1px solid var(--border);
+}
+.chat-item-preview .avatar {
+  width: 48px;
+  height: 48px;
+  font-size: 18px;
+}
+.chat-item-body {
+  flex: 1;
+  min-width: 0;
+}
+.chat-item-top-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+.chat-item-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-item-time {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  margin-left: 8px;
+}
+.chat-item-preview-text {
+  font-size: 13px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- profile view (Telegram-style big avatar card) ---------- */
+.profile-hero {
+  text-align: center;
+  padding: 32px 20px;
+}
+.profile-hero .avatar {
+  width: 96px;
+  height: 96px;
+  font-size: 36px;
+  margin: 0 auto 16px;
+}
+.profile-hero h2 {
+  font-family: var(--font-display);
+  margin: 0;
+}
+.profile-hero .username {
+  color: var(--text-muted);
+  font-size: 14px;
+  margin-top: 4px;
+}

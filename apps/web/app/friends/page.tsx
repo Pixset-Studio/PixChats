@@ -17,6 +17,7 @@ import {
 } from '@pixchats/core';
 import type { Profile, FriendWithProfile } from '@pixchats/core';
 import { NameBadges } from '../../components/NameBadges';
+import { BottomNav } from '../../components/BottomNav';
 
 export default function FriendsPage() {
   const router = useRouter();
@@ -92,7 +93,8 @@ export default function FriendsPage() {
   if (!me) return null;
 
   return (
-    <main className="container-wide">
+    <>
+    <main className="container-wide with-bottom-nav">
       <header className="app-header">
         <h1 style={{ fontFamily: 'var(--font-display)', fontSize: 20, margin: 0 }}>Друзья</h1>
         <Link href="/chats/" className="btn btn-ghost" style={{ width: 'auto' }}>
@@ -184,5 +186,7 @@ export default function FriendsPage() {
         </ul>
       )}
     </main>
+    <BottomNav />
+    </>
   );
 }

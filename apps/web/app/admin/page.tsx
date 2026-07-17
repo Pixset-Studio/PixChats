@@ -14,6 +14,7 @@ import {
 } from '@pixchats/core';
 import type { Profile, AdminStatsOverview, SystemStatusRow, ErrorLogRow, UserRole } from '@pixchats/core';
 import { NameBadges } from '../../components/NameBadges';
+import { BottomNav } from '../../components/BottomNav';
 
 export default function AdminPage() {
   const router = useRouter();
@@ -72,7 +73,8 @@ export default function AdminPage() {
   if (!me) return null;
 
   return (
-    <main className="container-wide">
+    <>
+    <main className="container-wide with-bottom-nav">
       <header className="app-header">
         <div>
           <h1 style={{ fontFamily: 'var(--font-display)', fontSize: 20, margin: 0 }}>Панель управления</h1>
@@ -177,6 +179,8 @@ export default function AdminPage() {
         ))}
       </ul>
     </main>
+    <BottomNav />
+    </>
   );
 }
 

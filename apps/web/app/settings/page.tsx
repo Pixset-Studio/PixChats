@@ -12,6 +12,7 @@ import {
   updatePrivacySettings,
 } from '@pixchats/core';
 import type { Profile } from '@pixchats/core';
+import { BottomNav } from '../../components/BottomNav';
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -99,7 +100,8 @@ export default function SettingsPage() {
   if (!profile) return null;
 
   return (
-    <main className="container-wide">
+    <>
+    <main className="container-wide with-bottom-nav">
       <header className="app-header">
         <h1 style={{ fontFamily: 'var(--font-display)', fontSize: 20, margin: 0 }}>Настройки</h1>
         <Link href="/chats/" className="btn btn-ghost" style={{ width: 'auto' }}>
@@ -208,5 +210,7 @@ export default function SettingsPage() {
         </button>
       </div>
     </main>
+    <BottomNav />
+    </>
   );
 }

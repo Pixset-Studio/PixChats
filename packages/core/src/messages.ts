@@ -59,6 +59,34 @@ export async function getMessages(chatId: string, limit = 100): Promise<Message[
   }));
 }
 
+/** Последнее сообщение по каждому чату из списка — для превью в списке чатов. */
+export async function getLastMessagesForChats(chatIds: string[]): Promise<Record<string, Message>> {
+  if (chatIds.length === 0) return {};
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from('messages')
+    .select('id, chat_id, sender_id, ciphertext, message_type, sent_at')
+    .in('chat_id', chatIds)
+    .order('sent_at', { ascending: false })
+    .limit(500); // с запасом на случай активных чатов, дальше берём первое на chat_id
+  if (error) throw error;
+
+  const result: Record<string, Message> = {};
+  for (const row of data ?? []) {
+    if (!result[row.chat_id]) {
+      result[row.chat_id] = {
+        id: row.id,
+        chat_id: row.chat_id,
+        sender_id: row.sender_id,
+        text: decodeText(row.ciphertext),
+        message_type: row.message_type,
+        sent_at: row.sent_at,
+      };
+    }
+  }
+  return result;
+}
+
 /** Подписка на новые сообщения в чате через Supabase Realtime. Возвращает функцию отписки. */
 export function subscribeToMessages(chatId: string, onMessage: (message: Message) => void): () => void {
   const supabase = getSupabaseClient();
