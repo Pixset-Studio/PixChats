@@ -23,7 +23,7 @@ export default function SettingsPage() {
   const [bio, setBio] = useState('');
   const [username, setUsername] = useState('');
   const [theme, setThemeState] = useState<'dark' | 'light'>('dark');
-  const [whoCanMessage, setWhoCanMessage] = useState<'everyone' | 'friends_only'>('everyone');
+  const [whoCanMessage, setWhoCanMessage] = useState<'everyone' | 'friends_only' | 'nobody'>('everyone');
   const [showLastSeen, setShowLastSeen] = useState<'everyone' | 'friends_only' | 'nobody'>('everyone');
 
   const [notice, setNotice] = useState<string | null>(null);
@@ -209,6 +209,7 @@ export default function SettingsPage() {
           >
             <option value="everyone">Все</option>
             <option value="friends_only">Только друзья</option>
+            <option value="nobody">Никто (даже друзья)</option>
           </select>
         </div>
 

@@ -19,6 +19,10 @@ export async function checkUsernameAvailable(username: string): Promise<Username
   }
 
   const supabase = getSupabaseClient();
+
+  const { data: banned } = await supabase.from('banned_usernames').select('username').ilike('username', username).maybeSingle();
+  if (banned) return { available: false, reason: 'taken' };
+
   const { data, error } = await supabase
     .from('profiles')
     .select('id')

@@ -4,7 +4,7 @@ import { VerifiedBadge } from './VerifiedBadge';
 const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH || '';
 
 const ROLE_ICON: Record<UserRole, string | null> = {
-  developer: `${BASE_PATH}/badges/developer.png`, // зелёный значок кода
+  developer: `${BASE_PATH}/badges/developer.png`,
   admin: `${BASE_PATH}/badges/shield.png`,
   moderator: `${BASE_PATH}/badges/shield.png`,
   partner: `${BASE_PATH}/badges/partner.png`,
@@ -19,25 +19,47 @@ const ROLE_TITLE: Record<UserRole, string> = {
   user: '',
 };
 
-interface NameBadgesProps {
+interface NameWithBadgesProps {
+  name: string;
   role: UserRole;
   isVerified: boolean;
+  isPixsetEmployee?: boolean;
 }
 
 /**
- * Рисует справа от display_name две независимые пометки:
- * - кастомную галочку верификации (is_verified) — может быть у кого угодно
- * - иконку роли (role) — только у developer/admin/moderator/partner
+ * Порядок пометок: [значок роли] [значок сотрудника Pixset] Имя [галочка верификации].
+ * Значок роли и "сотрудник" — ВСЕГДА спереди, если применимо; галочка — всегда в конце.
  */
-export function NameBadges({ role, isVerified }: NameBadgesProps) {
+export function NameWithBadges({ name, role, isVerified, isPixsetEmployee }: NameWithBadgesProps) {
   const roleIcon = ROLE_ICON[role];
 
   return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, verticalAlign: 'middle' }}>
+      {roleIcon && (
+        <img src={roleIcon} alt={ROLE_TITLE[role]} title={ROLE_TITLE[role]} width={15} height={15} />
+      )}
+      {isPixsetEmployee && (
+        <img
+          src={`${BASE_PATH}/badges/employee.png`}
+          alt="Сотрудник Pixset Studio"
+          title="Сотрудник Pixset Studio"
+          width={15}
+          height={15}
+        />
+      )}
+      <span>{name}</span>
+      {isVerified && <VerifiedBadge size={15} style={{ marginLeft: 0 }} />}
+    </span>
+  );
+}
+
+/** @deprecated используйте NameWithBadges — оставлено для обратной совместимости старых мест вызова. */
+export function NameBadges({ role, isVerified }: { role: UserRole; isVerified: boolean }) {
+  const roleIcon = ROLE_ICON[role];
+  return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, marginLeft: 4, verticalAlign: 'middle' }}>
       {isVerified && <VerifiedBadge size={15} />}
-      {roleIcon && (
-        <img src={roleIcon} alt={ROLE_TITLE[role]} title={ROLE_TITLE[role]} width={15} height={15} style={{ display: 'inline-block' }} />
-      )}
+      {roleIcon && <img src={roleIcon} alt={ROLE_TITLE[role]} title={ROLE_TITLE[role]} width={15} height={15} />}
     </span>
   );
 }

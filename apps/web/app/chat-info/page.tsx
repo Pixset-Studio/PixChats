@@ -10,9 +10,12 @@ import {
   getMyChatRole,
   updateChatInfo,
   uploadChatAvatar,
+  joinPublicChat,
+  leaveChat,
 } from '@pixchats/core';
 import type { Chat, Profile } from '@pixchats/core';
 import { VerifiedBadge } from '../../components/VerifiedBadge';
+import { buildAppUrl } from '../../lib/url';
 
 const TYPE_LABEL: Record<Chat['type'], string> = {
   direct: 'Личный чат',
@@ -30,6 +33,7 @@ function ChatInfoInner() {
   const [chat, setChat] = useState<Chat | null>(null);
   const [memberCount, setMemberCount] = useState(0);
   const [canEdit, setCanEdit] = useState(false);
+  const [myRole, setMyRole] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
 
   const [title, setTitle] = useState('');
@@ -60,8 +64,9 @@ function ChatInfoInner() {
       setUsername(chatRow?.username ?? '');
 
       setMemberCount(await getChatMemberCount(chatId));
-      const myRole = await getMyChatRole(chatId, profile.id);
-      setCanEdit(myRole === 'owner' || myRole === 'admin');
+      const role = await getMyChatRole(chatId, profile.id);
+      setMyRole(role);
+      setCanEdit(role === 'owner' || role === 'admin');
     })();
   }, [chatId, router]);
 
@@ -96,6 +101,21 @@ function ChatInfoInner() {
     }
   }
 
+  async function handleJoin() {
+    if (!chat) return;
+    await joinPublicChat(chat);
+    setMyRole(chat.type === 'channel' ? 'subscriber' : 'member');
+    setMemberCount((c) => c + 1);
+  }
+
+  async function handleLeave() {
+    if (!chat || !me) return;
+    await leaveChat(chat.id, me.id);
+    setMyRole(null);
+    setMemberCount((c) => Math.max(0, c - 1));
+    router.push('/chats');
+  }
+
   if (!chat || !me) return <p style={{ padding: 24, color: 'var(--text-muted)' }}>Загрузка…</p>;
 
   return (
@@ -124,12 +144,40 @@ function ChatInfoInner() {
           {chat.username ? ` · @${chat.username}` : ''}
         </div>
 
-        {canEdit && !editing && (
-          <button className="btn" style={{ width: 'auto', marginTop: 12 }} onClick={() => setEditing(true)}>
-            ✎ Редактировать
-          </button>
-        )}
+        <div className="btn-row" style={{ maxWidth: 320, margin: '12px auto 0', flexDirection: 'row', flexWrap: 'wrap' }}>
+          {canEdit && !editing && (
+            <button className="btn" onClick={() => setEditing(true)}>
+              ✎ Редактировать
+            </button>
+          )}
+          {canEdit && (
+            <Link href={`/chat-members/?id=${chat.id}`} className="btn">
+              {chat.type === 'channel' ? 'Подписчики' : 'Участники'} ({memberCount})
+            </Link>
+          )}
+          {chat.type !== 'direct' &&
+            (myRole ? (
+              <button className="btn" onClick={handleLeave} style={{ color: 'var(--danger)' }}>
+                {chat.type === 'channel' ? 'Отписаться' : 'Покинуть группу'}
+              </button>
+            ) : (
+              chat.visibility === 'public' && (
+                <button className="btn btn-primary" onClick={handleJoin}>
+                  {chat.type === 'channel' ? 'Подписаться' : 'Вступить'}
+                </button>
+              )
+            ))}
+        </div>
       </div>
+
+      {chat.visibility === 'public' && chat.username && (
+        <div className="card" style={{ maxWidth: 420, margin: '0 auto 12px', textAlign: 'center', fontSize: 13 }}>
+          <span style={{ color: 'var(--text-muted)' }}>Ссылка: </span>
+          <a href={buildAppUrl(`/chat/?id=${chat.id}`)} style={{ color: 'var(--accent)' }}>
+            {buildAppUrl(`/chat/?id=${chat.id}`).replace(/^https?:\/\//, '')}
+          </a>
+        </div>
+      )}
 
       {notice && <p className="notice">{notice}</p>}
       {error && <p className="error">{error}</p>}

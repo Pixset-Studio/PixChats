@@ -54,7 +54,14 @@ export async function createDirectChat(otherUserId: string): Promise<Chat> {
   const userId = sessionData.session?.user.id;
   if (!userId) throw new Error('Нужно войти в аккаунт');
 
-  // Проверка приватности: если у собеседника стоит "только друзья", а мы не друзья — отказ.
+  const pairKey = [userId, otherUserId].sort().join(':');
+
+  // Если чат уже существует — просто возвращаем его, приватность собеседника
+  // на продолжение уже начатой переписки не влияет.
+  const { data: existingChat } = await supabase.from('chats').select('*').eq('direct_pair_key', pairKey).maybeSingle();
+  if (existingChat) return existingChat as Chat;
+
+  // Приватность проверяем только при создании НОВОЙ переписки.
   const { data: otherProfile, error: profileError } = await supabase
     .from('profiles')
     .select('privacy_who_can_message')
@@ -62,6 +69,13 @@ export async function createDirectChat(otherUserId: string): Promise<Chat> {
     .single();
   if (profileError) throw profileError;
 
+  if (otherProfile.privacy_who_can_message === 'nobody') {
+    throw new Error('Этот пользователь не принимает сообщения от новых собеседников');
+  }
+  const { data: blockedByThem } = await supabase.rpc('is_blocked', { p_blocker: otherUserId, p_blocked: userId });
+  if (blockedByThem) throw new Error('Вы не можете написать этому пользователю');
+  const { data: blockedByMe } = await supabase.rpc('is_blocked', { p_blocker: userId, p_blocked: otherUserId });
+  if (blockedByMe) throw new Error('Вы заблокировали этого пользователя — сначала разблокируйте его в профиле');
   if (otherProfile.privacy_who_can_message === 'friends_only') {
     const { data: friendCheck } = await supabase.rpc('are_friends', { p_user_a: userId, p_user_b: otherUserId });
     if (!friendCheck) {
@@ -69,31 +83,25 @@ export async function createDirectChat(otherUserId: string): Promise<Chat> {
     }
   }
 
-  // Ищем уже существующий direct-чат между этими двумя пользователями
-  const { data: myChats } = await supabase
-    .from('chat_members')
-    .select('chat_id, chats!inner(type)')
-    .eq('user_id', userId)
-    .eq('chats.type', 'direct');
-
-  for (const row of myChats ?? []) {
-    const { data: members } = await supabase
-      .from('chat_members')
-      .select('user_id')
-      .eq('chat_id', (row as any).chat_id);
-    const ids = (members ?? []).map((m) => m.user_id);
-    if (ids.includes(otherUserId) && ids.length === 2) {
-      const { data: existing } = await supabase.from('chats').select('*').eq('id', (row as any).chat_id).single();
-      if (existing) return existing as Chat;
-    }
-  }
-
   const { data: chat, error } = await supabase
     .from('chats')
-    .insert({ type: 'direct', created_by: userId })
+    .insert({ type: 'direct', created_by: userId, direct_pair_key: pairKey })
     .select()
     .single();
-  if (error) throw error;
+
+  if (error) {
+    // 23505 = unique_violation — параллельный запрос успел создать чат первым, просто возвращаем его
+    if ((error as any).code === '23505') {
+      const { data: existing, error: fetchError } = await supabase
+        .from('chats')
+        .select('*')
+        .eq('direct_pair_key', pairKey)
+        .single();
+      if (fetchError) throw fetchError;
+      return existing as Chat;
+    }
+    throw error;
+  }
 
   await supabase.from('chat_members').insert([
     { chat_id: chat.id, user_id: userId, member_role: 'member' },
@@ -191,6 +199,25 @@ export async function uploadChatAvatar(chatId: string, file: File): Promise<stri
   if (updateError) throw updateError;
 
   return avatarUrl;
+}
+
+/** Выйти из группы или отписаться от канала. */
+export async function leaveChat(chatId: string, userId: string): Promise<void> {
+  const supabase = getSupabaseClient();
+  const { error } = await supabase.from('chat_members').delete().eq('chat_id', chatId).eq('user_id', userId);
+  if (error) throw error;
+}
+
+/** Список участников/подписчиков чата — для отображения списком (кликабельно на профиль). */
+export async function getChatMembers(chatId: string): Promise<Profile[]> {
+  const supabase = getSupabaseClient();
+  const { data: memberRows, error } = await supabase.from('chat_members').select('user_id').eq('chat_id', chatId);
+  if (error) throw error;
+  const ids = (memberRows ?? []).map((r) => r.user_id);
+  if (ids.length === 0) return [];
+  const { data: profiles, error: profileError } = await supabase.from('profiles').select('*').in('id', ids);
+  if (profileError) throw profileError;
+  return (profiles ?? []) as Profile[];
 }
 
 export async function searchPublicChats(query: string): Promise<Chat[]> {

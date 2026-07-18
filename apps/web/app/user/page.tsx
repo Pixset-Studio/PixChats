@@ -3,9 +3,9 @@
 import { useEffect, useState, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { getCurrentProfile, getSupabaseClient, createDirectChat, sendFriendRequest, areFriends } from '@pixchats/core';
+import { getCurrentProfile, getSupabaseClient, createDirectChat, sendFriendRequest, areFriends, blockUser, unblockUser, isUserBlockedByMe } from '@pixchats/core';
 import type { Profile } from '@pixchats/core';
-import { NameBadges } from '../../components/NameBadges';
+import { NameWithBadges } from '../../components/NameBadges';
 import { resolveLastSeenLabel } from '../../lib/lastSeen';
 
 function UserProfileInner() {
@@ -16,6 +16,7 @@ function UserProfileInner() {
   const [me, setMe] = useState<Profile | null>(null);
   const [user, setUser] = useState<Profile | null>(null);
   const [isFriend, setIsFriend] = useState(false);
+  const [isBlocked, setIsBlocked] = useState(false);
   const [lastSeenLabel, setLastSeenLabel] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -40,6 +41,7 @@ function UserProfileInner() {
       if (userRow) {
         setIsFriend(await areFriends(profile.id, userRow.id));
         setLastSeenLabel(await resolveLastSeenLabel(userRow, profile.id));
+        setIsBlocked(await isUserBlockedByMe(profile.id, userRow.id));
       }
     })();
   }, [userId, router]);
@@ -66,6 +68,24 @@ function UserProfileInner() {
     }
   }
 
+  async function handleToggleBlock() {
+    if (!me || !user) return;
+    setError(null);
+    try {
+      if (isBlocked) {
+        await unblockUser(me.id, user.id);
+        setIsBlocked(false);
+        setNotice('Разблокирован(а)');
+      } else {
+        await blockUser(me.id, user.id);
+        setIsBlocked(true);
+        setNotice('Заблокирован(а)');
+      }
+    } catch (err: any) {
+      setError(err.message ?? 'Не удалось изменить блокировку');
+    }
+  }
+
   if (!user || !me) return <p style={{ padding: 24, color: 'var(--text-muted)' }}>Загрузка…</p>;
 
   const isSelf = user.id === me.id;
@@ -88,8 +108,12 @@ function UserProfileInner() {
           {!user.avatar_url && user.display_name.slice(0, 1).toUpperCase()}
         </div>
         <h2>
-          {user.display_name}
-          <NameBadges role={user.role} isVerified={user.is_verified} />
+          <NameWithBadges
+            name={user.display_name}
+            role={user.role}
+            isVerified={user.is_verified}
+            isPixsetEmployee={user.is_pixset_employee}
+          />
         </h2>
         <div className="username">
           @{user.username} · {lastSeenLabel}
@@ -103,14 +127,17 @@ function UserProfileInner() {
 
         {!isSelf && (
           <div className="btn-row" style={{ maxWidth: 280, margin: '16px auto 0', flexDirection: 'row' }}>
-            <button className="btn btn-primary" onClick={handleMessage}>
+            <button className="btn btn-primary" onClick={handleMessage} disabled={isBlocked}>
               Написать
             </button>
             {!isFriend && (
-              <button className="btn" onClick={handleAddFriend}>
+              <button className="btn" onClick={handleAddFriend} disabled={isBlocked}>
                 + Добавить в друзья
               </button>
             )}
+            <button className="btn" onClick={handleToggleBlock} style={{ color: isBlocked ? undefined : 'var(--danger)' }}>
+              {isBlocked ? 'Разблокировать' : 'Заблокировать'}
+            </button>
           </div>
         )}
       </div>

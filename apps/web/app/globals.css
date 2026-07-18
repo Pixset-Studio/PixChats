@@ -403,7 +403,7 @@ select.input:focus {
   padding: 20px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 14px;
 }
 
 .bubble-row {
@@ -456,6 +456,42 @@ select.input:focus {
   gap: 10px;
   padding: 16px 20px;
   border-top: 1px solid var(--border);
+  align-items: flex-end;
+}
+.composer-textarea {
+  resize: none;
+  max-height: 120px;
+  min-height: 40px;
+  line-height: 1.4;
+  font-family: var(--font-body);
+}
+
+.emoji-panel {
+  position: absolute;
+  bottom: 100%;
+  right: 0;
+  margin-bottom: 8px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px;
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  z-index: 30;
+  animation: fadeIn 0.12s ease;
+}
+.emoji-panel button {
+  background: none;
+  border: none;
+  font-size: 20px;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 6px;
+}
+.emoji-panel button:hover {
+  background: var(--surface);
 }
 .chat-composer .input {
   flex: 1;
@@ -490,6 +526,30 @@ select.input:focus {
   color: inherit;
   text-decoration: underline;
   word-break: break-all;
+}
+.message-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.media-image {
+  display: block;
+  max-width: 260px;
+  max-height: 320px;
+  border-radius: 10px;
+  margin-bottom: 4px;
+  cursor: default;
+}
+.media-video {
+  display: block;
+  max-width: 280px;
+  max-height: 320px;
+  border-radius: 10px;
+  margin-bottom: 4px;
+}
+.media-audio {
+  display: block;
+  max-width: 260px;
+  margin-bottom: 4px;
 }
 .edited-label {
   font-size: 10.5px;

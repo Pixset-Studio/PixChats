@@ -8,13 +8,17 @@ export interface Profile {
   bio: string | null;
   role: UserRole;
   is_verified: boolean;
+  is_pixset_employee: boolean;
   verified_at: string | null;
   last_seen: string | null;
   created_at: string;
   public_identity_key: string | null;
   theme: 'dark' | 'light';
-  privacy_who_can_message: 'everyone' | 'friends_only';
+  privacy_who_can_message: 'everyone' | 'friends_only' | 'nobody';
   privacy_show_last_seen: 'everyone' | 'friends_only' | 'nobody';
+  banned_until: string | null;
+  banned_permanently: boolean;
+  frozen: boolean;
 }
 
 export type FriendshipStatus = 'pending' | 'accepted';
@@ -43,4 +47,5 @@ export interface Chat {
   created_by: string | null;
   created_at: string;
   pinned_message_id: string | null;
+  direct_pair_key: string | null;
 }

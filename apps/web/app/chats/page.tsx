@@ -13,9 +13,10 @@ import {
   globalSearch,
   createDirectChat,
   joinPublicChat,
+  signOut,
 } from '@pixchats/core';
 import type { Chat, Profile, Message, SearchResult } from '@pixchats/core';
-import { NameBadges } from '../../components/NameBadges';
+import { NameWithBadges } from '../../components/NameBadges';
 import { VerifiedBadge } from '../../components/VerifiedBadge';
 import { BottomNav } from '../../components/BottomNav';
 
@@ -61,6 +62,12 @@ export default function ChatsPage() {
         return;
       }
       setProfile(me);
+      const isBanned = me.banned_permanently || (me.banned_until && new Date(me.banned_until) > new Date());
+      if (isBanned) {
+        await signOut();
+        router.push('/banned');
+        return;
+      }
       await ensureKeyBundle(me);
       if (typeof window !== 'undefined') {
         localStorage.setItem('pixchats:theme', me.theme);
@@ -190,8 +197,12 @@ export default function ChatsPage() {
                     </div>
                     <div className="chat-item-body">
                       <div className="chat-item-name">
-                        {result.profile.display_name}
-                        <NameBadges role={result.profile.role} isVerified={result.profile.is_verified} />
+                        <NameWithBadges
+                          name={result.profile.display_name}
+                          role={result.profile.role}
+                          isVerified={result.profile.is_verified}
+                          isPixsetEmployee={result.profile.is_pixset_employee}
+                        />
                       </div>
                       <div className="chat-item-preview-text">@{result.profile.username} · пользователь</div>
                     </div>

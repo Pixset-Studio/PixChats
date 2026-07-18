@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { resolveLastSeenLabel } from '../../lib/lastSeen';
 import { buildAppUrl } from '../../lib/url';
 import { VerifiedBadge } from '../../components/VerifiedBadge';
+import { NameWithBadges } from '../../components/NameBadges';
 import {
   getSupabaseClient,
   getCurrentProfile,
@@ -20,6 +21,7 @@ import {
   unpinMessage,
   forwardMessage,
   uploadMessageFile,
+  getDirectChatPartners,
 } from '@pixchats/core';
 import type { Message, Chat, Profile } from '@pixchats/core';
 
@@ -67,9 +69,62 @@ function ChatWindowInner() {
   const [editingMessage, setEditingMessage] = useState<Message | null>(null);
   const [forwardTarget, setForwardTarget] = useState<Message | null>(null);
   const [myChats, setMyChats] = useState<Chat[]>([]);
+  const [forwardPartners, setForwardPartners] = useState<Record<string, Profile>>({});
   const [notice, setNotice] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
+  const [showEmoji, setShowEmoji] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+
+  const EMOJI_LIST = ['😀','😂','😍','😢','😡','👍','👎','🔥','🎉','❤️','🙏','😎','🤔','😭','👏','💀','✨','😴','🤝','😱'];
+
+  function insertEmoji(emoji: string) {
+    setDraft((prev) => prev + emoji);
+  }
+
+  async function startRecording() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      audioChunksRef.current = [];
+      recorder.ondataavailable = (e) => audioChunksRef.current.push(e.data);
+      recorder.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        const file = new File([blob], `voice-${Date.now()}.webm`, { type: 'audio/webm' });
+        setUploading(true);
+        try {
+          const { url } = await uploadMessageFile(chatId, file);
+          await sendMessage(chatId, 'Голосовое сообщение', { messageType: 'voice', mediaPath: url });
+        } catch (err: any) {
+          setNotice(err.message ?? 'Не удалось отправить голосовое');
+          setTimeout(() => setNotice(null), 2000);
+        } finally {
+          setUploading(false);
+        }
+      };
+      recorder.start();
+      mediaRecorderRef.current = recorder;
+      setIsRecording(true);
+    } catch {
+      setNotice('Нет доступа к микрофону');
+      setTimeout(() => setNotice(null), 2000);
+    }
+  }
+
+  function stopRecording() {
+    mediaRecorderRef.current?.stop();
+    setIsRecording(false);
+  }
+
+  function detectMessageType(file: File): 'image' | 'video' | 'audio' | 'file' {
+    if (file.type.startsWith('image/')) return 'image';
+    if (file.type.startsWith('video/')) return 'video';
+    if (file.type.startsWith('audio/')) return 'audio';
+    return 'file';
+  }
 
   async function handleFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -77,7 +132,7 @@ function ChatWindowInner() {
     setUploading(true);
     try {
       const { url, name } = await uploadMessageFile(chatId, file);
-      await sendMessage(chatId, name, { messageType: 'file', mediaPath: url });
+      await sendMessage(chatId, name, { messageType: detectMessageType(file), mediaPath: url });
     } catch (err: any) {
       setNotice(err.message ?? 'Не удалось загрузить файл');
       setTimeout(() => setNotice(null), 2000);
@@ -213,13 +268,20 @@ function ChatWindowInner() {
     setOpenMenuId(null);
     if (me) {
       const supabase = getSupabaseClient();
-      const { data: memberRows } = await supabase.from('chat_members').select('chat_id').eq('user_id', me.id);
+      const { data: memberRows } = await supabase
+        .from('chat_members')
+        .select('chat_id, member_role')
+        .eq('user_id', me.id)
+        .neq('member_role', 'subscriber'); // нельзя пересылать в чаты, куда сам не можешь писать
       const ids = (memberRows ?? []).map((r) => r.chat_id).filter((id) => id !== chatId);
       if (ids.length > 0) {
         const { data: chatRows } = await supabase.from('chats').select('*').in('id', ids);
         setMyChats(chatRows ?? []);
+        const directIds = (chatRows ?? []).filter((c) => c.type === 'direct').map((c) => c.id);
+        setForwardPartners(await getDirectChatPartners(directIds, me.id));
       } else {
         setMyChats([]);
+        setForwardPartners({});
       }
     }
     setForwardTarget(message);
@@ -265,8 +327,12 @@ function ChatWindowInner() {
             </div>
             <div>
               <h2 style={{ fontSize: 15 }}>
-                {otherProfile.display_name}
-                {otherProfile.is_verified && <VerifiedBadge size={14} />}
+                <NameWithBadges
+                  name={otherProfile.display_name}
+                  role={otherProfile.role}
+                  isVerified={otherProfile.is_verified}
+                  isPixsetEmployee={otherProfile.is_pixset_employee}
+                />
               </h2>
               <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{otherLastSeen}</div>
             </div>
@@ -316,7 +382,7 @@ function ChatWindowInner() {
 
       {notice && <div className="toast">{notice}</div>}
 
-      <div className="chat-messages">
+      <div className="chat-messages" onClick={() => setOpenMenuId(null)}>
         {messages.map((m, i) => {
           const prev = messages[i - 1];
           const showDateDivider = !prev || new Date(prev.sent_at).toDateString() !== new Date(m.sent_at).toDateString();
@@ -333,15 +399,32 @@ function ChatWindowInner() {
                 }}
               >
                 <div style={{ position: 'relative' }}>
-                  <span className="bubble" onClick={() => !m.is_deleted && setOpenMenuId(openMenuId === m.id ? null : m.id)}>
+                  <span
+                    className="bubble"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (!m.is_deleted) setOpenMenuId(openMenuId === m.id ? null : m.id);
+                    }}
+                  >
                     {replySource && <div className="reply-preview-inline">↩ {replySource.text}</div>}
                     {m.forwarded_from_chat_id && <div className="forwarded-label">Переслано</div>}
-                    {m.message_type === 'file' && m.media_path ? (
+                    {m.message_type === 'image' && m.media_path ? (
+                      <img
+                        src={m.media_path}
+                        alt={m.text}
+                        className="media-image"
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    ) : m.message_type === 'video' && m.media_path ? (
+                      <video src={m.media_path} controls className="media-video" onClick={(e) => e.stopPropagation()} />
+                    ) : (m.message_type === 'audio' || m.message_type === 'voice') && m.media_path ? (
+                      <audio src={m.media_path} controls className="media-audio" onClick={(e) => e.stopPropagation()} />
+                    ) : m.message_type === 'file' && m.media_path ? (
                       <a href={m.media_path} target="_blank" rel="noreferrer" className="file-attachment" onClick={(e) => e.stopPropagation()}>
                         📎 {m.text}
                       </a>
                     ) : (
-                      m.text
+                      <span className="message-text">{m.text}</span>
                     )}
                     {m.edited_at && !m.is_deleted && <span className="edited-label"> (изменено)</span>}
                     <span className="bubble-time">{formatMessageTime(m.sent_at)}</span>
@@ -405,10 +488,56 @@ function ChatWindowInner() {
               📎
             </button>
             <input ref={fileInputRef} type="file" style={{ display: 'none' }} onChange={handleFileSelected} />
-            <input className="input" value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Сообщение…" />
-            <button type="submit" className="btn btn-primary" style={{ width: 'auto', padding: '10px 20px' }}>
-              {editingMessage ? 'Сохранить' : 'Отправить'}
+
+            <div style={{ position: 'relative', flex: 1 }}>
+              <textarea
+                className="input composer-textarea"
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSend(e as any);
+                  }
+                }}
+                placeholder="Сообщение… (Shift+Enter — новая строка)"
+                rows={1}
+              />
+              {showEmoji && (
+                <div className="emoji-panel">
+                  {EMOJI_LIST.map((emoji) => (
+                    <button key={emoji} type="button" onClick={() => insertEmoji(emoji)}>
+                      {emoji}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <button
+              type="button"
+              className="btn"
+              style={{ width: 'auto', padding: '10px 14px' }}
+              onClick={() => setShowEmoji((v) => !v)}
+            >
+              😊
             </button>
+
+            {draft.trim() || editingMessage ? (
+              <button type="submit" className="btn btn-primary" style={{ width: 'auto', padding: '10px 20px' }}>
+                {editingMessage ? 'Сохранить' : 'Отправить'}
+              </button>
+            ) : (
+              <button
+                type="button"
+                className={`btn ${isRecording ? 'btn-primary' : ''}`}
+                style={{ width: 'auto', padding: '10px 14px' }}
+                onClick={isRecording ? stopRecording : startRecording}
+                disabled={uploading}
+              >
+                {isRecording ? '⏹' : '🎙'}
+              </button>
+            )}
           </form>
         </>
       ) : (
@@ -425,7 +554,7 @@ function ChatWindowInner() {
               <ul className="list-plain">
                 {myChats.map((c) => (
                   <li key={c.id} className="list-row" style={{ cursor: 'pointer' }} onClick={() => handleForwardTo(c.id)}>
-                    {c.title ?? 'Личный чат'}
+                    {c.type === 'direct' ? forwardPartners[c.id]?.display_name ?? 'Личный чат' : c.title}
                   </li>
                 ))}
               </ul>

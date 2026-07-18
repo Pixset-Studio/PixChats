@@ -29,6 +29,16 @@ export interface SystemStatusRow {
   checked_at: string;
 }
 
+/** Ручная самопроверка: если запрос к БД прошёл — Supabase точно доступен. Полноценный cron — задача на будущее. */
+export async function checkSystemStatusNow(): Promise<void> {
+  const supabase = getSupabaseClient();
+  const start = performance.now();
+  await supabase.from('profiles').select('id').limit(1);
+  const latency = Math.round(performance.now() - start);
+  const { error } = await supabase.rpc('record_self_status_check', { p_latency_ms: latency });
+  if (error) throw error;
+}
+
 export async function getSystemStatus(): Promise<SystemStatusRow[]> {
   const supabase = getSupabaseClient();
   const { data, error } = await supabase
@@ -108,7 +118,109 @@ export async function setUserVerification(targetUserId: string, verified: boolea
   await logAdminAction(verified ? 'grant_verification' : 'revoke_verification', 'user', targetUserId);
 }
 
-/** Выдача/снятие галочки верификации группе/каналу. Доступно admin и developer. */
+/** Выдача/снятие бейджа "Сотрудник Pixset Studio" — независимая пометка, не влияет на role. */
+export async function setPixsetEmployeeBadge(targetUserId: string, value: boolean, actingProfile: Profile) {
+  if (actingProfile.role !== 'admin' && actingProfile.role !== 'developer') {
+    throw new Error('Недостаточно прав');
+  }
+  const supabase = getSupabaseClient();
+  const { error } = await supabase.from('profiles').update({ is_pixset_employee: value }).eq('id', targetUserId);
+  if (error) throw error;
+  await logAdminAction(value ? 'grant_pixset_employee' : 'revoke_pixset_employee', 'user', targetUserId);
+}
+
+export interface BanAccountParams {
+  durationDays?: number;
+  permanent?: boolean;
+}
+
+/** Бан аккаунта — временный (durationDays) или навсегда. Только admin/developer. */
+export async function banAccount(targetUserId: string, params: BanAccountParams, actingProfile: Profile) {
+  if (actingProfile.role !== 'admin' && actingProfile.role !== 'developer') {
+    throw new Error('Недостаточно прав');
+  }
+  const supabase = getSupabaseClient();
+  const bannedUntil = params.permanent
+    ? null
+    : params.durationDays
+    ? new Date(Date.now() + params.durationDays * 86400000).toISOString()
+    : null;
+
+  const { error } = await supabase
+    .from('profiles')
+    .update({ banned_permanently: !!params.permanent, banned_until: bannedUntil })
+    .eq('id', targetUserId);
+  if (error) throw error;
+  await logAdminAction('ban_account', 'user', targetUserId, params as any);
+}
+
+export async function unbanAccount(targetUserId: string, actingProfile: Profile) {
+  if (actingProfile.role !== 'admin' && actingProfile.role !== 'developer') {
+    throw new Error('Недостаточно прав');
+  }
+  const supabase = getSupabaseClient();
+  const { error } = await supabase
+    .from('profiles')
+    .update({ banned_permanently: false, banned_until: null })
+    .eq('id', targetUserId);
+  if (error) throw error;
+  await logAdminAction('unban_account', 'user', targetUserId);
+}
+
+/** Заморозка — аккаунт может читать, но не может писать сообщения (RLS блокирует insert). */
+export async function setAccountFrozen(targetUserId: string, frozen: boolean, actingProfile: Profile) {
+  if (actingProfile.role !== 'admin' && actingProfile.role !== 'developer') {
+    throw new Error('Недостаточно прав');
+  }
+  const supabase = getSupabaseClient();
+  const { error } = await supabase.from('profiles').update({ frozen }).eq('id', targetUserId);
+  if (error) throw error;
+  await logAdminAction(frozen ? 'freeze_account' : 'unfreeze_account', 'user', targetUserId);
+}
+
+/**
+ * Полное удаление аккаунта требует service_role (auth.admin.deleteUser) — с anon-ключом
+ * это невозможно, поэтому вызывается Edge Function admin-delete-user (см. supabase/functions/).
+ */
+export async function deleteAccount(targetUserId: string, actingProfile: Profile) {
+  if (actingProfile.role !== 'admin' && actingProfile.role !== 'developer') {
+    throw new Error('Недостаточно прав');
+  }
+  const supabase = getSupabaseClient();
+  const { error } = await supabase.functions.invoke('admin-delete-user', {
+    body: { targetUserId },
+  });
+  if (error) throw error;
+  await logAdminAction('delete_account', 'user', targetUserId);
+}
+
+export async function banUsername(username: string, actingProfile: Profile) {
+  if (actingProfile.role !== 'admin' && actingProfile.role !== 'developer') {
+    throw new Error('Недостаточно прав');
+  }
+  const supabase = getSupabaseClient();
+  const { error } = await supabase
+    .from('banned_usernames')
+    .insert({ username: username.toLowerCase(), banned_by: actingProfile.id });
+  if (error) throw error;
+}
+
+export async function unbanUsername(username: string) {
+  const supabase = getSupabaseClient();
+  const { error } = await supabase.from('banned_usernames').delete().eq('username', username.toLowerCase());
+  if (error) throw error;
+}
+
+export async function listBannedUsernames(): Promise<string[]> {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from('banned_usernames')
+    .select('username')
+    .order('banned_at', { ascending: false });
+  if (error) throw error;
+  return (data ?? []).map((r) => r.username);
+}
+
 export async function setChatVerification(chatId: string, verified: boolean, actingProfile: Profile) {
   if (actingProfile.role !== 'admin' && actingProfile.role !== 'developer') {
     throw new Error('Недостаточно прав для выдачи верификации');

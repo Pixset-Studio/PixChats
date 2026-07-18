@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { getCurrentProfile, hasActiveSession, signOut } from '@pixchats/core';
 import type { Profile } from '@pixchats/core';
-import { NameBadges } from '../../components/NameBadges';
+import { NameWithBadges } from '../../components/NameBadges';
 import { BottomNav } from '../../components/BottomNav';
 
 export default function ProfilePage() {
@@ -45,8 +45,12 @@ export default function ProfilePage() {
             {!profile.avatar_url && profile.display_name.slice(0, 1).toUpperCase()}
           </div>
           <h2>
-            {profile.display_name}
-            <NameBadges role={profile.role} isVerified={profile.is_verified} />
+            <NameWithBadges
+              name={profile.display_name}
+              role={profile.role}
+              isVerified={profile.is_verified}
+              isPixsetEmployee={profile.is_pixset_employee}
+            />
           </h2>
           <div className="username">@{profile.username}</div>
         </div>

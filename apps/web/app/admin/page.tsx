@@ -8,12 +8,21 @@ import {
   getAdminStats,
   getSystemStatus,
   getErrorLogs,
+  checkSystemStatusNow,
   searchProfilesByUsername,
   setUserRole,
   setUserVerification,
+  setPixsetEmployeeBadge,
+  banAccount,
+  unbanAccount,
+  setAccountFrozen,
+  deleteAccount,
+  banUsername,
+  unbanUsername,
+  listBannedUsernames,
 } from '@pixchats/core';
 import type { Profile, AdminStatsOverview, SystemStatusRow, ErrorLogRow, UserRole } from '@pixchats/core';
-import { NameBadges } from '../../components/NameBadges';
+import { NameWithBadges } from '../../components/NameBadges';
 import { BottomNav } from '../../components/BottomNav';
 
 export default function AdminPage() {
@@ -26,6 +35,8 @@ export default function AdminPage() {
   const [results, setResults] = useState<Profile[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
   const [statsError, setStatsError] = useState<string | null>(null);
+  const [bannedUsernames, setBannedUsernames] = useState<string[]>([]);
+  const [newBannedUsername, setNewBannedUsername] = useState('');
 
   useEffect(() => {
     (async () => {
@@ -44,8 +55,10 @@ export default function AdminPage() {
 
       if (profile.role === 'admin' || profile.role === 'developer') {
         try {
+          await checkSystemStatusNow();
           setStatusRows(await getSystemStatus());
           setErrorLogs(await getErrorLogs());
+          setBannedUsernames(await listBannedUsernames());
         } catch {
           // статус систем/логи опциональны — молча пропускаем, чтобы не рушить всю страницу
         }
@@ -78,6 +91,78 @@ export default function AdminPage() {
     } catch (err: any) {
       setNotice(err.message);
     }
+  }
+
+  async function handleTogglePixsetEmployee(userId: string, value: boolean) {
+    if (!me) return;
+    try {
+      await setPixsetEmployeeBadge(userId, value, me);
+      setNotice(value ? 'Бейдж "Сотрудник Pixset Studio" выдан' : 'Бейдж снят');
+      setResults(await searchProfilesByUsername(query));
+    } catch (err: any) {
+      setNotice(err.message);
+    }
+  }
+
+  async function handleBan(userId: string, days: number | 'forever') {
+    if (!me) return;
+    try {
+      await banAccount(userId, days === 'forever' ? { permanent: true } : { durationDays: days }, me);
+      setNotice(days === 'forever' ? 'Забанен навсегда' : `Забанен на ${days} дн.`);
+      setResults(await searchProfilesByUsername(query));
+    } catch (err: any) {
+      setNotice(err.message);
+    }
+  }
+
+  async function handleUnban(userId: string) {
+    if (!me) return;
+    try {
+      await unbanAccount(userId, me);
+      setNotice('Бан снят');
+      setResults(await searchProfilesByUsername(query));
+    } catch (err: any) {
+      setNotice(err.message);
+    }
+  }
+
+  async function handleToggleFreeze(userId: string, frozen: boolean) {
+    if (!me) return;
+    try {
+      await setAccountFrozen(userId, frozen, me);
+      setNotice(frozen ? 'Аккаунт заморожен' : 'Аккаунт разморожен');
+      setResults(await searchProfilesByUsername(query));
+    } catch (err: any) {
+      setNotice(err.message);
+    }
+  }
+
+  async function handleDeleteAccount(userId: string) {
+    if (!me) return;
+    if (!confirm('Удалить аккаунт безвозвратно? Это действие нельзя отменить.')) return;
+    try {
+      await deleteAccount(userId, me);
+      setNotice('Аккаунт удалён');
+      setResults(await searchProfilesByUsername(query));
+    } catch (err: any) {
+      setNotice(err.message);
+    }
+  }
+
+  async function handleBanUsername() {
+    if (!me || !newBannedUsername.trim()) return;
+    try {
+      await banUsername(newBannedUsername.trim(), me);
+      setNewBannedUsername('');
+      setBannedUsernames(await listBannedUsernames());
+    } catch (err: any) {
+      setNotice(err.message);
+    }
+  }
+
+  async function handleUnbanUsername(username: string) {
+    await unbanUsername(username);
+    setBannedUsernames(await listBannedUsernames());
   }
 
   if (!me) return null;
@@ -115,7 +200,19 @@ export default function AdminPage() {
 
       {(me.role === 'admin' || me.role === 'developer') && (
         <>
-          <div className="section-title">Статус систем</div>
+          <div className="section-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            Статус систем
+            <button
+              className="btn"
+              style={{ width: 'auto', padding: '4px 10px', fontSize: 12 }}
+              onClick={async () => {
+                await checkSystemStatusNow();
+                setStatusRows(await getSystemStatus());
+              }}
+            >
+              Проверить сейчас
+            </button>
+          </div>
           {statusRows.length === 0 ? (
             <div className="empty-state">Проверок пока нет (настраивается через Edge Function по расписанию)</div>
           ) : (
@@ -162,8 +259,13 @@ export default function AdminPage() {
         {results.map((user) => (
           <li key={user.id} className="list-row">
             <div>
-              @{user.username}
-              <NameBadges role={user.role} isVerified={user.is_verified} />
+              <NameWithBadges
+                name={user.display_name}
+                role={user.role}
+                isVerified={user.is_verified}
+                isPixsetEmployee={user.is_pixset_employee}
+              />{' '}
+              <span style={{ color: 'var(--text-muted)' }}>(@{user.username})</span>
             </div>
             <div style={{ marginTop: 6, display: 'flex', gap: 8, alignItems: 'center' }}>
               <button
@@ -172,6 +274,13 @@ export default function AdminPage() {
                 onClick={() => handleToggleVerification(user.id, !user.is_verified)}
               >
                 {user.is_verified ? 'Снять галочку' : 'Выдать галочку'}
+              </button>
+              <button
+                className="btn"
+                style={{ width: 'auto', padding: '6px 12px' }}
+                onClick={() => handleTogglePixsetEmployee(user.id, !user.is_pixset_employee)}
+              >
+                {user.is_pixset_employee ? 'Снять "Сотрудник"' : 'Выдать "Сотрудник"'}
               </button>
               {me.role === 'developer' && (
                 <select
@@ -188,9 +297,77 @@ export default function AdminPage() {
                 </select>
               )}
             </div>
+
+            <div style={{ marginTop: 6, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              {user.banned_permanently || (user.banned_until && new Date(user.banned_until) > new Date()) ? (
+                <button className="btn" style={{ width: 'auto', padding: '6px 12px' }} onClick={() => handleUnban(user.id)}>
+                  Снять бан
+                </button>
+              ) : (
+                <>
+                  <button className="btn" style={{ width: 'auto', padding: '6px 12px' }} onClick={() => handleBan(user.id, 1)}>
+                    Бан на 1 день
+                  </button>
+                  <button className="btn" style={{ width: 'auto', padding: '6px 12px' }} onClick={() => handleBan(user.id, 7)}>
+                    на 7 дней
+                  </button>
+                  <button className="btn" style={{ width: 'auto', padding: '6px 12px' }} onClick={() => handleBan(user.id, 30)}>
+                    на 30 дней
+                  </button>
+                  <button
+                    className="btn"
+                    style={{ width: 'auto', padding: '6px 12px', color: 'var(--danger)' }}
+                    onClick={() => handleBan(user.id, 'forever')}
+                  >
+                    Навсегда
+                  </button>
+                </>
+              )}
+              <button
+                className="btn"
+                style={{ width: 'auto', padding: '6px 12px' }}
+                onClick={() => handleToggleFreeze(user.id, !user.frozen)}
+              >
+                {user.frozen ? 'Разморозить' : 'Заморозить'}
+              </button>
+              <button
+                className="btn"
+                style={{ width: 'auto', padding: '6px 12px', color: 'var(--danger)' }}
+                onClick={() => handleDeleteAccount(user.id)}
+              >
+                🗑 Удалить аккаунт
+              </button>
+            </div>
           </li>
         ))}
       </ul>
+
+      <div className="section-title">Запрещённые юзернеймы</div>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+        <input
+          className="input"
+          value={newBannedUsername}
+          onChange={(e) => setNewBannedUsername(e.target.value)}
+          placeholder="username без @"
+        />
+        <button className="btn" style={{ width: 'auto' }} onClick={handleBanUsername}>
+          Запретить
+        </button>
+      </div>
+      {bannedUsernames.length === 0 ? (
+        <div className="empty-state">Список пуст.</div>
+      ) : (
+        <ul className="list-plain">
+          {bannedUsernames.map((u) => (
+            <li key={u} className="list-row" style={{ display: 'flex', justifyContent: 'space-between' }}>
+              {u}
+              <button className="btn" style={{ width: 'auto', padding: '4px 10px' }} onClick={() => handleUnbanUsername(u)}>
+                Разрешить обратно
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
     </main>
     <BottomNav />
     </>

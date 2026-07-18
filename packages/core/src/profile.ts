@@ -14,15 +14,18 @@ export async function updateProfile(userId: string, params: UpdateProfileParams)
   const patch: Record<string, string> = {};
 
   if (params.username) {
-    const check = await checkUsernameAvailable(params.username);
-    if (!check.available) {
-      throw new Error(
-        check.reason === 'invalid_format'
-          ? 'Юзернейм должен быть 5-32 символа: латиница, цифры, подчёркивание'
-          : 'Этот юзернейм уже занят'
-      );
+    const { data: current } = await supabase.from('profiles').select('username').eq('id', userId).single();
+    if (current?.username !== params.username) {
+      const check = await checkUsernameAvailable(params.username);
+      if (!check.available) {
+        throw new Error(
+          check.reason === 'invalid_format'
+            ? 'Юзернейм должен быть 5-32 символа: латиница, цифры, подчёркивание'
+            : 'Этот юзернейм уже занят'
+        );
+      }
+      patch.username = params.username;
     }
-    patch.username = params.username;
   }
   if (params.displayName) {
     patch.display_name = params.displayName;
@@ -70,7 +73,7 @@ export async function setTheme(userId: string, theme: 'dark' | 'light'): Promise
 }
 
 export interface PrivacySettings {
-  privacy_who_can_message: 'everyone' | 'friends_only';
+  privacy_who_can_message: 'everyone' | 'friends_only' | 'nobody';
   privacy_show_last_seen: 'everyone' | 'friends_only' | 'nobody';
 }
 

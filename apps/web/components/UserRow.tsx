@@ -1,5 +1,5 @@
 import type { Profile } from '@pixchats/core';
-import { NameBadges } from './NameBadges';
+import { NameWithBadges } from './NameBadges';
 
 interface UserRowProps {
   profile: Profile;
@@ -27,8 +27,13 @@ export function UserRow({ profile, lastSeenLabel, action }: UserRowProps) {
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {profile.display_name} <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>(@{profile.username})</span>
-          <NameBadges role={profile.role} isVerified={profile.is_verified} />
+          <NameWithBadges
+            name={profile.display_name}
+            role={profile.role}
+            isVerified={profile.is_verified}
+            isPixsetEmployee={profile.is_pixset_employee}
+          />{' '}
+          <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>(@{profile.username})</span>
         </div>
         <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{lastSeenLabel ?? '\u00A0'}</div>
       </div>

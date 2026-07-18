@@ -82,6 +82,33 @@ export async function getOutgoingRequests(userId: string): Promise<FriendWithPro
   return (data ?? []).map((row: any) => ({ ...row, friend_profile: row.addressee }));
 }
 
+export async function blockUser(blockerId: string, blockedId: string): Promise<void> {
+  const supabase = getSupabaseClient();
+  const { error } = await supabase.from('blocked_users').insert({ blocker_id: blockerId, blocked_id: blockedId });
+  if (error) throw error;
+}
+
+export async function unblockUser(blockerId: string, blockedId: string): Promise<void> {
+  const supabase = getSupabaseClient();
+  const { error } = await supabase
+    .from('blocked_users')
+    .delete()
+    .eq('blocker_id', blockerId)
+    .eq('blocked_id', blockedId);
+  if (error) throw error;
+}
+
+export async function isUserBlockedByMe(myId: string, otherId: string): Promise<boolean> {
+  const supabase = getSupabaseClient();
+  const { data } = await supabase
+    .from('blocked_users')
+    .select('blocker_id')
+    .eq('blocker_id', myId)
+    .eq('blocked_id', otherId)
+    .maybeSingle();
+  return !!data;
+}
+
 export async function areFriends(userA: string, userB: string): Promise<boolean> {
   const supabase = getSupabaseClient();
   const { data, error } = await supabase.rpc('are_friends', { p_user_a: userA, p_user_b: userB });

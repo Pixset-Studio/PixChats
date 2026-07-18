@@ -44,6 +44,10 @@
    - `0014_message_actions.sql`
    - `0015_fix_admin_stats_loading.sql`
    - `0016_message_media_storage.sql`
+   - `0017_fix_stats_and_status.sql`
+   - `0018_pixset_employee_badge.sql`
+   - `0019_direct_chat_dedup.sql`
+   - `0020_moderation_and_blocking.sql`
 3. Включить в Supabase Dashboard → Authentication → Providers:
    - Email (по умолчанию включён)
    - Google (нативно, нужны Client ID/Secret из Google Cloud Console)
@@ -73,6 +77,16 @@ update profiles set role = 'developer', is_verified = true where username = 'pix
 6. **Обязательно**: в Supabase → Authentication → URL Configuration → Redirect URLs добавить `https://<ваш-username>.github.io/<имя-репозитория>/chats/` — иначе OAuth-вход (Google/VK/Яндекс) откажется редиректить обратно на сайт после входа
 
 Важно: из-за GitHub Pages пришлось убрать динамический маршрут `/chats/[id]` и заменить на `/chat/?id=...` — статический экспорт не умеет заранее сгенерировать страницу под каждый будущий UUID чата, а с query-параметром это один и тот же статический файл для всех чатов, id читается на клиенте. На поведении внутри приложения это никак не сказалось.
+
+## Деплой Edge Function удаления аккаунта
+
+Полное удаление аккаунта требует `service_role`, которого нет в браузере — поэтому это отдельная функция:
+
+```bash
+supabase functions deploy admin-delete-user
+```
+
+Секреты (`SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_ANON_KEY`) Supabase подставляет автоматически для Edge Functions, вручную задавать не нужно.
 
 ## Подключение входа через VK и Яндекс
 
