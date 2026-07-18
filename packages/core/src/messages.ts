@@ -6,7 +6,12 @@ export interface Message {
   sender_id: string;
   text: string; // декодировано из ciphertext (заглушка Фазы 1 — просто base64(plaintext))
   message_type: string;
+  media_path: string | null;
   sent_at: string;
+  reply_to_id: string | null;
+  edited_at: string | null;
+  is_deleted: boolean;
+  forwarded_from_chat_id: string | null;
 }
 
 function encodeText(text: string): string {
@@ -24,7 +29,44 @@ function decodeText(ciphertext: string): string {
   }
 }
 
-export async function sendMessage(chatId: string, text: string): Promise<void> {
+const SELECT_FIELDS =
+  'id, chat_id, sender_id, ciphertext, message_type, media_path, sent_at, reply_to_id, edited_at, is_deleted, forwarded_from_chat_id';
+
+function mapRow(row: any): Message {
+  return {
+    id: row.id,
+    chat_id: row.chat_id,
+    sender_id: row.sender_id,
+    text: row.is_deleted ? 'Сообщение удалено' : decodeText(row.ciphertext),
+    message_type: row.message_type,
+    media_path: row.media_path,
+    sent_at: row.sent_at,
+    reply_to_id: row.reply_to_id,
+    edited_at: row.edited_at,
+    is_deleted: row.is_deleted,
+    forwarded_from_chat_id: row.forwarded_from_chat_id,
+  };
+}
+
+export interface SendMessageOptions {
+  replyToId?: string;
+  mediaPath?: string;
+  messageType?: string;
+}
+
+/** Загружает произвольный файл (любого типа) в бакет message-media (папка = chatId), возвращает публичный URL. */
+export async function uploadMessageFile(chatId: string, file: File): Promise<{ url: string; name: string; size: number }> {
+  const supabase = getSupabaseClient();
+  const path = `${chatId}/${Date.now()}-${file.name}`;
+
+  const { error } = await supabase.storage.from('message-media').upload(path, file);
+  if (error) throw error;
+
+  const { data } = supabase.storage.from('message-media').getPublicUrl(path);
+  return { url: data.publicUrl, name: file.name, size: file.size };
+}
+
+export async function sendMessage(chatId: string, text: string, options: SendMessageOptions = {}): Promise<void> {
   const supabase = getSupabaseClient();
   const { data: sessionData } = await supabase.auth.getSession();
   const senderId = sessionData.session?.user.id;
@@ -34,29 +76,79 @@ export async function sendMessage(chatId: string, text: string): Promise<void> {
     chat_id: chatId,
     sender_id: senderId,
     ciphertext: encodeText(text),
-    message_type: 'text',
+    message_type: options.messageType ?? 'text',
+    media_path: options.mediaPath ?? null,
+    reply_to_id: options.replyToId ?? null,
   });
   if (error) throw error;
 }
 
-export async function getMessages(chatId: string, limit = 100): Promise<Message[]> {
+export async function getMessages(chatId: string, limit = 200): Promise<Message[]> {
   const supabase = getSupabaseClient();
   const { data, error } = await supabase
     .from('messages')
-    .select('id, chat_id, sender_id, ciphertext, message_type, sent_at')
+    .select(SELECT_FIELDS)
     .eq('chat_id', chatId)
     .order('sent_at', { ascending: true })
     .limit(limit);
   if (error) throw error;
+  return (data ?? []).map(mapRow);
+}
 
-  return (data ?? []).map((row) => ({
-    id: row.id,
-    chat_id: row.chat_id,
-    sender_id: row.sender_id,
-    text: decodeText(row.ciphertext),
-    message_type: row.message_type,
-    sent_at: row.sent_at,
-  }));
+export async function getMessageById(messageId: string): Promise<Message | null> {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase.from('messages').select(SELECT_FIELDS).eq('id', messageId).maybeSingle();
+  if (error) throw error;
+  return data ? mapRow(data) : null;
+}
+
+/** Редактирование своего сообщения — отмечает edited_at, UI показывает пометку "изменено". */
+export async function editMessage(messageId: string, newText: string): Promise<void> {
+  const supabase = getSupabaseClient();
+  const { error } = await supabase
+    .from('messages')
+    .update({ ciphertext: encodeText(newText), edited_at: new Date().toISOString() })
+    .eq('id', messageId);
+  if (error) throw error;
+}
+
+/** "Удалить у обоих" — soft-delete: текст стирается, но строка остаётся (не рвёт ответы/закреп). */
+export async function deleteMessage(messageId: string): Promise<void> {
+  const supabase = getSupabaseClient();
+  const { error } = await supabase
+    .from('messages')
+    .update({ is_deleted: true, ciphertext: encodeText('') })
+    .eq('id', messageId);
+  if (error) throw error;
+}
+
+export async function pinMessage(chatId: string, messageId: string): Promise<void> {
+  const supabase = getSupabaseClient();
+  const { error } = await supabase.from('chats').update({ pinned_message_id: messageId }).eq('id', chatId);
+  if (error) throw error;
+}
+
+export async function unpinMessage(chatId: string): Promise<void> {
+  const supabase = getSupabaseClient();
+  const { error } = await supabase.from('chats').update({ pinned_message_id: null }).eq('id', chatId);
+  if (error) throw error;
+}
+
+/** Пересылка: копирует текст в другой чат, помечая forwarded_from_chat_id (откуда переслано). */
+export async function forwardMessage(message: Message, targetChatId: string): Promise<void> {
+  await sendMessage(targetChatId, message.text, { messageType: message.message_type });
+  // Помечаем последнюю вставленную запись как пересланную отдельным update, т.к. insert
+  // не возвращает id в текущей реализации sendMessage — проще и надёжнее отдельным шагом.
+  const supabase = getSupabaseClient();
+  const { data: sessionData } = await supabase.auth.getSession();
+  const senderId = sessionData.session?.user.id;
+  await supabase
+    .from('messages')
+    .update({ forwarded_from_chat_id: message.chat_id })
+    .eq('chat_id', targetChatId)
+    .eq('sender_id', senderId)
+    .order('sent_at', { ascending: false })
+    .limit(1);
 }
 
 /** Последнее сообщение по каждому чату из списка — для превью в списке чатов. */
@@ -65,47 +157,37 @@ export async function getLastMessagesForChats(chatIds: string[]): Promise<Record
   const supabase = getSupabaseClient();
   const { data, error } = await supabase
     .from('messages')
-    .select('id, chat_id, sender_id, ciphertext, message_type, sent_at')
+    .select(SELECT_FIELDS)
     .in('chat_id', chatIds)
     .order('sent_at', { ascending: false })
-    .limit(500); // с запасом на случай активных чатов, дальше берём первое на chat_id
+    .limit(500);
   if (error) throw error;
 
   const result: Record<string, Message> = {};
   for (const row of data ?? []) {
-    if (!result[row.chat_id]) {
-      result[row.chat_id] = {
-        id: row.id,
-        chat_id: row.chat_id,
-        sender_id: row.sender_id,
-        text: decodeText(row.ciphertext),
-        message_type: row.message_type,
-        sent_at: row.sent_at,
-      };
-    }
+    if (!result[row.chat_id]) result[row.chat_id] = mapRow(row);
   }
   return result;
 }
 
-/** Подписка на новые сообщения в чате через Supabase Realtime. Возвращает функцию отписки. */
-export function subscribeToMessages(chatId: string, onMessage: (message: Message) => void): () => void {
+/** Подписка на новые/изменённые сообщения в чате через Supabase Realtime. Возвращает функцию отписки. */
+export function subscribeToMessages(
+  chatId: string,
+  onInsert: (message: Message) => void,
+  onUpdate?: (message: Message) => void
+): () => void {
   const supabase = getSupabaseClient();
   const channel = supabase
     .channel(`messages:${chatId}`)
     .on(
       'postgres_changes',
       { event: 'INSERT', schema: 'public', table: 'messages', filter: `chat_id=eq.${chatId}` },
-      (payload) => {
-        const row = payload.new as any;
-        onMessage({
-          id: row.id,
-          chat_id: row.chat_id,
-          sender_id: row.sender_id,
-          text: decodeText(row.ciphertext),
-          message_type: row.message_type,
-          sent_at: row.sent_at,
-        });
-      }
+      (payload) => onInsert(mapRow(payload.new))
+    )
+    .on(
+      'postgres_changes',
+      { event: 'UPDATE', schema: 'public', table: 'messages', filter: `chat_id=eq.${chatId}` },
+      (payload) => onUpdate?.(mapRow(payload.new))
     )
     .subscribe();
 

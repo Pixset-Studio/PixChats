@@ -25,6 +25,7 @@ export default function AdminPage() {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<Profile[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
+  const [statsError, setStatsError] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -34,11 +35,20 @@ export default function AdminPage() {
         return;
       }
       setMe(profile);
-      setStats(await getAdminStats());
+
+      try {
+        setStats(await getAdminStats());
+      } catch (err: any) {
+        setStatsError(err.message ?? 'Не удалось загрузить статистику');
+      }
 
       if (profile.role === 'admin' || profile.role === 'developer') {
-        setStatusRows(await getSystemStatus());
-        setErrorLogs(await getErrorLogs());
+        try {
+          setStatusRows(await getSystemStatus());
+          setErrorLogs(await getErrorLogs());
+        } catch {
+          // статус систем/логи опциональны — молча пропускаем, чтобы не рушить всю страницу
+        }
       }
     })();
   }, [router]);
@@ -97,6 +107,8 @@ export default function AdminPage() {
           <Stat label="Сообщений сегодня" value={stats.messages_today} />
           <Stat label="Звонков сегодня" value={stats.calls_today} />
         </div>
+      ) : statsError ? (
+        <p className="error">{statsError}</p>
       ) : (
         <p style={{ color: 'var(--text-muted)' }}>Загрузка…</p>
       )}
@@ -169,6 +181,7 @@ export default function AdminPage() {
                   onChange={(e) => handleSetRole(user.id, e.target.value as UserRole)}
                 >
                   <option value="user">user</option>
+                  <option value="partner">partner</option>
                   <option value="moderator">moderator</option>
                   <option value="admin">admin</option>
                   <option value="developer">developer</option>

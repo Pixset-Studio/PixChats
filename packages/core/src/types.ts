@@ -1,4 +1,4 @@
-export type UserRole = 'user' | 'moderator' | 'admin' | 'developer';
+export type UserRole = 'user' | 'moderator' | 'admin' | 'developer' | 'partner';
 
 export interface Profile {
   id: string;
@@ -42,4 +42,5 @@ export interface Chat {
   is_verified: boolean;
   created_by: string | null;
   created_at: string;
+  pinned_message_id: string | null;
 }

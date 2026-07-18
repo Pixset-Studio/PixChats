@@ -4,14 +4,22 @@ import { useEffect, useRef, useState, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { resolveLastSeenLabel } from '../../lib/lastSeen';
+import { buildAppUrl } from '../../lib/url';
 import { VerifiedBadge } from '../../components/VerifiedBadge';
 import {
   getSupabaseClient,
   getCurrentProfile,
   getMessages,
+  getMessageById,
   sendMessage,
   subscribeToMessages,
   getChatMemberCount,
+  editMessage,
+  deleteMessage,
+  pinMessage,
+  unpinMessage,
+  forwardMessage,
+  uploadMessageFile,
 } from '@pixchats/core';
 import type { Message, Chat, Profile } from '@pixchats/core';
 
@@ -19,19 +27,65 @@ function formatMessageTime(iso: string): string {
   return new Date(iso).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
 }
 
+function formatDateDivider(iso: string): string {
+  const date = new Date(iso);
+  const now = new Date();
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+
+  if (date.toDateString() === now.toDateString()) return 'Сегодня';
+  if (date.toDateString() === yesterday.toDateString()) return 'Вчера';
+  return date.toLocaleDateString('ru-RU', {
+    day: '2-digit',
+    month: 'long',
+    year: date.getFullYear() !== now.getFullYear() ? 'numeric' : undefined,
+  });
+}
+
 function ChatWindowInner() {
   const searchParams = useSearchParams();
   const chatId = searchParams.get('id') ?? '';
+  const highlightMsgId = searchParams.get('msg');
   const router = useRouter();
+
   const [me, setMe] = useState<Profile | null>(null);
   const [chat, setChat] = useState<Chat | null>(null);
   const [otherProfile, setOtherProfile] = useState<Profile | null>(null);
   const [otherLastSeen, setOtherLastSeen] = useState('');
   const [memberCount, setMemberCount] = useState(0);
+  const [pinnedMessage, setPinnedMessage] = useState<Message | null>(null);
+  const [canModerate, setCanModerate] = useState(false); // owner/admin этого чата
+
   const [messages, setMessages] = useState<Message[]>([]);
   const [draft, setDraft] = useState('');
   const [canWrite, setCanWrite] = useState(true);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const messageRefs = useRef<Record<string, HTMLDivElement | null>>({});
+
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const [replyingTo, setReplyingTo] = useState<Message | null>(null);
+  const [editingMessage, setEditingMessage] = useState<Message | null>(null);
+  const [forwardTarget, setForwardTarget] = useState<Message | null>(null);
+  const [myChats, setMyChats] = useState<Chat[]>([]);
+  const [notice, setNotice] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+
+  async function handleFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      const { url, name } = await uploadMessageFile(chatId, file);
+      await sendMessage(chatId, name, { messageType: 'file', mediaPath: url });
+    } catch (err: any) {
+      setNotice(err.message ?? 'Не удалось загрузить файл');
+      setTimeout(() => setNotice(null), 2000);
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  }
 
   useEffect(() => {
     if (!chatId) {
@@ -52,11 +106,12 @@ function ChatWindowInner() {
       const { data: chatRow } = await supabase.from('chats').select('*').eq('id', chatId).single();
       setChat(chatRow);
 
+      if (chatRow?.pinned_message_id) {
+        setPinnedMessage(await getMessageById(chatRow.pinned_message_id));
+      }
+
       if (chatRow?.type === 'direct') {
-        const { data: memberRows } = await supabase
-          .from('chat_members')
-          .select('user_id')
-          .eq('chat_id', chatId);
+        const { data: memberRows } = await supabase.from('chat_members').select('user_id').eq('chat_id', chatId);
         const otherId = (memberRows ?? []).map((r) => r.user_id).find((id) => id !== profile.id);
         if (otherId) {
           const { data: otherRow } = await supabase.from('profiles').select('*').eq('id', otherId).single();
@@ -74,31 +129,113 @@ function ChatWindowInner() {
         .eq('user_id', profile.id)
         .maybeSingle();
       setCanWrite(memberRow?.member_role !== 'subscriber');
+      setCanModerate(memberRow?.member_role === 'owner' || memberRow?.member_role === 'admin');
 
       setMessages(await getMessages(chatId));
 
-      // Живое появление новых сообщений без перезагрузки — Realtime включён миграцией 0011
-      unsubscribe = subscribeToMessages(chatId, (msg) => {
-        setMessages((prev) => (prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]));
-      });
+      unsubscribe = subscribeToMessages(
+        chatId,
+        (msg) => setMessages((prev) => (prev.some((m) => m.id === msg.id) ? prev : [...prev, msg])),
+        (msg) => setMessages((prev) => prev.map((m) => (m.id === msg.id ? msg : m)))
+      );
     })();
 
     return () => unsubscribe?.();
   }, [chatId, router]);
 
+  // Прокрутка и подсветка при переходе по ссылке на конкретное сообщение
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    if (highlightMsgId && messages.length > 0) {
+      const el = messageRefs.current[highlightMsgId];
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        el.classList.add('message-highlight');
+        setTimeout(() => el.classList.remove('message-highlight'), 2000);
+      }
+    } else {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages, highlightMsgId]);
 
   async function handleSend(e: React.FormEvent) {
     e.preventDefault();
     if (!draft.trim()) return;
     const text = draft.trim();
+
+    if (editingMessage) {
+      await editMessage(editingMessage.id, text);
+      setMessages((prev) =>
+        prev.map((m) => (m.id === editingMessage.id ? { ...m, text, edited_at: new Date().toISOString() } : m))
+      );
+      setEditingMessage(null);
+      setDraft('');
+      return;
+    }
+
     setDraft('');
-    await sendMessage(chatId, text);
+    await sendMessage(chatId, text, { replyToId: replyingTo?.id });
+    setReplyingTo(null);
+  }
+
+  async function handlePin(message: Message) {
+    await pinMessage(chatId, message.id);
+    setPinnedMessage(message);
+    setOpenMenuId(null);
+  }
+
+  async function handleUnpin() {
+    await unpinMessage(chatId);
+    setPinnedMessage(null);
+  }
+
+  async function handleDelete(message: Message) {
+    await deleteMessage(message.id);
+    setMessages((prev) => prev.map((m) => (m.id === message.id ? { ...m, is_deleted: true, text: 'Сообщение удалено' } : m)));
+    setOpenMenuId(null);
+  }
+
+  async function handleCopy(message: Message) {
+    await navigator.clipboard.writeText(message.text);
+    setOpenMenuId(null);
+    setNotice('Скопировано');
+    setTimeout(() => setNotice(null), 1500);
+  }
+
+  async function handleCopyLink(message: Message) {
+    const url = buildAppUrl(`/chat/?id=${chatId}&msg=${message.id}`);
+    await navigator.clipboard.writeText(url);
+    setOpenMenuId(null);
+    setNotice('Ссылка скопирована');
+    setTimeout(() => setNotice(null), 1500);
+  }
+
+  async function openForwardModal(message: Message) {
+    setOpenMenuId(null);
+    if (me) {
+      const supabase = getSupabaseClient();
+      const { data: memberRows } = await supabase.from('chat_members').select('chat_id').eq('user_id', me.id);
+      const ids = (memberRows ?? []).map((r) => r.chat_id).filter((id) => id !== chatId);
+      if (ids.length > 0) {
+        const { data: chatRows } = await supabase.from('chats').select('*').in('id', ids);
+        setMyChats(chatRows ?? []);
+      } else {
+        setMyChats([]);
+      }
+    }
+    setForwardTarget(message);
+  }
+
+  async function handleForwardTo(targetChatId: string) {
+    if (!forwardTarget) return;
+    await forwardMessage(forwardTarget, targetChatId);
+    setForwardTarget(null);
+    setNotice('Переслано');
+    setTimeout(() => setNotice(null), 1500);
   }
 
   if (!chat || !me) return <p style={{ padding: 24, color: 'var(--text-muted)' }}>Загрузка…</p>;
+
+  const isGroupOrChannel = chat.type !== 'direct';
 
   return (
     <main className="chat-shell">
@@ -166,27 +303,138 @@ function ChatWindowInner() {
         )}
       </header>
 
+      {pinnedMessage && (
+        <div className="pinned-bar">
+          <span>📌 {pinnedMessage.text}</span>
+          {canModerate && (
+            <button className="btn-ghost" style={{ width: 'auto', padding: '2px 8px' }} onClick={handleUnpin}>
+              ✕
+            </button>
+          )}
+        </div>
+      )}
+
+      {notice && <div className="toast">{notice}</div>}
+
       <div className="chat-messages">
-        {messages.map((m) => (
-          <div key={m.id} className={`bubble-row ${m.sender_id === me.id ? 'mine' : ''}`}>
-            <span className="bubble">
-              {m.text}
-              <span className="bubble-time">{formatMessageTime(m.sent_at)}</span>
-            </span>
-          </div>
-        ))}
+        {messages.map((m, i) => {
+          const prev = messages[i - 1];
+          const showDateDivider = !prev || new Date(prev.sent_at).toDateString() !== new Date(m.sent_at).toDateString();
+          const isMine = m.sender_id === me.id;
+          const replySource = m.reply_to_id ? messages.find((x) => x.id === m.reply_to_id) : null;
+
+          return (
+            <div key={m.id}>
+              {showDateDivider && <div className="date-divider">{formatDateDivider(m.sent_at)}</div>}
+              <div
+                className={`bubble-row ${isMine ? 'mine' : ''}`}
+                ref={(el) => {
+                  messageRefs.current[m.id] = el;
+                }}
+              >
+                <div style={{ position: 'relative' }}>
+                  <span className="bubble" onClick={() => !m.is_deleted && setOpenMenuId(openMenuId === m.id ? null : m.id)}>
+                    {replySource && <div className="reply-preview-inline">↩ {replySource.text}</div>}
+                    {m.forwarded_from_chat_id && <div className="forwarded-label">Переслано</div>}
+                    {m.message_type === 'file' && m.media_path ? (
+                      <a href={m.media_path} target="_blank" rel="noreferrer" className="file-attachment" onClick={(e) => e.stopPropagation()}>
+                        📎 {m.text}
+                      </a>
+                    ) : (
+                      m.text
+                    )}
+                    {m.edited_at && !m.is_deleted && <span className="edited-label"> (изменено)</span>}
+                    <span className="bubble-time">{formatMessageTime(m.sent_at)}</span>
+                  </span>
+
+                  {openMenuId === m.id && !m.is_deleted && (
+                    <div className={`message-menu ${isMine ? 'mine' : ''}`}>
+                      {!isMine && (
+                        <button onClick={() => { setReplyingTo(m); setOpenMenuId(null); }}>Ответить</button>
+                      )}
+                      <button onClick={() => handleCopy(m)}>Копировать</button>
+                      <button onClick={() => openForwardModal(m)}>Переслать</button>
+                      <button onClick={() => handlePin(m)}>Закрепить</button>
+                      {isGroupOrChannel && <button onClick={() => handleCopyLink(m)}>Скопировать ссылку</button>}
+                      {isMine && (
+                        <button onClick={() => { setEditingMessage(m); setDraft(m.text); setOpenMenuId(null); }}>
+                          Изменить
+                        </button>
+                      )}
+                      {(isMine || canModerate) && (
+                        <button className="danger" onClick={() => handleDelete(m)}>
+                          🗑 Удалить у всех
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })}
         <div ref={bottomRef} />
       </div>
 
       {canWrite ? (
-        <form onSubmit={handleSend} className="chat-composer">
-          <input className="input" value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Сообщение…" />
-          <button type="submit" className="btn btn-primary" style={{ width: 'auto', padding: '10px 20px' }}>
-            Отправить
-          </button>
-        </form>
+        <>
+          {(replyingTo || editingMessage) && (
+            <div className="composer-context">
+              <span>{editingMessage ? '✎ Редактирование' : `↩ Ответ: ${replyingTo?.text}`}</span>
+              <button
+                className="btn-ghost"
+                style={{ width: 'auto' }}
+                onClick={() => {
+                  setReplyingTo(null);
+                  setEditingMessage(null);
+                  setDraft('');
+                }}
+              >
+                ✕
+              </button>
+            </div>
+          )}
+          <form onSubmit={handleSend} className="chat-composer">
+            <button
+              type="button"
+              className="btn"
+              style={{ width: 'auto', padding: '10px 14px' }}
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+            >
+              📎
+            </button>
+            <input ref={fileInputRef} type="file" style={{ display: 'none' }} onChange={handleFileSelected} />
+            <input className="input" value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Сообщение…" />
+            <button type="submit" className="btn btn-primary" style={{ width: 'auto', padding: '10px 20px' }}>
+              {editingMessage ? 'Сохранить' : 'Отправить'}
+            </button>
+          </form>
+        </>
       ) : (
         <p className="subscriber-notice">Вы подписчик канала — писать могут только владелец и администраторы</p>
+      )}
+
+      {forwardTarget && (
+        <div className="modal-overlay" onClick={() => setForwardTarget(null)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ marginTop: 0 }}>Переслать в…</h3>
+            {myChats.length === 0 ? (
+              <p style={{ color: 'var(--text-muted)' }}>Нет других чатов для пересылки.</p>
+            ) : (
+              <ul className="list-plain">
+                {myChats.map((c) => (
+                  <li key={c.id} className="list-row" style={{ cursor: 'pointer' }} onClick={() => handleForwardTo(c.id)}>
+                    {c.title ?? 'Личный чат'}
+                  </li>
+                ))}
+              </ul>
+            )}
+            <button className="btn" style={{ width: 'auto', marginTop: 12 }} onClick={() => setForwardTarget(null)}>
+              Отмена
+            </button>
+          </div>
+        </div>
       )}
     </main>
   );

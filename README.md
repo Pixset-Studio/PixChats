@@ -40,6 +40,10 @@
    - `0010_chat_avatars_storage.sql`
    - `0011_realtime_bio_lastseen_privacy.sql`
    - `0012_privacy_consent.sql`
+   - `0013_add_partner_role.sql`
+   - `0014_message_actions.sql`
+   - `0015_fix_admin_stats_loading.sql`
+   - `0016_message_media_storage.sql`
 3. Включить в Supabase Dashboard → Authentication → Providers:
    - Email (по умолчанию включён)
    - Google (нативно, нужны Client ID/Secret из Google Cloud Console)
@@ -69,6 +73,38 @@ update profiles set role = 'developer', is_verified = true where username = 'pix
 6. **Обязательно**: в Supabase → Authentication → URL Configuration → Redirect URLs добавить `https://<ваш-username>.github.io/<имя-репозитория>/chats/` — иначе OAuth-вход (Google/VK/Яндекс) откажется редиректить обратно на сайт после входа
 
 Важно: из-за GitHub Pages пришлось убрать динамический маршрут `/chats/[id]` и заменить на `/chat/?id=...` — статический экспорт не умеет заранее сгенерировать страницу под каждый будущий UUID чата, а с query-параметром это один и тот же статический файл для всех чатов, id читается на клиенте. На поведении внутри приложения это никак не сказалось.
+
+## Подключение входа через VK и Яндекс
+
+Оба идут через **Authentication → Sign In / Providers → Custom Providers** (или "Custom OAuth/OIDC Providers" — свежая функция Supabase, название пункта может немного отличаться в интерфейсе).
+
+### VK ID
+1. Зарегистрировать приложение на **id.vk.com/business/go** (VK ID для бизнеса) → создать приложение типа "Веб-сайт"
+2. В настройках приложения указать **Redirect URI**: `https://kibhezfpafhitcvpkquu.supabase.co/auth/v1/callback`
+3. Скопировать **Client ID** и **Client Secret** из настроек приложения
+4. В Supabase → Custom Providers → добавить новый:
+   - Name: `vk`
+   - Client ID / Secret — из VK ID
+   - Authorization URL: `https://id.vk.com/authorize`
+   - Token URL: `https://id.vk.com/oauth2/auth`
+   - User Info URL: `https://id.vk.com/oauth2/user_info`
+5. Сохранить — кнопка "Войти через VK" в приложении уже готова к этому (код не трогаем)
+
+### Яндекс ID
+1. Зайти на **oauth.yandex.ru** → Создать приложение
+2. Платформы: "Веб-сервисы", Redirect URI: `https://kibhezfpafhitcvpkquu.supabase.co/auth/v1/callback`
+3. Права доступа: минимум "Доступ к email", "Доступ к базовой информации о пользователе"
+4. Скопировать **ClientID** и **Client Secret**
+5. В Supabase → Custom Providers:
+   - Name: `yandex`
+   - Authorization URL: `https://oauth.yandex.ru/authorize`
+   - Token URL: `https://oauth.yandex.ru/token`
+   - User Info URL: `https://login.yandex.ru/info`
+
+Если Supabase Custom Providers откажется работать с этими URL (иногда discovery-документ не совпадает 1-в-1 с ожиданиями Supabase) — напишите мне, сделаем через Edge Function-обёртку, которая сама обменивает код на токен и создаёт сессию.
+
+## Важно про хранилище файлов
+Загрузка файлов сообщений сейчас идёт через Supabase Storage (бакет `message-media`) — это самый быстрый put в работу вариант, но он расходует ваш лимит Supabase (1 ГБ на бесплатном тарифе). Если начнёте загружать много крупных файлов — стоит перенести это на Cloudflare R2 (у вас уже есть аккаунт Cloudflare под TURN, R2 даёт 10 ГБ бесплатно и не считает исходящий трафик), но это отдельная задача — нужна Edge Function, которая будет выдавать одноразовые ссылки на загрузку. Скажите, когда переходить к этому.
 
 ## Дальше — Фаза 2 (E2E-шифрование)
 - Замена заглушки `packages/core/src/crypto.ts` и `messages.ts` на настоящий libsignal-client (X3DH + Double Ratchet)
