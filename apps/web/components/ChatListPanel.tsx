@@ -33,6 +33,23 @@ function formatTime(iso: string): string {
   return date.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' });
 }
 
+function formatPreviewText(message: Message): string {
+  switch (message.message_type) {
+    case 'image':
+      return '📷 Фото';
+    case 'video':
+      return '🎥 Видео';
+    case 'audio':
+      return '🎵 Аудио';
+    case 'voice':
+      return '🎤 Голосовое сообщение';
+    case 'file':
+      return `📎 ${message.text}`;
+    default:
+      return message.text;
+  }
+}
+
 export function ChatListPanel() {
   const router = useRouter();
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -75,6 +92,89 @@ export function ChatListPanel() {
       await loadChats(me);
     })();
   }, []);
+
+  // Живые обновления: новое сообщение — обновляем превью/непрочитанные и пересортировываем;
+  // прочитанное в открытом чате (в соседней панели на ПК) — сбрасываем счётчик тут же;
+  // добавили в новый чат — перезагружаем список целиком.
+  useEffect(() => {
+    if (!profile) return;
+    const supabase = getSupabaseClient();
+
+    const messagesChannel = supabase
+      .channel('chat-list-messages')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (payload: any) => {
+        const row = payload.new;
+        if (!row) return;
+
+        setPreviews((prev) => ({
+          ...prev,
+          [row.chat_id]: {
+            id: row.id,
+            chat_id: row.chat_id,
+            sender_id: row.sender_id,
+            text: (() => {
+              try {
+                return decodeURIComponent(escape(atob(row.ciphertext)));
+              } catch {
+                return '';
+              }
+            })(),
+            message_type: row.message_type,
+            media_path: row.media_path,
+            caption: row.caption,
+            caption_position: row.caption_position ?? 'below',
+            sent_at: row.sent_at,
+            reply_to_id: row.reply_to_id,
+            edited_at: row.edited_at,
+            is_deleted: row.is_deleted,
+            forwarded_from_chat_id: row.forwarded_from_chat_id,
+          },
+        }));
+
+        if (row.sender_id !== profile.id) {
+          const isCurrentlyOpenChat =
+            typeof window !== 'undefined' &&
+            window.location.pathname.includes('/chat/') &&
+            window.location.search.includes(String(row.chat_id));
+
+          if (!isCurrentlyOpenChat) {
+            setUnreadCounts((prev) => ({ ...prev, [row.chat_id]: (prev[row.chat_id] ?? 0) + 1 }));
+          }
+        }
+      })
+      .subscribe();
+
+    const readStateChannel = supabase
+      .channel('chat-list-read-state')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'chat_read_state', filter: `user_id=eq.${profile.id}` },
+        async (payload: any) => {
+          const chatId = payload.new?.chat_id ?? payload.old?.chat_id;
+          if (!chatId) return;
+          const counts = await getUnreadCounts([chatId], profile.id);
+          setUnreadCounts((prev) => ({ ...prev, [chatId]: counts[chatId] ?? 0 }));
+        }
+      )
+      .subscribe();
+
+    const membersChannel = supabase
+      .channel('chat-list-members')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'chat_members', filter: `user_id=eq.${profile.id}` },
+        () => {
+          loadChats(profile);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(messagesChannel);
+      supabase.removeChannel(readStateChannel);
+      supabase.removeChannel(membersChannel);
+    };
+  }, [profile]);
 
   useEffect(() => {
     if (!profile) return;
@@ -254,7 +354,7 @@ export function ChatListPanel() {
                   </div>
                   <div className="chat-item-preview-text">
                     {preview
-                      ? preview.text
+                      ? formatPreviewText(preview)
                       : `${TYPE_LABEL[chat.type]}${chat.visibility ? ` · ${chat.visibility === 'public' ? 'публичный' : 'приватный'}` : ''}`}
                   </div>
                 </div>

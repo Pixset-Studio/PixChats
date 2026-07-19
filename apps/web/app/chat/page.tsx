@@ -178,6 +178,18 @@ function ChatWindowInner() {
     }
     let unsubscribe: (() => void) | undefined;
 
+    // Сброс состояния предыдущего чата — иначе, например, закреплённое сообщение
+    // или профиль собеседника "утекали" в следующий открытый чат до завершения загрузки.
+    setPinnedMessage(null);
+    setOtherProfile(null);
+    setOtherLastSeen('');
+    setBlockedEitherWay(false);
+    setMemberCount(0);
+    setMyRole(null);
+    setCanWrite(true);
+    setCanModerate(false);
+    setMessages([]);
+
     (async () => {
       const profile = await getCurrentProfile();
       if (!profile) {
@@ -295,6 +307,7 @@ function ChatWindowInner() {
   async function handleUnpin() {
     await unpinMessage(chatId);
     setPinnedMessage(null);
+    setOpenMenuId(null);
   }
 
   async function handleDelete(message: Message) {
@@ -352,6 +365,7 @@ function ChatWindowInner() {
   if (!chat || !me) return <p style={{ padding: 24, color: 'var(--text-muted)' }}>Загрузка…</p>;
 
   const isGroupOrChannel = chat.type !== 'direct';
+  const canPin = !isGroupOrChannel || myRole === 'owner';
 
   return (
     <main className="chat-shell">
@@ -431,7 +445,7 @@ function ChatWindowInner() {
       {pinnedMessage && (
         <div className="pinned-bar">
           <span>📌 {pinnedMessage.text}</span>
-          {canModerate && (
+          {canPin && (
             <button className="btn-ghost" style={{ width: 'auto', padding: '2px 8px' }} onClick={handleUnpin}>
               ✕
             </button>
@@ -510,7 +524,12 @@ function ChatWindowInner() {
                       )}
                       <button onClick={() => handleCopy(m)}>Копировать</button>
                       <button onClick={() => openForwardModal(m)}>Переслать</button>
-                      <button onClick={() => handlePin(m)}>Закрепить</button>
+                      {canPin &&
+                        (pinnedMessage?.id === m.id ? (
+                          <button onClick={handleUnpin}>Открепить</button>
+                        ) : (
+                          <button onClick={() => handlePin(m)}>Закрепить</button>
+                        ))}
                       {isGroupOrChannel && <button onClick={() => handleCopyLink(m)}>Скопировать ссылку</button>}
                       {isMine && (
                         <button onClick={() => { setEditingMessage(m); setDraft(m.text); setOpenMenuId(null); }}>

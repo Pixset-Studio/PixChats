@@ -20,6 +20,7 @@ import type { Chat, Profile, MuteState } from '@pixchats/core';
 import { VerifiedBadge } from '../../components/VerifiedBadge';
 import { buildAppUrl } from '../../lib/url';
 import { isBanned } from '../../lib/ban';
+import { MuteControl } from '../../components/MuteControl';
 
 const TYPE_LABEL: Record<Chat['type'], string> = {
   direct: 'Личный чат',
@@ -180,23 +181,7 @@ function ChatInfoInner() {
               {chat.type === 'channel' ? 'Подписчики' : 'Участники'} ({memberCount})
             </Link>
           )}
-          {muteState?.muted ? (
-            <button className="btn" onClick={handleUnmute}>
-              🔔 Включить уведомления
-            </button>
-          ) : (
-            <>
-              <button className="btn" onClick={() => handleMute(1)}>
-                🔕 На 1 час
-              </button>
-              <button className="btn" onClick={() => handleMute(8)}>
-                На 8 часов
-              </button>
-              <button className="btn" onClick={() => handleMute()}>
-                Навсегда
-              </button>
-            </>
-          )}
+          <MuteControl muteState={muteState} onMute={handleMute} onUnmute={handleUnmute} />
         </div>
       </div>
 

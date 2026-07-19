@@ -21,6 +21,7 @@ import type { Profile, MuteState } from '@pixchats/core';
 import { NameWithBadges } from '../../components/NameBadges';
 import { resolveLastSeenLabel } from '../../lib/lastSeen';
 import { isBanned } from '../../lib/ban';
+import { MuteControl } from '../../components/MuteControl';
 
 function UserProfileInner() {
   const searchParams = useSearchParams();
@@ -159,6 +160,9 @@ function UserProfileInner() {
         <div className="username">
           @{user.username} · {lastSeenLabel}
         </div>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+          В PixChats с {new Date(user.created_at).toLocaleDateString('ru-RU', { day: '2-digit', month: 'long', year: 'numeric' })}
+        </div>
         {user.bio && (
           <p style={{ maxWidth: 420, margin: '12px auto 0', color: 'var(--text-muted)', fontSize: 14 }}>{user.bio}</p>
         )}
@@ -184,20 +188,7 @@ function UserProfileInner() {
 
         {!isSelf && existingChatId && (
           <div className="btn-row" style={{ maxWidth: 280, margin: '8px auto 0', flexDirection: 'row', flexWrap: 'wrap' }}>
-            {muteState?.muted ? (
-              <button className="btn" onClick={handleUnmute}>
-                🔔 Включить уведомления
-              </button>
-            ) : (
-              <>
-                <button className="btn" onClick={() => handleMute(1)}>
-                  🔕 На 1 час
-                </button>
-                <button className="btn" onClick={() => handleMute()}>
-                  Навсегда
-                </button>
-              </>
-            )}
+            <MuteControl muteState={muteState} onMute={handleMute} onUnmute={handleUnmute} />
           </div>
         )}
       </div>

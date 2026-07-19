@@ -1,14 +1,21 @@
 import './globals.css';
+import { NotificationListener } from '../components/NotificationListener';
+
+const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH || '';
 
 export const metadata = {
   title: 'PixChats',
   description: 'Мессенджер PixChats',
+  icons: {
+    icon: `${BASE_PATH}/logo/icon.png`,
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="ru">
       <head>
+        <link rel="icon" href={`${BASE_PATH}/logo/icon.png`} />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
         <link
@@ -29,7 +36,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           }}
         />
       </head>
-      <body>{children}</body>
+      <body>
+        {children}
+        <NotificationListener />
+      </body>
     </html>
   );
 }

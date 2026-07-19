@@ -58,6 +58,9 @@ export default function ProfilePage() {
             />
           </h2>
           <div className="username">@{profile.username}</div>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
+            В PixChats с {new Date(profile.created_at).toLocaleDateString('ru-RU', { day: '2-digit', month: 'long', year: 'numeric' })}
+          </div>
         </div>
 
         <div className="btn-row" style={{ maxWidth: 320, margin: '0 auto' }}>

@@ -195,6 +195,14 @@ export async function getCurrentProfile(): Promise<Profile | null> {
 
   const { data, error } = await supabase.from('profiles').select('*').eq('id', userId).maybeSingle();
   if (error) throw error;
+
+  // Раньше last_seen не обновлялся вообще нигде — отсюда баг "показывает первый
+  // вход в сеть". Обновляем при каждом получении своего профиля (по сути, при
+  // каждом открытии страницы) — не блокируя ответ, ошибки намеренно игнорируются.
+  if (data) {
+    supabase.from('profiles').update({ last_seen: new Date().toISOString() }).eq('id', userId).then(() => {});
+  }
+
   return data as Profile | null;
 }
 
