@@ -414,18 +414,32 @@ select.input:focus {
 }
 
 .bubble {
-  max-width: 70%;
+  max-width: 100%;
   padding: 8px 14px;
   border-radius: 14px 14px 14px 4px;
   background: var(--surface-raised);
   color: var(--text);
   font-size: 14.5px;
   line-height: 1.4;
+  display: inline-block;
+  cursor: pointer;
 }
 .bubble-row.mine .bubble {
   background: var(--accent);
   color: #fff;
   border-radius: 14px 14px 4px 14px;
+}
+
+.bubble-time-standalone {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  margin-top: 3px;
+}
+.bubble-row.mine .bubble-time-standalone {
+  text-align: right;
+}
+.bubble-row:not(.mine) .bubble-time-standalone {
+  text-align: left;
 }
 
 .date-divider {
@@ -440,16 +454,7 @@ select.input:focus {
   background: transparent;
 }
 
-.bubble-time {
-  display: inline-block;
-  font-size: 10.5px;
-  color: rgba(255, 255, 255, 0.7);
-  margin-left: 8px;
-  vertical-align: bottom;
-}
-.bubble-row:not(.mine) .bubble-time {
-  color: var(--text-muted);
-}
+/* .bubble-time удалён — заменён на .bubble-time-standalone (отдельный блок под сообщением) */
 
 .chat-composer {
   display: flex;
@@ -504,11 +509,11 @@ select.input:focus {
   padding: 16px;
   border-top: 1px solid var(--border);
 }
+.subscriber-notice.error {
+  color: var(--danger);
+}
 
 /* ---------- message menu & actions ---------- */
-.bubble {
-  cursor: pointer;
-}
 .reply-preview-inline {
   font-size: 12px;
   opacity: 0.75;

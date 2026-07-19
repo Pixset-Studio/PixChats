@@ -27,17 +27,14 @@ interface NameWithBadgesProps {
 }
 
 /**
- * Порядок пометок: [значок роли] [значок сотрудника Pixset] Имя [галочка верификации].
- * Значок роли и "сотрудник" — ВСЕГДА спереди, если применимо; галочка — всегда в конце.
+ * Порядок пометок — все СПРАВА от имени: [значок сотрудника Pixset] [значок роли] [галочка верификации].
  */
 export function NameWithBadges({ name, role, isVerified, isPixsetEmployee }: NameWithBadgesProps) {
   const roleIcon = ROLE_ICON[role];
 
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, verticalAlign: 'middle' }}>
-      {roleIcon && (
-        <img src={roleIcon} alt={ROLE_TITLE[role]} title={ROLE_TITLE[role]} width={15} height={15} />
-      )}
+      <span>{name}</span>
       {isPixsetEmployee && (
         <img
           src={`${BASE_PATH}/badges/employee.png`}
@@ -47,7 +44,9 @@ export function NameWithBadges({ name, role, isVerified, isPixsetEmployee }: Nam
           height={15}
         />
       )}
-      <span>{name}</span>
+      {roleIcon && (
+        <img src={roleIcon} alt={ROLE_TITLE[role]} title={ROLE_TITLE[role]} width={15} height={15} />
+      )}
       {isVerified && <VerifiedBadge size={15} style={{ marginLeft: 0 }} />}
     </span>
   );

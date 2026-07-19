@@ -155,18 +155,6 @@ function ChatInfoInner() {
               {chat.type === 'channel' ? 'Подписчики' : 'Участники'} ({memberCount})
             </Link>
           )}
-          {chat.type !== 'direct' &&
-            (myRole ? (
-              <button className="btn" onClick={handleLeave} style={{ color: 'var(--danger)' }}>
-                {chat.type === 'channel' ? 'Отписаться' : 'Покинуть группу'}
-              </button>
-            ) : (
-              chat.visibility === 'public' && (
-                <button className="btn btn-primary" onClick={handleJoin}>
-                  {chat.type === 'channel' ? 'Подписаться' : 'Вступить'}
-                </button>
-              )
-            ))}
         </div>
       </div>
 

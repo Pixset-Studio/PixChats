@@ -48,6 +48,7 @@
    - `0018_pixset_employee_badge.sql`
    - `0019_direct_chat_dedup.sql`
    - `0020_moderation_and_blocking.sql`
+   - `0021_enforce_blocking.sql`
 3. Включить в Supabase Dashboard → Authentication → Providers:
    - Email (по умолчанию включён)
    - Google (нативно, нужны Client ID/Secret из Google Cloud Console)

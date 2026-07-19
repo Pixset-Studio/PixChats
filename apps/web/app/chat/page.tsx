@@ -22,6 +22,10 @@ import {
   forwardMessage,
   uploadMessageFile,
   getDirectChatPartners,
+  isUserBlockedByMe,
+  joinPublicChat,
+  leaveChat,
+  getMyChatRole,
 } from '@pixchats/core';
 import type { Message, Chat, Profile } from '@pixchats/core';
 
@@ -54,6 +58,8 @@ function ChatWindowInner() {
   const [chat, setChat] = useState<Chat | null>(null);
   const [otherProfile, setOtherProfile] = useState<Profile | null>(null);
   const [otherLastSeen, setOtherLastSeen] = useState('');
+  const [blockedEitherWay, setBlockedEitherWay] = useState(false);
+  const [myRole, setMyRole] = useState<string | null>(null);
   const [memberCount, setMemberCount] = useState(0);
   const [pinnedMessage, setPinnedMessage] = useState<Message | null>(null);
   const [canModerate, setCanModerate] = useState(false); // owner/admin этого чата
@@ -119,6 +125,12 @@ function ChatWindowInner() {
     setIsRecording(false);
   }
 
+  async function handleUnsubscribe() {
+    if (!me) return;
+    await leaveChat(chatId, me.id);
+    router.push('/chats');
+  }
+
   function detectMessageType(file: File): 'image' | 'video' | 'audio' | 'file' {
     if (file.type.startsWith('image/')) return 'image';
     if (file.type.startsWith('video/')) return 'video';
@@ -171,7 +183,13 @@ function ChatWindowInner() {
         if (otherId) {
           const { data: otherRow } = await supabase.from('profiles').select('*').eq('id', otherId).single();
           setOtherProfile(otherRow);
-          if (otherRow) setOtherLastSeen(await resolveLastSeenLabel(otherRow, profile.id));
+          if (otherRow) {
+            const iBlockedThem = await isUserBlockedByMe(profile.id, otherId);
+            const theyBlockedMe = await isUserBlockedByMe(otherId, profile.id);
+            const blocked = iBlockedThem || theyBlockedMe;
+            setBlockedEitherWay(blocked);
+            setOtherLastSeen(blocked ? 'был(а) давно' : await resolveLastSeenLabel(otherRow, profile.id));
+          }
         }
       } else {
         setMemberCount(await getChatMemberCount(chatId));
@@ -183,6 +201,7 @@ function ChatWindowInner() {
         .eq('chat_id', chatId)
         .eq('user_id', profile.id)
         .maybeSingle();
+      setMyRole(memberRow?.member_role ?? null);
       setCanWrite(memberRow?.member_role !== 'subscriber');
       setCanModerate(memberRow?.member_role === 'owner' || memberRow?.member_role === 'admin');
 
@@ -318,12 +337,12 @@ function ChatWindowInner() {
                 height: 40,
                 fontSize: 15,
                 flexShrink: 0,
-                backgroundImage: otherProfile.avatar_url ? `url(${otherProfile.avatar_url})` : undefined,
+                backgroundImage: !blockedEitherWay && otherProfile.avatar_url ? `url(${otherProfile.avatar_url})` : undefined,
                 backgroundSize: 'cover',
                 backgroundPosition: 'center',
               }}
             >
-              {!otherProfile.avatar_url && otherProfile.display_name.slice(0, 1).toUpperCase()}
+              {(blockedEitherWay || !otherProfile.avatar_url) && otherProfile.display_name.slice(0, 1).toUpperCase()}
             </div>
             <div>
               <h2 style={{ fontSize: 15 }}>
@@ -398,16 +417,17 @@ function ChatWindowInner() {
                   messageRefs.current[m.id] = el;
                 }}
               >
-                <div style={{ position: 'relative' }}>
-                  <span
-                    className="bubble"
+                <div style={{ position: 'relative', maxWidth: '70%' }}>
+                  <div
                     onClick={(e) => {
                       e.stopPropagation();
                       if (!m.is_deleted) setOpenMenuId(openMenuId === m.id ? null : m.id);
                     }}
+                    style={{ cursor: 'pointer' }}
                   >
                     {replySource && <div className="reply-preview-inline">↩ {replySource.text}</div>}
                     {m.forwarded_from_chat_id && <div className="forwarded-label">Переслано</div>}
+
                     {m.message_type === 'image' && m.media_path ? (
                       <img
                         src={m.media_path}
@@ -420,15 +440,24 @@ function ChatWindowInner() {
                     ) : (m.message_type === 'audio' || m.message_type === 'voice') && m.media_path ? (
                       <audio src={m.media_path} controls className="media-audio" onClick={(e) => e.stopPropagation()} />
                     ) : m.message_type === 'file' && m.media_path ? (
-                      <a href={m.media_path} target="_blank" rel="noreferrer" className="file-attachment" onClick={(e) => e.stopPropagation()}>
+                      <a
+                        href={m.media_path}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="bubble file-attachment"
+                        onClick={(e) => e.stopPropagation()}
+                      >
                         📎 {m.text}
                       </a>
                     ) : (
-                      <span className="message-text">{m.text}</span>
+                      <span className="bubble message-text">
+                        {m.text}
+                        {m.edited_at && !m.is_deleted && <span className="edited-label"> (изменено)</span>}
+                      </span>
                     )}
-                    {m.edited_at && !m.is_deleted && <span className="edited-label"> (изменено)</span>}
-                    <span className="bubble-time">{formatMessageTime(m.sent_at)}</span>
-                  </span>
+
+                    <div className="bubble-time-standalone">{formatMessageTime(m.sent_at)}</div>
+                  </div>
 
                   {openMenuId === m.id && !m.is_deleted && (
                     <div className={`message-menu ${isMine ? 'mine' : ''}`}>
@@ -459,7 +488,9 @@ function ChatWindowInner() {
         <div ref={bottomRef} />
       </div>
 
-      {canWrite ? (
+      {blockedEitherWay ? (
+        <p className="subscriber-notice error">Вы не можете писать этому пользователю — общение заблокировано</p>
+      ) : canWrite ? (
         <>
           {(replyingTo || editingMessage) && (
             <div className="composer-context">
@@ -541,7 +572,12 @@ function ChatWindowInner() {
           </form>
         </>
       ) : (
-        <p className="subscriber-notice">Вы подписчик канала — писать могут только владелец и администраторы</p>
+        <div className="subscriber-notice" style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'center' }}>
+          <span>Вы подписчик канала — писать могут только владелец и администраторы</span>
+          <button className="btn" style={{ width: 'auto' }} onClick={handleUnsubscribe}>
+            Отписаться
+          </button>
+        </div>
       )}
 
       {forwardTarget && (
