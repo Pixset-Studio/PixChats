@@ -1,10 +1,11 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { createChat } from '@pixchats/core';
+import { createChat, getCurrentProfile } from '@pixchats/core';
 import type { ChatType, ChatVisibility } from '@pixchats/core';
+import { isBanned } from '../../../lib/ban';
 
 export default function NewChatPage() {
   const router = useRouter();
@@ -14,6 +15,19 @@ export default function NewChatPage() {
   const [username, setUsername] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      const profile = await getCurrentProfile();
+      if (!profile) {
+        router.push('/login');
+        return;
+      }
+      if (isBanned(profile)) {
+        router.push('/banned');
+      }
+    })();
+  }, [router]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();

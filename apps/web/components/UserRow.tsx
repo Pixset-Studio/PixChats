@@ -32,6 +32,7 @@ export function UserRow({ profile, lastSeenLabel, action }: UserRowProps) {
             role={profile.role}
             isVerified={profile.is_verified}
             isPixsetEmployee={profile.is_pixset_employee}
+            isFrozen={profile.frozen}
           />{' '}
           <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>(@{profile.username})</span>
         </div>

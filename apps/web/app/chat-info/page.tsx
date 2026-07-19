@@ -12,10 +12,14 @@ import {
   uploadChatAvatar,
   joinPublicChat,
   leaveChat,
+  getMuteStates,
+  muteChat,
+  unmuteChat,
 } from '@pixchats/core';
-import type { Chat, Profile } from '@pixchats/core';
+import type { Chat, Profile, MuteState } from '@pixchats/core';
 import { VerifiedBadge } from '../../components/VerifiedBadge';
 import { buildAppUrl } from '../../lib/url';
+import { isBanned } from '../../lib/ban';
 
 const TYPE_LABEL: Record<Chat['type'], string> = {
   direct: 'Личный чат',
@@ -34,6 +38,7 @@ function ChatInfoInner() {
   const [memberCount, setMemberCount] = useState(0);
   const [canEdit, setCanEdit] = useState(false);
   const [myRole, setMyRole] = useState<string | null>(null);
+  const [muteState, setMuteState] = useState<MuteState | null>(null);
   const [editing, setEditing] = useState(false);
 
   const [title, setTitle] = useState('');
@@ -54,6 +59,10 @@ function ChatInfoInner() {
         router.push('/login');
         return;
       }
+      if (isBanned(profile)) {
+        router.push('/banned');
+        return;
+      }
       setMe(profile);
 
       const supabase = getSupabaseClient();
@@ -67,8 +76,24 @@ function ChatInfoInner() {
       const role = await getMyChatRole(chatId, profile.id);
       setMyRole(role);
       setCanEdit(role === 'owner' || role === 'admin');
+
+      const mutes = await getMuteStates([chatId], profile.id);
+      setMuteState(mutes[chatId] ?? { muted: false, mutedForever: false, mutedUntil: null });
     })();
   }, [chatId, router]);
+
+  async function handleMute(hours?: number) {
+    if (!me) return;
+    await muteChat(me.id, chatId, hours);
+    const mutes = await getMuteStates([chatId], me.id);
+    setMuteState(mutes[chatId] ?? null);
+  }
+
+  async function handleUnmute() {
+    if (!me) return;
+    await unmuteChat(me.id, chatId);
+    setMuteState({ muted: false, mutedForever: false, mutedUntil: null });
+  }
 
   async function handleAvatarChange(e: React.ChangeEvent<HTMLInputElement>) {
     if (!chat || !e.target.files?.[0]) return;
@@ -154,6 +179,23 @@ function ChatInfoInner() {
             <Link href={`/chat-members/?id=${chat.id}`} className="btn">
               {chat.type === 'channel' ? 'Подписчики' : 'Участники'} ({memberCount})
             </Link>
+          )}
+          {muteState?.muted ? (
+            <button className="btn" onClick={handleUnmute}>
+              🔔 Включить уведомления
+            </button>
+          ) : (
+            <>
+              <button className="btn" onClick={() => handleMute(1)}>
+                🔕 На 1 час
+              </button>
+              <button className="btn" onClick={() => handleMute(8)}>
+                На 8 часов
+              </button>
+              <button className="btn" onClick={() => handleMute()}>
+                Навсегда
+              </button>
+            </>
           )}
         </div>
       </div>

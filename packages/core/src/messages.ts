@@ -7,6 +7,8 @@ export interface Message {
   text: string; // декодировано из ciphertext (заглушка Фазы 1 — просто base64(plaintext))
   message_type: string;
   media_path: string | null;
+  caption: string | null;
+  caption_position: 'above' | 'below';
   sent_at: string;
   reply_to_id: string | null;
   edited_at: string | null;
@@ -30,7 +32,7 @@ function decodeText(ciphertext: string): string {
 }
 
 const SELECT_FIELDS =
-  'id, chat_id, sender_id, ciphertext, message_type, media_path, sent_at, reply_to_id, edited_at, is_deleted, forwarded_from_chat_id';
+  'id, chat_id, sender_id, ciphertext, message_type, media_path, caption, caption_position, sent_at, reply_to_id, edited_at, is_deleted, forwarded_from_chat_id';
 
 function mapRow(row: any): Message {
   return {
@@ -40,6 +42,8 @@ function mapRow(row: any): Message {
     text: row.is_deleted ? 'Сообщение удалено' : decodeText(row.ciphertext),
     message_type: row.message_type,
     media_path: row.media_path,
+    caption: row.caption,
+    caption_position: row.caption_position ?? 'below',
     sent_at: row.sent_at,
     reply_to_id: row.reply_to_id,
     edited_at: row.edited_at,
@@ -52,6 +56,8 @@ export interface SendMessageOptions {
   replyToId?: string;
   mediaPath?: string;
   messageType?: string;
+  caption?: string;
+  captionPosition?: 'above' | 'below';
 }
 
 /** Загружает произвольный файл (любого типа) в бакет message-media (папка = chatId), возвращает публичный URL. */
@@ -79,6 +85,8 @@ export async function sendMessage(chatId: string, text: string, options: SendMes
     message_type: options.messageType ?? 'text',
     media_path: options.mediaPath ?? null,
     reply_to_id: options.replyToId ?? null,
+    caption: options.caption ?? null,
+    caption_position: options.captionPosition ?? 'below',
   });
   if (error) throw error;
 }

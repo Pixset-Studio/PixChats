@@ -220,6 +220,14 @@ export async function getChatMembers(chatId: string): Promise<Profile[]> {
   return (profiles ?? []) as Profile[];
 }
 
+/** Найти id уже существующего личного чата с пользователем, не создавая новый. */
+export async function getExistingDirectChatId(userId: string, otherUserId: string): Promise<string | null> {
+  const supabase = getSupabaseClient();
+  const pairKey = [userId, otherUserId].sort().join(':');
+  const { data } = await supabase.from('chats').select('id').eq('direct_pair_key', pairKey).maybeSingle();
+  return data?.id ?? null;
+}
+
 export async function searchPublicChats(query: string): Promise<Chat[]> {
   const supabase = getSupabaseClient();
   const { data, error } = await supabase

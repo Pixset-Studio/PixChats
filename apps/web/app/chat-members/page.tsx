@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { getCurrentProfile, getChatMembers, getSupabaseClient } from '@pixchats/core';
 import type { Chat, Profile } from '@pixchats/core';
 import { UserRow } from '../../components/UserRow';
+import { isBanned } from '../../lib/ban';
 
 function ChatMembersInner() {
   const searchParams = useSearchParams();
@@ -23,6 +24,10 @@ function ChatMembersInner() {
       const profile = await getCurrentProfile();
       if (!profile) {
         router.push('/login');
+        return;
+      }
+      if (isBanned(profile)) {
+        router.push('/banned');
         return;
       }
       const supabase = getSupabaseClient();

@@ -24,12 +24,14 @@ interface NameWithBadgesProps {
   role: UserRole;
   isVerified: boolean;
   isPixsetEmployee?: boolean;
+  isFrozen?: boolean;
 }
 
 /**
- * Порядок пометок — все СПРАВА от имени: [значок сотрудника Pixset] [значок роли] [галочка верификации].
+ * Порядок пометок — все СПРАВА от имени: [значок сотрудника Pixset] [значок роли] [галочка/снежинка].
+ * Если аккаунт заморожен — на месте галочки всегда показывается ❄️, даже если верификации нет.
  */
-export function NameWithBadges({ name, role, isVerified, isPixsetEmployee }: NameWithBadgesProps) {
+export function NameWithBadges({ name, role, isVerified, isPixsetEmployee, isFrozen }: NameWithBadgesProps) {
   const roleIcon = ROLE_ICON[role];
 
   return (
@@ -47,7 +49,11 @@ export function NameWithBadges({ name, role, isVerified, isPixsetEmployee }: Nam
       {roleIcon && (
         <img src={roleIcon} alt={ROLE_TITLE[role]} title={ROLE_TITLE[role]} width={15} height={15} />
       )}
-      {isVerified && <VerifiedBadge size={15} style={{ marginLeft: 0 }} />}
+      {isFrozen ? (
+        <span title="Аккаунт заморожен" style={{ fontSize: 14 }}>❄️</span>
+      ) : (
+        isVerified && <VerifiedBadge size={15} style={{ marginLeft: 0 }} />
+      )}
     </span>
   );
 }

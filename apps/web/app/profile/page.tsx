@@ -7,6 +7,7 @@ import { getCurrentProfile, hasActiveSession, signOut } from '@pixchats/core';
 import type { Profile } from '@pixchats/core';
 import { NameWithBadges } from '../../components/NameBadges';
 import { BottomNav } from '../../components/BottomNav';
+import { isBanned } from '../../lib/ban';
 
 export default function ProfilePage() {
   const router = useRouter();
@@ -22,6 +23,10 @@ export default function ProfilePage() {
       const me = await getCurrentProfile();
       if (!me) {
         router.push('/complete-profile');
+        return;
+      }
+      if (isBanned(me)) {
+        router.push('/banned');
         return;
       }
       setProfile(me);

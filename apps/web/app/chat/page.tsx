@@ -4,6 +4,8 @@ import { useEffect, useRef, useState, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { resolveLastSeenLabel } from '../../lib/lastSeen';
+import { isBanned } from '../../lib/ban';
+import { DesktopShell } from '../../components/DesktopShell';
 import { buildAppUrl } from '../../lib/url';
 import { VerifiedBadge } from '../../components/VerifiedBadge';
 import { NameWithBadges } from '../../components/NameBadges';
@@ -26,6 +28,7 @@ import {
   joinPublicChat,
   leaveChat,
   getMyChatRole,
+  markChatAsRead,
 } from '@pixchats/core';
 import type { Message, Chat, Profile } from '@pixchats/core';
 
@@ -80,6 +83,8 @@ function ChatWindowInner() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [showEmoji, setShowEmoji] = useState(false);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [captionPosition, setCaptionPosition] = useState<'above' | 'below'>('below');
   const [isRecording, setIsRecording] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -141,16 +146,28 @@ function ChatWindowInner() {
   async function handleFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
+    setPendingFile(file);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }
+
+  async function handleSendPendingFile() {
+    if (!pendingFile) return;
     setUploading(true);
     try {
-      const { url, name } = await uploadMessageFile(chatId, file);
-      await sendMessage(chatId, name, { messageType: detectMessageType(file), mediaPath: url });
+      const { url, name } = await uploadMessageFile(chatId, pendingFile);
+      await sendMessage(chatId, name, {
+        messageType: detectMessageType(pendingFile),
+        mediaPath: url,
+        caption: draft.trim() || undefined,
+        captionPosition,
+      });
+      setPendingFile(null);
+      setDraft('');
     } catch (err: any) {
       setNotice(err.message ?? 'Не удалось загрузить файл');
       setTimeout(() => setNotice(null), 2000);
     } finally {
       setUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
     }
   }
 
@@ -165,6 +182,10 @@ function ChatWindowInner() {
       const profile = await getCurrentProfile();
       if (!profile) {
         router.push('/login');
+        return;
+      }
+      if (isBanned(profile)) {
+        router.push('/banned');
         return;
       }
       setMe(profile);
@@ -206,12 +227,20 @@ function ChatWindowInner() {
       setCanModerate(memberRow?.member_role === 'owner' || memberRow?.member_role === 'admin');
 
       setMessages(await getMessages(chatId));
+      await markChatAsRead(profile.id, chatId);
 
-      unsubscribe = subscribeToMessages(
-        chatId,
-        (msg) => setMessages((prev) => (prev.some((m) => m.id === msg.id) ? prev : [...prev, msg])),
-        (msg) => setMessages((prev) => prev.map((m) => (m.id === msg.id ? msg : m)))
-      );
+      // Заморозка = никаких новых сообщений в реальном времени, только то, что уже было
+      // загружено при открытии чата (перечитать историю можно, обновляясь вручную).
+      if (!profile.frozen) {
+        unsubscribe = subscribeToMessages(
+          chatId,
+          (msg) => {
+            setMessages((prev) => (prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]));
+            markChatAsRead(profile.id, chatId);
+          },
+          (msg) => setMessages((prev) => prev.map((m) => (m.id === msg.id ? msg : m)))
+        );
+      }
     })();
 
     return () => unsubscribe?.();
@@ -233,6 +262,12 @@ function ChatWindowInner() {
 
   async function handleSend(e: React.FormEvent) {
     e.preventDefault();
+
+    if (pendingFile) {
+      await handleSendPendingFile();
+      return;
+    }
+
     if (!draft.trim()) return;
     const text = draft.trim();
 
@@ -351,6 +386,7 @@ function ChatWindowInner() {
                   role={otherProfile.role}
                   isVerified={otherProfile.is_verified}
                   isPixsetEmployee={otherProfile.is_pixset_employee}
+                  isFrozen={otherProfile.frozen}
                 />
               </h2>
               <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{otherLastSeen}</div>
@@ -387,6 +423,10 @@ function ChatWindowInner() {
           </Link>
         )}
       </header>
+
+      {me.frozen && (
+        <div className="frozen-banner">❄️ Ваш аккаунт заморожен — доступно только чтение сообщений</div>
+      )}
 
       {pinnedMessage && (
         <div className="pinned-bar">
@@ -428,6 +468,8 @@ function ChatWindowInner() {
                     {replySource && <div className="reply-preview-inline">↩ {replySource.text}</div>}
                     {m.forwarded_from_chat_id && <div className="forwarded-label">Переслано</div>}
 
+                    {m.caption && m.caption_position === 'above' && <div className="media-caption">{m.caption}</div>}
+
                     {m.message_type === 'image' && m.media_path ? (
                       <img
                         src={m.media_path}
@@ -455,6 +497,8 @@ function ChatWindowInner() {
                         {m.edited_at && !m.is_deleted && <span className="edited-label"> (изменено)</span>}
                       </span>
                     )}
+
+                    {m.caption && m.caption_position === 'below' && <div className="media-caption">{m.caption}</div>}
 
                     <div className="bubble-time-standalone">{formatMessageTime(m.sent_at)}</div>
                   </div>
@@ -488,7 +532,11 @@ function ChatWindowInner() {
         <div ref={bottomRef} />
       </div>
 
-      {blockedEitherWay ? (
+      {me.frozen ? (
+        <p className="subscriber-notice error">
+          ❄️ Ваш аккаунт заморожен — вы можете только читать сообщения, отправка недоступна
+        </p>
+      ) : blockedEitherWay ? (
         <p className="subscriber-notice error">Вы не можете писать этому пользователю — общение заблокировано</p>
       ) : canWrite ? (
         <>
@@ -506,6 +554,51 @@ function ChatWindowInner() {
               >
                 ✕
               </button>
+            </div>
+          )}
+          {pendingFile && (
+            <div className="composer-context" style={{ flexWrap: 'wrap', gap: 8 }}>
+              <span>📎 {pendingFile.name} — подпись необязательна</span>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                <span style={{ fontSize: 12 }}>Подпись:</span>
+                <button
+                  type="button"
+                  className="btn"
+                  style={{
+                    width: 'auto',
+                    padding: '4px 10px',
+                    fontSize: 12,
+                    borderColor: captionPosition === 'above' ? 'var(--accent)' : undefined,
+                  }}
+                  onClick={() => setCaptionPosition('above')}
+                >
+                  Сверху
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  style={{
+                    width: 'auto',
+                    padding: '4px 10px',
+                    fontSize: 12,
+                    borderColor: captionPosition === 'below' ? 'var(--accent)' : undefined,
+                  }}
+                  onClick={() => setCaptionPosition('below')}
+                >
+                  Снизу
+                </button>
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  style={{ width: 'auto' }}
+                  onClick={() => {
+                    setPendingFile(null);
+                    setDraft('');
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
             </div>
           )}
           <form onSubmit={handleSend} className="chat-composer">
@@ -531,7 +624,7 @@ function ChatWindowInner() {
                     handleSend(e as any);
                   }
                 }}
-                placeholder="Сообщение… (Shift+Enter — новая строка)"
+                placeholder={pendingFile ? 'Подпись к файлу (необязательно)…' : 'Сообщение… (Shift+Enter — новая строка)'}
                 rows={1}
               />
               {showEmoji && (
@@ -554,7 +647,7 @@ function ChatWindowInner() {
               😊
             </button>
 
-            {draft.trim() || editingMessage ? (
+            {draft.trim() || editingMessage || pendingFile ? (
               <button type="submit" className="btn btn-primary" style={{ width: 'auto', padding: '10px 20px' }}>
                 {editingMessage ? 'Сохранить' : 'Отправить'}
               </button>
@@ -611,8 +704,10 @@ function ChatWindowInner() {
  */
 export default function ChatWindowPage() {
   return (
-    <Suspense fallback={<p style={{ padding: 24, color: 'var(--text-muted)' }}>Загрузка…</p>}>
-      <ChatWindowInner />
-    </Suspense>
+    <DesktopShell>
+      <Suspense fallback={<p style={{ padding: 24, color: 'var(--text-muted)' }}>Загрузка…</p>}>
+        <ChatWindowInner />
+      </Suspense>
+    </DesktopShell>
   );
 }

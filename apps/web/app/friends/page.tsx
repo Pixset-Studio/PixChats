@@ -16,6 +16,7 @@ import type { Profile, FriendWithProfile } from '@pixchats/core';
 import { UserRow } from '../../components/UserRow';
 import { BottomNav } from '../../components/BottomNav';
 import { resolveLastSeenLabel } from '../../lib/lastSeen';
+import { isBanned } from '../../lib/ban';
 
 export default function FriendsPage() {
   const router = useRouter();
@@ -58,6 +59,10 @@ export default function FriendsPage() {
       const profile = await getCurrentProfile();
       if (!profile) {
         router.push('/complete-profile');
+        return;
+      }
+      if (isBanned(profile)) {
+        router.push('/banned');
         return;
       }
       setMe(profile);

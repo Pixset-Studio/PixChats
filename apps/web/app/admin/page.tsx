@@ -24,6 +24,7 @@ import {
 import type { Profile, AdminStatsOverview, SystemStatusRow, ErrorLogRow, UserRole } from '@pixchats/core';
 import { NameWithBadges } from '../../components/NameBadges';
 import { BottomNav } from '../../components/BottomNav';
+import { isBanned } from '../../lib/ban';
 
 export default function AdminPage() {
   const router = useRouter();
@@ -43,6 +44,10 @@ export default function AdminPage() {
       const profile = await getCurrentProfile();
       if (!profile || profile.role === 'user') {
         router.push('/chats');
+        return;
+      }
+      if (isBanned(profile)) {
+        router.push('/banned');
         return;
       }
       setMe(profile);
@@ -264,6 +269,7 @@ export default function AdminPage() {
                 role={user.role}
                 isVerified={user.is_verified}
                 isPixsetEmployee={user.is_pixset_employee}
+                isFrozen={user.frozen}
               />{' '}
               <span style={{ color: 'var(--text-muted)' }}>(@{user.username})</span>
             </div>

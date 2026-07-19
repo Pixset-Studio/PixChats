@@ -3,10 +3,24 @@
 import { useEffect, useState, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { getCurrentProfile, getSupabaseClient, createDirectChat, sendFriendRequest, areFriends, blockUser, unblockUser, isUserBlockedByMe } from '@pixchats/core';
-import type { Profile } from '@pixchats/core';
+import {
+  getCurrentProfile,
+  getSupabaseClient,
+  createDirectChat,
+  sendFriendRequest,
+  areFriends,
+  blockUser,
+  unblockUser,
+  isUserBlockedByMe,
+  getExistingDirectChatId,
+  getMuteStates,
+  muteChat,
+  unmuteChat,
+} from '@pixchats/core';
+import type { Profile, MuteState } from '@pixchats/core';
 import { NameWithBadges } from '../../components/NameBadges';
 import { resolveLastSeenLabel } from '../../lib/lastSeen';
+import { isBanned } from '../../lib/ban';
 
 function UserProfileInner() {
   const searchParams = useSearchParams();
@@ -17,6 +31,8 @@ function UserProfileInner() {
   const [user, setUser] = useState<Profile | null>(null);
   const [isFriend, setIsFriend] = useState(false);
   const [isBlocked, setIsBlocked] = useState(false);
+  const [existingChatId, setExistingChatId] = useState<string | null>(null);
+  const [muteState, setMuteState] = useState<MuteState | null>(null);
   const [lastSeenLabel, setLastSeenLabel] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -32,6 +48,10 @@ function UserProfileInner() {
         router.push('/login');
         return;
       }
+      if (isBanned(profile)) {
+        router.push('/banned');
+        return;
+      }
       setMe(profile);
 
       const supabase = getSupabaseClient();
@@ -42,9 +62,29 @@ function UserProfileInner() {
         setIsFriend(await areFriends(profile.id, userRow.id));
         setLastSeenLabel(await resolveLastSeenLabel(userRow, profile.id));
         setIsBlocked(await isUserBlockedByMe(profile.id, userRow.id));
+
+        const chatId = await getExistingDirectChatId(profile.id, userRow.id);
+        setExistingChatId(chatId);
+        if (chatId) {
+          const mutes = await getMuteStates([chatId], profile.id);
+          setMuteState(mutes[chatId] ?? { muted: false, mutedForever: false, mutedUntil: null });
+        }
       }
     })();
   }, [userId, router]);
+
+  async function handleMute(hours?: number) {
+    if (!me || !existingChatId) return;
+    await muteChat(me.id, existingChatId, hours);
+    const mutes = await getMuteStates([existingChatId], me.id);
+    setMuteState(mutes[existingChatId] ?? null);
+  }
+
+  async function handleUnmute() {
+    if (!me || !existingChatId) return;
+    await unmuteChat(me.id, existingChatId);
+    setMuteState({ muted: false, mutedForever: false, mutedUntil: null });
+  }
 
   async function handleMessage() {
     if (!user) return;
@@ -113,6 +153,7 @@ function UserProfileInner() {
             role={user.role}
             isVerified={user.is_verified}
             isPixsetEmployee={user.is_pixset_employee}
+            isFrozen={user.frozen}
           />
         </h2>
         <div className="username">
@@ -138,6 +179,25 @@ function UserProfileInner() {
             <button className="btn" onClick={handleToggleBlock} style={{ color: isBlocked ? undefined : 'var(--danger)' }}>
               {isBlocked ? 'Разблокировать' : 'Заблокировать'}
             </button>
+          </div>
+        )}
+
+        {!isSelf && existingChatId && (
+          <div className="btn-row" style={{ maxWidth: 280, margin: '8px auto 0', flexDirection: 'row', flexWrap: 'wrap' }}>
+            {muteState?.muted ? (
+              <button className="btn" onClick={handleUnmute}>
+                🔔 Включить уведомления
+              </button>
+            ) : (
+              <>
+                <button className="btn" onClick={() => handleMute(1)}>
+                  🔕 На 1 час
+                </button>
+                <button className="btn" onClick={() => handleMute()}>
+                  Навсегда
+                </button>
+              </>
+            )}
           </div>
         )}
       </div>
