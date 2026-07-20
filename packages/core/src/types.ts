@@ -16,6 +16,7 @@ export interface Profile {
   theme: 'dark' | 'light';
   privacy_who_can_message: 'everyone' | 'friends_only' | 'nobody';
   privacy_show_last_seen: 'everyone' | 'friends_only' | 'nobody';
+  privacy_who_can_add_to_groups: 'everyone' | 'friends_only' | 'nobody';
   banned_until: string | null;
   banned_permanently: boolean;
   frozen: boolean;

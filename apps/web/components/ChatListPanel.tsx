@@ -219,13 +219,18 @@ export function ChatListPanel() {
 
   return (
     <div>
-      <input
-        className="input"
-        style={{ marginBottom: 12 }}
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        placeholder="Поиск: @юзернейм или имя/название…"
-      />
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+        <input
+          className="input"
+          style={{ flex: 1 }}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Поиск: @юзернейм или имя/название…"
+        />
+        <Link href="/chats/new" className="btn btn-primary" style={{ width: 'auto', padding: '0 16px' }}>
+          + Создать
+        </Link>
+      </div>
 
       {!isSearchMode && (
         <div className="folder-tabs">

@@ -208,6 +208,46 @@ export async function leaveChat(chatId: string, userId: string): Promise<void> {
   if (error) throw error;
 }
 
+/** Полное удаление группы/канала (только владелец). Сообщения и участники уходят каскадом. */
+export async function deleteChat(chatId: string): Promise<void> {
+  const supabase = getSupabaseClient();
+  const { error } = await supabase.from('chats').delete().eq('id', chatId);
+  if (error) throw error;
+}
+
+/**
+ * Добавить пользователя в группу/канал напрямую (owner/admin чата).
+ * Учитывает приватность добавляемого (privacy_who_can_add_to_groups):
+ * 'nobody' — отказ, 'friends_only' — только если добавляющий у него в друзьях.
+ */
+export async function addMemberToChat(chatId: string, targetUserId: string, actingUserId: string, chatType: string): Promise<void> {
+  const supabase = getSupabaseClient();
+
+  const { data: targetProfile, error: profileError } = await supabase
+    .from('profiles')
+    .select('privacy_who_can_add_to_groups')
+    .eq('id', targetUserId)
+    .single();
+  if (profileError) throw profileError;
+
+  if (targetProfile.privacy_who_can_add_to_groups === 'nobody') {
+    throw new Error('Этот пользователь запретил добавлять себя в группы/каналы');
+  }
+  if (targetProfile.privacy_who_can_add_to_groups === 'friends_only') {
+    const { data: friendCheck } = await supabase.rpc('are_friends', { p_user_a: actingUserId, p_user_b: targetUserId });
+    if (!friendCheck) {
+      throw new Error('Этот пользователь принимает добавление в группы только от друзей');
+    }
+  }
+
+  const { error } = await supabase.from('chat_members').insert({
+    chat_id: chatId,
+    user_id: targetUserId,
+    member_role: chatType === 'channel' ? 'subscriber' : 'member',
+  });
+  if (error) throw error;
+}
+
 /** Список участников/подписчиков чата — для отображения списком (кликабельно на профиль). */
 export async function getChatMembers(chatId: string): Promise<Profile[]> {
   const supabase = getSupabaseClient();

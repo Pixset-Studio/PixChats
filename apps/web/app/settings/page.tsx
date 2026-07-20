@@ -26,6 +26,7 @@ export default function SettingsPage() {
   const [theme, setThemeState] = useState<'dark' | 'light'>('dark');
   const [whoCanMessage, setWhoCanMessage] = useState<'everyone' | 'friends_only' | 'nobody'>('everyone');
   const [showLastSeen, setShowLastSeen] = useState<'everyone' | 'friends_only' | 'nobody'>('everyone');
+  const [whoCanAdd, setWhoCanAdd] = useState<'everyone' | 'friends_only' | 'nobody'>('everyone');
 
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -54,6 +55,7 @@ export default function SettingsPage() {
       setThemeState(me.theme);
       setWhoCanMessage(me.privacy_who_can_message);
       setShowLastSeen(me.privacy_show_last_seen);
+      setWhoCanAdd(me.privacy_who_can_add_to_groups);
     })();
   }, [router]);
 
@@ -97,6 +99,7 @@ export default function SettingsPage() {
       await updatePrivacySettings(profile.id, {
         privacy_who_can_message: whoCanMessage,
         privacy_show_last_seen: showLastSeen,
+        privacy_who_can_add_to_groups: whoCanAdd,
       });
       setNotice('Настройки приватности сохранены');
     } catch (err: any) {
@@ -228,6 +231,19 @@ export default function SettingsPage() {
             <option value="everyone">Всем</option>
             <option value="friends_only">Друзьям</option>
             <option value="nobody">Некому</option>
+          </select>
+        </div>
+
+        <div className="field">
+          <label>Кто может добавлять меня в группы и каналы</label>
+          <select
+            className="input"
+            value={whoCanAdd}
+            onChange={(e) => setWhoCanAdd(e.target.value as any)}
+          >
+            <option value="everyone">Все</option>
+            <option value="friends_only">Только друзья</option>
+            <option value="nobody">Никто</option>
           </select>
         </div>
 

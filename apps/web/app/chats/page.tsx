@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import Link from 'next/link';
 import { getCurrentProfile, hasActiveSession, ensureKeyBundle } from '@pixchats/core';
 import type { Profile } from '@pixchats/core';
 import { BottomNav } from '../../components/BottomNav';
@@ -63,9 +62,6 @@ export default function ChatsPage() {
           <span className="brand" style={{ fontSize: 18 }}>
             PixChats<span className="brand-dot" />
           </span>
-          <Link href="/chats/new" className="btn btn-primary" style={{ width: 'auto', padding: '8px 16px' }}>
-            + Создать
-          </Link>
         </header>
 
         {profile.frozen && (

@@ -15,6 +15,7 @@ import {
   getMuteStates,
   muteChat,
   unmuteChat,
+  deleteChat,
 } from '@pixchats/core';
 import type { Chat, Profile, MuteState } from '@pixchats/core';
 import { VerifiedBadge } from '../../components/VerifiedBadge';
@@ -142,6 +143,14 @@ function ChatInfoInner() {
     router.push('/chats');
   }
 
+  async function handleDeleteChat() {
+    if (!chat) return;
+    const label = chat.type === 'channel' ? 'канал' : 'группу';
+    if (!confirm(`Удалить ${label} "${chat.title}" безвозвратно вместе со всеми сообщениями? Это действие нельзя отменить.`)) return;
+    await deleteChat(chat.id);
+    router.push('/chats');
+  }
+
   if (!chat || !me) return <p style={{ padding: 24, color: 'var(--text-muted)' }}>Загрузка…</p>;
 
   return (
@@ -182,6 +191,11 @@ function ChatInfoInner() {
             </Link>
           )}
           <MuteControl muteState={muteState} onMute={handleMute} onUnmute={handleUnmute} />
+          {myRole === 'owner' && (
+            <button className="btn" style={{ color: 'var(--danger)' }} onClick={handleDeleteChat}>
+              🗑 Удалить {chat.type === 'channel' ? 'канал' : 'группу'}
+            </button>
+          )}
         </div>
       </div>
 

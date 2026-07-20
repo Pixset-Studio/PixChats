@@ -75,6 +75,7 @@ export async function setTheme(userId: string, theme: 'dark' | 'light'): Promise
 export interface PrivacySettings {
   privacy_who_can_message: 'everyone' | 'friends_only' | 'nobody';
   privacy_show_last_seen: 'everyone' | 'friends_only' | 'nobody';
+  privacy_who_can_add_to_groups: 'everyone' | 'friends_only' | 'nobody';
 }
 
 export async function updatePrivacySettings(userId: string, settings: PrivacySettings): Promise<void> {
