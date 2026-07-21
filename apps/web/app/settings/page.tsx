@@ -10,10 +10,16 @@ import {
   uploadAvatar,
   setTheme as persistTheme,
   updatePrivacySettings,
+  getLinkedIdentities,
+  linkGoogle,
+  linkVK,
+  linkYandex,
+  linkEmailPassword,
 } from '@pixchats/core';
-import type { Profile } from '@pixchats/core';
+import type { Profile, LinkedIdentity } from '@pixchats/core';
 import { BottomNav } from '../../components/BottomNav';
 import { isBanned } from '../../lib/ban';
+import { buildAppUrl } from '../../lib/url';
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -27,6 +33,9 @@ export default function SettingsPage() {
   const [whoCanMessage, setWhoCanMessage] = useState<'everyone' | 'friends_only' | 'nobody'>('everyone');
   const [showLastSeen, setShowLastSeen] = useState<'everyone' | 'friends_only' | 'nobody'>('everyone');
   const [whoCanAdd, setWhoCanAdd] = useState<'everyone' | 'friends_only' | 'nobody'>('everyone');
+  const [linkedProviders, setLinkedProviders] = useState<string[]>([]);
+  const [linkEmail, setLinkEmail] = useState('');
+  const [linkPassword, setLinkPassword] = useState('');
 
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -56,6 +65,11 @@ export default function SettingsPage() {
       setWhoCanMessage(me.privacy_who_can_message);
       setShowLastSeen(me.privacy_show_last_seen);
       setWhoCanAdd(me.privacy_who_can_add_to_groups);
+      try {
+        setLinkedProviders((await getLinkedIdentities()).map((i) => i.provider));
+      } catch {
+        // не критично для остальной страницы
+      }
     })();
   }, [router]);
 
@@ -90,6 +104,32 @@ export default function SettingsPage() {
     if (!profile) return;
     setThemeState(newTheme);
     await persistTheme(profile.id, newTheme);
+  }
+
+  async function handleLinkProvider(provider: 'google' | 'vk' | 'yandex') {
+    setError(null);
+    try {
+      const redirectTo = buildAppUrl('/settings/');
+      if (provider === 'google') await linkGoogle(redirectTo);
+      if (provider === 'vk') await linkVK(redirectTo);
+      if (provider === 'yandex') await linkYandex(redirectTo);
+    } catch (err: any) {
+      setError(err.message ?? 'Не удалось привязать — включите Manual Linking в настройках Supabase Auth');
+    }
+  }
+
+  async function handleLinkEmailPassword(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    try {
+      await linkEmailPassword(linkEmail, linkPassword);
+      setNotice('Email и пароль привязаны — теперь можно входить и так');
+      setLinkedProviders((prev) => [...prev, 'email']);
+      setLinkEmail('');
+      setLinkPassword('');
+    } catch (err: any) {
+      setError(err.message ?? 'Не удалось привязать email/пароль');
+    }
   }
 
   async function handleSavePrivacy() {
@@ -204,6 +244,48 @@ export default function SettingsPage() {
             ☀ Светлая
           </button>
         </div>
+      </div>
+
+      <div className="section-title">Способы входа</div>
+      <div className="card" style={{ marginBottom: 24 }}>
+        <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 0 }}>
+          Привяжите ещё один способ входа — пригодится, если забудете пароль или потеряете доступ к одному из аккаунтов.
+        </p>
+        <div className="btn-row" style={{ flexDirection: 'row', flexWrap: 'wrap', marginBottom: 16 }}>
+          <button className="btn" onClick={() => handleLinkProvider('google')} disabled={linkedProviders.includes('google')}>
+            {linkedProviders.includes('google') ? '✓ Google привязан' : 'Привязать Google'}
+          </button>
+          <button className="btn" onClick={() => handleLinkProvider('vk')} disabled={linkedProviders.includes('vk')}>
+            {linkedProviders.includes('vk') ? '✓ VK привязан' : 'Привязать VK'}
+          </button>
+          <button className="btn" onClick={() => handleLinkProvider('yandex')} disabled={linkedProviders.includes('yandex')}>
+            {linkedProviders.includes('yandex') ? '✓ Яндекс привязан' : 'Привязать Яндекс'}
+          </button>
+        </div>
+
+        {!linkedProviders.includes('email') && (
+          <form onSubmit={handleLinkEmailPassword}>
+            <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>Привязать вход по email и паролю:</p>
+            <div className="field">
+              <label>Email</label>
+              <input className="input" type="email" value={linkEmail} onChange={(e) => setLinkEmail(e.target.value)} required />
+            </div>
+            <div className="field">
+              <label>Пароль</label>
+              <input
+                className="input"
+                type="password"
+                value={linkPassword}
+                onChange={(e) => setLinkPassword(e.target.value)}
+                required
+                minLength={8}
+              />
+            </div>
+            <button type="submit" className="btn" style={{ width: 'auto' }}>
+              Привязать email
+            </button>
+          </form>
+        )}
       </div>
 
       <div className="section-title">Приватность</div>

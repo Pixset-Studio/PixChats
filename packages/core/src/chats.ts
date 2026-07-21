@@ -248,6 +248,13 @@ export async function addMemberToChat(chatId: string, targetUserId: string, acti
   if (error) throw error;
 }
 
+/** Удалить участника/подписчика из чата (владелец/админ). RLS также разрешает self-leave. */
+export async function removeMember(chatId: string, targetUserId: string): Promise<void> {
+  const supabase = getSupabaseClient();
+  const { error } = await supabase.from('chat_members').delete().eq('chat_id', chatId).eq('user_id', targetUserId);
+  if (error) throw error;
+}
+
 /** Список участников/подписчиков чата — для отображения списком (кликабельно на профиль). */
 export async function getChatMembers(chatId: string): Promise<Profile[]> {
   const supabase = getSupabaseClient();

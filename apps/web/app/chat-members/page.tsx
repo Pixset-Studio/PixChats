@@ -10,6 +10,7 @@ import {
   getMyChatRole,
   getFriends,
   addMemberToChat,
+  removeMember,
 } from '@pixchats/core';
 import type { Chat, Profile } from '@pixchats/core';
 import { UserRow } from '../../components/UserRow';
@@ -21,6 +22,7 @@ function ChatMembersInner() {
   const router = useRouter();
   const [me, setMe] = useState<Profile | null>(null);
   const [chat, setChat] = useState<Chat | null>(null);
+  const [chatNotFound, setChatNotFound] = useState(false);
   const [members, setMembers] = useState<Profile[]>([]);
   const [canManage, setCanManage] = useState(false);
   const [friendsToAdd, setFriendsToAdd] = useState<Profile[]>([]);
@@ -55,7 +57,11 @@ function ChatMembersInner() {
       setMe(profile);
 
       const supabase = getSupabaseClient();
-      const { data: chatRow } = await supabase.from('chats').select('*').eq('id', chatId).single();
+      const { data: chatRow } = await supabase.from('chats').select('*').eq('id', chatId).maybeSingle();
+      if (!chatRow) {
+        setChatNotFound(true);
+        return;
+      }
       setChat(chatRow);
 
       const role = await getMyChatRole(chatId, profile.id);
@@ -75,6 +81,32 @@ function ChatMembersInner() {
     } catch (err: any) {
       setError(err.message ?? 'Не удалось добавить');
     }
+  }
+
+  async function handleRemoveMember(targetId: string) {
+    if (!me || !chat) return;
+    if (!confirm('Удалить из чата?')) return;
+    setError(null);
+    try {
+      await removeMember(chatId, targetId);
+      setNotice('Удалён(а) из чата');
+      await reload(me, chat);
+    } catch (err: any) {
+      setError(err.message ?? 'Не удалось удалить');
+    }
+  }
+
+  if (chatNotFound) {
+    return (
+      <main className="page-center">
+        <div className="container-narrow card" style={{ textAlign: 'center' }}>
+          <h2 style={{ fontFamily: 'var(--font-display)' }}>Этот чат не существует</h2>
+          <Link href="/chats" className="btn btn-primary" style={{ marginTop: 12 }}>
+            К списку чатов
+          </Link>
+        </div>
+      </main>
+    );
   }
 
   if (!chat) return <p style={{ padding: 24, color: 'var(--text-muted)' }}>Загрузка…</p>;
@@ -129,7 +161,24 @@ function ChatMembersInner() {
 
       {members.map((m) => (
         <Link key={m.id} href={`/user/?id=${m.id}`} style={{ textDecoration: 'none', color: 'inherit' }}>
-          <UserRow profile={m} />
+          <UserRow
+            profile={m}
+            action={
+              canManage && me && m.id !== me.id ? (
+                <button
+                  className="btn"
+                  style={{ width: 'auto', padding: '6px 12px', color: 'var(--danger)' }}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    handleRemoveMember(m.id);
+                  }}
+                >
+                  Удалить
+                </button>
+              ) : undefined
+            }
+          />
         </Link>
       ))}
     </main>

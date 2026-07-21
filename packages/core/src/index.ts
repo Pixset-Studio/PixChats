@@ -8,3 +8,4 @@ export * from './profile';
 export * from './social';
 export * from './search';
 export * from './notifications';
+export * from './accountLinking';

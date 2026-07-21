@@ -59,6 +59,7 @@ function ChatWindowInner() {
 
   const [me, setMe] = useState<Profile | null>(null);
   const [chat, setChat] = useState<Chat | null>(null);
+  const [chatNotFound, setChatNotFound] = useState(false);
   const [otherProfile, setOtherProfile] = useState<Profile | null>(null);
   const [otherLastSeen, setOtherLastSeen] = useState('');
   const [blockedEitherWay, setBlockedEitherWay] = useState(false);
@@ -68,6 +69,7 @@ function ChatWindowInner() {
   const [canModerate, setCanModerate] = useState(false); // owner/admin этого чата
 
   const [messages, setMessages] = useState<Message[]>([]);
+  const [senderProfiles, setSenderProfiles] = useState<Record<string, Profile>>({});
   const [draft, setDraft] = useState('');
   const [canWrite, setCanWrite] = useState(true);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -189,6 +191,7 @@ function ChatWindowInner() {
     setCanWrite(true);
     setCanModerate(false);
     setMessages([]);
+    setChatNotFound(false);
 
     (async () => {
       const profile = await getCurrentProfile();
@@ -203,7 +206,11 @@ function ChatWindowInner() {
       setMe(profile);
 
       const supabase = getSupabaseClient();
-      const { data: chatRow } = await supabase.from('chats').select('*').eq('id', chatId).single();
+      const { data: chatRow } = await supabase.from('chats').select('*').eq('id', chatId).maybeSingle();
+      if (!chatRow) {
+        setChatNotFound(true);
+        return;
+      }
       setChat(chatRow);
 
       if (chatRow?.pinned_message_id) {
@@ -238,17 +245,43 @@ function ChatWindowInner() {
       setCanWrite(memberRow?.member_role !== 'subscriber');
       setCanModerate(memberRow?.member_role === 'owner' || memberRow?.member_role === 'admin');
 
-      setMessages(await getMessages(chatId));
+      const initialMessages = await getMessages(chatId);
+      setMessages(initialMessages);
       await markChatAsRead(profile.id, chatId);
+
+      if (chatRow.type !== 'direct') {
+        const uniqueSenderIds = Array.from(new Set(initialMessages.map((m) => m.sender_id))).filter((id) => id !== profile.id);
+        if (uniqueSenderIds.length > 0) {
+          const { data: senders } = await supabase.from('profiles').select('*').in('id', uniqueSenderIds);
+          const map: Record<string, Profile> = {};
+          for (const s of senders ?? []) map[s.id] = s as Profile;
+          setSenderProfiles(map);
+        }
+      }
 
       // Заморозка = никаких новых сообщений в реальном времени, только то, что уже было
       // загружено при открытии чата (перечитать историю можно, обновляясь вручную).
       if (!profile.frozen) {
         unsubscribe = subscribeToMessages(
           chatId,
-          (msg) => {
+          async (msg) => {
             setMessages((prev) => (prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]));
             markChatAsRead(profile.id, chatId);
+
+            if (chatRow.type !== 'direct' && msg.sender_id !== profile.id) {
+              setSenderProfiles((prev) => {
+                if (prev[msg.sender_id]) return prev;
+                supabase
+                  .from('profiles')
+                  .select('*')
+                  .eq('id', msg.sender_id)
+                  .maybeSingle()
+                  .then(({ data }) => {
+                    if (data) setSenderProfiles((p) => ({ ...p, [msg.sender_id]: data as Profile }));
+                  });
+                return prev;
+              });
+            }
           },
           (msg) => setMessages((prev) => prev.map((m) => (m.id === msg.id ? msg : m)))
         );
@@ -362,6 +395,20 @@ function ChatWindowInner() {
     setTimeout(() => setNotice(null), 1500);
   }
 
+  if (chatNotFound) {
+    return (
+      <main className="page-center">
+        <div className="container-narrow card" style={{ textAlign: 'center' }}>
+          <h2 style={{ fontFamily: 'var(--font-display)' }}>Этот чат не существует</h2>
+          <p style={{ color: 'var(--text-muted)' }}>Возможно, он был удалён владельцем.</p>
+          <Link href="/chats" className="btn btn-primary" style={{ marginTop: 12 }}>
+            К списку чатов
+          </Link>
+        </div>
+      </main>
+    );
+  }
+
   if (!chat || !me) return <p style={{ padding: 24, color: 'var(--text-muted)' }}>Загрузка…</p>;
 
   const isGroupOrChannel = chat.type !== 'direct';
@@ -461,6 +508,8 @@ function ChatWindowInner() {
           const showDateDivider = !prev || new Date(prev.sent_at).toDateString() !== new Date(m.sent_at).toDateString();
           const isMine = m.sender_id === me.id;
           const replySource = m.reply_to_id ? messages.find((x) => x.id === m.reply_to_id) : null;
+          const sender = isGroupOrChannel && !isMine ? senderProfiles[m.sender_id] : null;
+          const showSenderHeader = sender && (!prev || prev.sender_id !== m.sender_id || showDateDivider);
 
           return (
             <div key={m.id}>
@@ -471,7 +520,31 @@ function ChatWindowInner() {
                   messageRefs.current[m.id] = el;
                 }}
               >
+                {showSenderHeader ? (
+                  <Link href={`/user/?id=${sender!.id}`} className="sender-avatar-link">
+                    <div
+                      className="avatar"
+                      style={{
+                        width: 32,
+                        height: 32,
+                        fontSize: 13,
+                        backgroundImage: sender!.avatar_url ? `url(${sender!.avatar_url})` : undefined,
+                        backgroundSize: 'cover',
+                        backgroundPosition: 'center',
+                      }}
+                    >
+                      {!sender!.avatar_url && sender!.display_name.slice(0, 1).toUpperCase()}
+                    </div>
+                  </Link>
+                ) : (
+                  isGroupOrChannel && !isMine && <div style={{ width: 32, flexShrink: 0 }} />
+                )}
                 <div style={{ position: 'relative', maxWidth: '70%' }}>
+                  {showSenderHeader && (
+                    <Link href={`/user/?id=${sender!.id}`} className="sender-name-link">
+                      {sender!.display_name}
+                    </Link>
+                  )}
                   <div
                     onClick={(e) => {
                       e.stopPropagation();

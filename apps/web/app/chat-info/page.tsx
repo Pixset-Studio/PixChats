@@ -37,6 +37,7 @@ function ChatInfoInner() {
 
   const [me, setMe] = useState<Profile | null>(null);
   const [chat, setChat] = useState<Chat | null>(null);
+  const [chatNotFound, setChatNotFound] = useState(false);
   const [memberCount, setMemberCount] = useState(0);
   const [canEdit, setCanEdit] = useState(false);
   const [myRole, setMyRole] = useState<string | null>(null);
@@ -68,7 +69,11 @@ function ChatInfoInner() {
       setMe(profile);
 
       const supabase = getSupabaseClient();
-      const { data: chatRow } = await supabase.from('chats').select('*').eq('id', chatId).single();
+      const { data: chatRow } = await supabase.from('chats').select('*').eq('id', chatId).maybeSingle();
+      if (!chatRow) {
+        setChatNotFound(true);
+        return;
+      }
       setChat(chatRow);
       setTitle(chatRow?.title ?? '');
       setDescription(chatRow?.description ?? '');
@@ -149,6 +154,20 @@ function ChatInfoInner() {
     if (!confirm(`Удалить ${label} "${chat.title}" безвозвратно вместе со всеми сообщениями? Это действие нельзя отменить.`)) return;
     await deleteChat(chat.id);
     router.push('/chats');
+  }
+
+  if (chatNotFound) {
+    return (
+      <main className="page-center">
+        <div className="container-narrow card" style={{ textAlign: 'center' }}>
+          <h2 style={{ fontFamily: 'var(--font-display)' }}>Этот чат не существует</h2>
+          <p style={{ color: 'var(--text-muted)' }}>Возможно, он был удалён владельцем.</p>
+          <Link href="/chats" className="btn btn-primary" style={{ marginTop: 12 }}>
+            К списку чатов
+          </Link>
+        </div>
+      </main>
+    );
   }
 
   if (!chat || !me) return <p style={{ padding: 24, color: 'var(--text-muted)' }}>Загрузка…</p>;

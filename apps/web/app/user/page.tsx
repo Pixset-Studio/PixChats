@@ -30,6 +30,7 @@ function UserProfileInner() {
 
   const [me, setMe] = useState<Profile | null>(null);
   const [user, setUser] = useState<Profile | null>(null);
+  const [userNotFound, setUserNotFound] = useState(false);
   const [isFriend, setIsFriend] = useState(false);
   const [isBlocked, setIsBlocked] = useState(false);
   const [existingChatId, setExistingChatId] = useState<string | null>(null);
@@ -56,7 +57,11 @@ function UserProfileInner() {
       setMe(profile);
 
       const supabase = getSupabaseClient();
-      const { data: userRow } = await supabase.from('profiles').select('*').eq('id', userId).single();
+      const { data: userRow } = await supabase.from('profiles').select('*').eq('id', userId).maybeSingle();
+      if (!userRow) {
+        setUserNotFound(true);
+        return;
+      }
       setUser(userRow);
 
       if (userRow) {
@@ -125,6 +130,19 @@ function UserProfileInner() {
     } catch (err: any) {
       setError(err.message ?? 'Не удалось изменить блокировку');
     }
+  }
+
+  if (userNotFound) {
+    return (
+      <main className="page-center">
+        <div className="container-narrow card" style={{ textAlign: 'center' }}>
+          <h2 style={{ fontFamily: 'var(--font-display)' }}>Пользователь не найден</h2>
+          <Link href="/chats" className="btn btn-primary" style={{ marginTop: 12 }}>
+            К списку чатов
+          </Link>
+        </div>
+      </main>
+    );
   }
 
   if (!user || !me) return <p style={{ padding: 24, color: 'var(--text-muted)' }}>Загрузка…</p>;
