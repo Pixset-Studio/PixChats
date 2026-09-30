@@ -8,6 +8,9 @@
   ],
   "scripts": {
     "dev:web": "npm run dev --workspace=apps/web",
-    "build:web": "npm run build --workspace=apps/web"
+    "build:web": "npm run build --workspace=apps/web",
+    "dev:desktop": "npm run dev --workspace=apps/desktop",
+    "dist:desktop": "npm run dist --workspace=apps/desktop",
+    "build:mobile-web": "npm run build:web --workspace=apps/mobile && npm run copy:web --workspace=apps/mobile"
   }
 }

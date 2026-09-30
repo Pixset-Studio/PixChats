@@ -1,0 +1,22 @@
+{
+  "name": "@pixchats/mobile",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build:web": "cd ../web && cross-env NEXT_PUBLIC_BASE_PATH= npm run build",
+    "copy:web": "node copy-web-dist.js",
+    "prebuild": "npm run build:web && npm run copy:web",
+    "sync": "npx cap sync android",
+    "android:init": "npx cap add android",
+    "android:open": "npx cap open android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.1.0",
+    "@capacitor/core": "^6.1.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.1.0",
+    "@capacitor/assets": "^3.0.5",
+    "cross-env": "^7.0.3"
+  }
+}

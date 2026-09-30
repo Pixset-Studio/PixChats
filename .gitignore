@@ -3,4 +3,13 @@ node_modules
 .env
 .env.local
 dist
-build
+# "build" игнорируем только на корневом уровне и в web — в apps/desktop/build лежат иконки для сборки, они нужны в репозитории
+/build
+apps/web/build
+
+# Артефакты Phase 5
+apps/web/out
+apps/desktop/web-dist
+apps/desktop/release
+apps/mobile/www
+apps/mobile/android

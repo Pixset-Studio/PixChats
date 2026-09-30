@@ -1,0 +1,66 @@
+name: Build PixChats Mobile (.apk)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/mobile/**'
+      - 'apps/web/**'
+      - 'packages/core/**'
+      - '.github/workflows/build-mobile.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Установка Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install dependencies (весь монорепозиторий)
+        run: npm install
+
+      - name: Собрать веб-версию (без basePath — упаковывается прямо в APK)
+        working-directory: apps/web
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: https://kibhezfpafhitcvpkquu.supabase.co
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtpYmhlemZwYWZoaXRjdnBrcXV1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQxOTI4NjUsImV4cCI6MjA5OTc2ODg2NX0.HO1uskn4k7AWmFNFpFXd2vdgO8BKYz_bb8lpj2znSoI
+          NEXT_PUBLIC_BASE_PATH: ''
+        run: npm run build
+
+      - name: Скопировать веб-сборку в apps/mobile/www
+        working-directory: apps/mobile
+        run: node copy-web-dist.js
+
+      - name: Создать нативный Android-проект (не хранится в репозитории)
+        working-directory: apps/mobile
+        run: npx cap add android
+
+      - name: Сгенерировать иконки и сплэш-экран из логотипа PixChats
+        working-directory: apps/mobile
+        run: npx capacitor-assets generate --android
+
+      - name: Синхронизировать веб-код с нативным проектом
+        working-directory: apps/mobile
+        run: npx cap sync android
+
+      - name: Собрать debug .apk
+        working-directory: apps/mobile/android
+        run: ./gradlew assembleDebug
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PixChats-Android-apk
+          path: apps/mobile/android/app/build/outputs/apk/debug/*.apk
+          retention-days: 30
