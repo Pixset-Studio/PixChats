@@ -11,6 +11,12 @@ import {
 } from '@pixchats/core';
 import type { Message, Chat, Profile } from '@pixchats/core';
 
+export async function generateStaticParams() {
+  // Возвращаем пустой массив для static export
+  // На клиенте параметры будут получены из useParams()
+  return [];
+}
+
 export default function ChatWindowPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
