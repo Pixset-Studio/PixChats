@@ -27,6 +27,11 @@ jobs:
 
       - name: Установка Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # По умолчанию экшен просит ещё и пакет "tools" — Google недавно убрал его
+          # из репозитория SDK, из-за чего sdkmanager падал с exit code 1 ещё до
+          # начала сборки. platform-tools — всё, что реально нужно здесь.
+          packages: 'platform-tools'
 
       - name: Install dependencies (весь монорепозиторий)
         run: npm install
