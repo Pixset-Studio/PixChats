@@ -14,6 +14,10 @@ const nextConfig = {
   // учитывать этот префикс. Задаётся переменной окружения при сборке в CI (см. workflow).
   basePath: process.env.NEXT_PUBLIC_BASE_PATH || '',
   assetPrefix: process.env.NEXT_PUBLIC_BASE_PATH || '',
+  experimental: {
+    // Включаем поддержку динамических маршрутов с пустым generateStaticParams
+    staticGenerationRetryCount: 1,
+  },
 };
 
 module.exports = nextConfig;
