@@ -1,10 +1,51 @@
 {
-  "name": "@pixchats/core",
+  "name": "@pixchats/desktop",
   "version": "0.1.0",
   "private": true,
-  "main": "src/index.ts",
-  "types": "src/index.ts",
-  "dependencies": {
-    "@supabase/supabase-js": "^2.45.0"
+  "description": "PixChats — мессенджер Pixset Studio",
+  "author": "Pixset Studio",
+  "main": "main.js",
+  "scripts": {
+    "build:web": "cd ../web && cross-env NEXT_PUBLIC_BASE_PATH= npm run build",
+    "copy:web": "node copy-web-dist.js",
+    "prebuild": "npm run build:web && npm run copy:web",
+    "dev": "npm run prebuild && electron .",
+    "dist": "npm run prebuild && electron-builder --win --publish never"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3",
+    "electron": "31.0.0",
+    "electron-builder": "^24.13.0"
+  },
+  "build": {
+    "appId": "studio.pixset.pixchats",
+    "productName": "PixChats",
+    "artifactName": "PixChats-Setup-${version}.${ext}",
+    "electronVersion": "31.0.0",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "build/icon-256.png",
+      "web-dist/**/*"
+    ],
+    "protocols": [
+      {
+        "name": "PixChats",
+        "schemes": ["pixchats"]
+      }
+    ],
+    "win": {
+      "target": ["nsis"],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
   }
 }
