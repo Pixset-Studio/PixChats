@@ -20,19 +20,18 @@ jobs:
         with:
           node-version: 20
 
-      - name: Install dependencies (весь монорепозиторий)
-        run: npm install
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install desktop workspace dependencies explicitly
+        run: npm install --workspace=apps/desktop
 
       - name: Собрать Windows-инсталлятор
-        working-directory: apps/desktop
         env:
-          # Те же публичные значения, что и в build-desktop.yml для веб-версии —
-          # см. комментарий в deploy.yml про то, почему их безопасно хранить в коде.
           NEXT_PUBLIC_SUPABASE_URL: https://kibhezfpafhitcvpkquu.supabase.co
-          NEXT_PUBLIC_SUPABASE_ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtpYmhlemZwYWZoaXRjdnBrcXV1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQxOTI4NjUsImV4cCI6MjA5OTc2ODg2NX0.HO1uskn4k7AWmFNFpFXd2vdgO8BKYz_bb8lpj2znSoI
-          # Пусто — desktop-сборка не живёт под /PixChats/, грузится из своего локального сервера
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
           NEXT_PUBLIC_BASE_PATH: ''
-        run: npm run dist
+        run: npm run dist --workspace=apps/desktop
 
       - uses: actions/upload-artifact@v4
         with:
