@@ -8,6 +8,7 @@ import type { Profile } from '@pixchats/core';
 import { NameWithBadges } from '../../components/NameBadges';
 import { BottomNav } from '../../components/BottomNav';
 import { isBanned } from '../../lib/ban';
+import { clearChatListCache } from '../../lib/chatListCache';
 
 export default function ProfilePage() {
   const router = useRouter();
@@ -75,6 +76,7 @@ export default function ProfilePage() {
           <button
             className="btn"
             onClick={async () => {
+              clearChatListCache();
               await signOut();
               router.push('/login');
             }}

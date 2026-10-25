@@ -9,6 +9,7 @@ import { DesktopShell } from '../../components/DesktopShell';
 import { ChatListPanel } from '../../components/ChatListPanel';
 import { useIsDesktop } from '../../lib/useIsDesktop';
 import { isBanned } from '../../lib/ban';
+import { Loading } from '../../components/Loading';
 
 export default function ChatsPage() {
   const router = useRouter();
@@ -42,7 +43,7 @@ export default function ChatsPage() {
     })();
   }, [router]);
 
-  if (loading || !profile) return <p style={{ padding: 24, color: 'var(--text-muted)' }}>Загрузка…</p>;
+  if (loading || !profile) return <Loading />;
 
   // На ПК список чатов уже показан слева в DesktopShell — здесь просто заглушка справа.
   if (isDesktop) {

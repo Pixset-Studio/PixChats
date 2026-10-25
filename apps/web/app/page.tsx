@@ -4,6 +4,8 @@ import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { getCurrentProfile, hasActiveSession } from '@pixchats/core';
 
+const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH || '';
+
 export default function HomePage() {
   const router = useRouter();
 
@@ -21,9 +23,7 @@ export default function HomePage() {
 
   return (
     <main className="page-center">
-      <span className="brand">
-        PixChats<span className="brand-dot" />
-      </span>
+      <img src={`${BASE_PATH}/logo/icon.png`} alt="PixChats" className="splash-logo" />
     </main>
   );
 }

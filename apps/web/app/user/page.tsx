@@ -22,6 +22,7 @@ import { NameWithBadges } from '../../components/NameBadges';
 import { resolveLastSeenLabel } from '../../lib/lastSeen';
 import { isBanned } from '../../lib/ban';
 import { MuteControl } from '../../components/MuteControl';
+import { Loading } from '../../components/Loading';
 
 function UserProfileInner() {
   const searchParams = useSearchParams();
@@ -145,7 +146,7 @@ function UserProfileInner() {
     );
   }
 
-  if (!user || !me) return <p style={{ padding: 24, color: 'var(--text-muted)' }}>Загрузка…</p>;
+  if (!user || !me) return <Loading />;
 
   const isSelf = user.id === me.id;
 
@@ -216,7 +217,7 @@ function UserProfileInner() {
 
 export default function UserProfilePage() {
   return (
-    <Suspense fallback={<p style={{ padding: 24, color: 'var(--text-muted)' }}>Загрузка…</p>}>
+    <Suspense fallback={<Loading />}>
       <UserProfileInner />
     </Suspense>
   );

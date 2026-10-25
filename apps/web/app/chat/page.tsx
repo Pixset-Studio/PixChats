@@ -31,6 +31,7 @@ import {
   markChatAsRead,
 } from '@pixchats/core';
 import type { Message, Chat, Profile } from '@pixchats/core';
+import { Loading } from '../../components/Loading';
 
 function formatMessageTime(iso: string): string {
   return new Date(iso).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
@@ -70,6 +71,7 @@ function ChatWindowInner() {
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [senderProfiles, setSenderProfiles] = useState<Record<string, Profile>>({});
+  const initialIdsRef = useRef<Set<string>>(new Set());
   const [draft, setDraft] = useState('');
   const [canWrite, setCanWrite] = useState(true);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -192,6 +194,7 @@ function ChatWindowInner() {
     setCanModerate(false);
     setMessages([]);
     setChatNotFound(false);
+    initialIdsRef.current = new Set();
 
     (async () => {
       const profile = await getCurrentProfile();
@@ -246,6 +249,7 @@ function ChatWindowInner() {
       setCanModerate(memberRow?.member_role === 'owner' || memberRow?.member_role === 'admin');
 
       const initialMessages = await getMessages(chatId);
+      initialIdsRef.current = new Set(initialMessages.map((m) => m.id));
       setMessages(initialMessages);
       await markChatAsRead(profile.id, chatId);
 
@@ -409,7 +413,7 @@ function ChatWindowInner() {
     );
   }
 
-  if (!chat || !me) return <p style={{ padding: 24, color: 'var(--text-muted)' }}>Загрузка…</p>;
+  if (!chat || !me) return <Loading />;
 
   const isGroupOrChannel = chat.type !== 'direct';
   const canPin = !isGroupOrChannel || myRole === 'owner';
@@ -515,7 +519,7 @@ function ChatWindowInner() {
             <div key={m.id}>
               {showDateDivider && <div className="date-divider">{formatDateDivider(m.sent_at)}</div>}
               <div
-                className={`bubble-row ${isMine ? 'mine' : ''}`}
+                className={`bubble-row ${isMine ? 'mine' : ''} ${initialIdsRef.current.has(m.id) ? '' : 'is-new'}`}
                 ref={(el) => {
                   messageRefs.current[m.id] = el;
                 }}
@@ -746,7 +750,7 @@ function ChatWindowInner() {
             ) : (
               <button
                 type="button"
-                className={`btn ${isRecording ? 'btn-primary' : ''}`}
+                className={`btn ${isRecording ? 'recording' : ''}`}
                 style={{ width: 'auto', padding: '10px 14px' }}
                 onClick={isRecording ? stopRecording : startRecording}
                 disabled={uploading}
@@ -797,7 +801,7 @@ function ChatWindowInner() {
 export default function ChatWindowPage() {
   return (
     <DesktopShell>
-      <Suspense fallback={<p style={{ padding: 24, color: 'var(--text-muted)' }}>Загрузка…</p>}>
+      <Suspense fallback={<Loading />}>
         <ChatWindowInner />
       </Suspense>
     </DesktopShell>

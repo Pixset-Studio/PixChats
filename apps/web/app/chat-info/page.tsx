@@ -22,6 +22,7 @@ import { VerifiedBadge } from '../../components/VerifiedBadge';
 import { buildAppUrl } from '../../lib/url';
 import { isBanned } from '../../lib/ban';
 import { MuteControl } from '../../components/MuteControl';
+import { Loading } from '../../components/Loading';
 
 const TYPE_LABEL: Record<Chat['type'], string> = {
   direct: 'Личный чат',
@@ -170,7 +171,7 @@ function ChatInfoInner() {
     );
   }
 
-  if (!chat || !me) return <p style={{ padding: 24, color: 'var(--text-muted)' }}>Загрузка…</p>;
+  if (!chat || !me) return <Loading />;
 
   return (
     <main className="container-wide">
@@ -284,7 +285,7 @@ function ChatInfoInner() {
 
 export default function ChatInfoPage() {
   return (
-    <Suspense fallback={<p style={{ padding: 24, color: 'var(--text-muted)' }}>Загрузка…</p>}>
+    <Suspense fallback={<Loading />}>
       <ChatInfoInner />
     </Suspense>
   );

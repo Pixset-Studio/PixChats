@@ -62,14 +62,19 @@ export async function uploadAvatar(userId: string, file: File): Promise<string> 
 }
 
 export async function setTheme(userId: string, theme: 'dark' | 'light'): Promise<void> {
+  // Сначала применяем тему визуально (с плавным переходом цветов), потом сохраняем в профиль —
+  // так переключение мгновенное и не зависит от скорости сети.
+  if (typeof window !== 'undefined') {
+    const root = document.documentElement;
+    root.classList.add('theme-transition');
+    localStorage.setItem('pixchats:theme', theme);
+    root.setAttribute('data-theme', theme);
+    window.setTimeout(() => root.classList.remove('theme-transition'), 450);
+  }
+
   const supabase = getSupabaseClient();
   const { error } = await supabase.from('profiles').update({ theme }).eq('id', userId);
   if (error) throw error;
-
-  if (typeof window !== 'undefined') {
-    localStorage.setItem('pixchats:theme', theme);
-    document.documentElement.setAttribute('data-theme', theme);
-  }
 }
 
 export interface PrivacySettings {

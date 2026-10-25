@@ -16,6 +16,8 @@ import {
 import type { Chat, Profile, Message, SearchResult, MuteState } from '@pixchats/core';
 import { NameWithBadges } from './NameBadges';
 import { VerifiedBadge } from './VerifiedBadge';
+import { ChatListSkeleton } from './Loading';
+import { getChatListCache, setChatListCache, clearChatListCache } from '../lib/chatListCache';
 
 const TYPE_LABEL: Record<Chat['type'], string> = {
   direct: 'Личный чат',
@@ -52,14 +54,25 @@ function formatPreviewText(message: Message): string {
 
 export function ChatListPanel() {
   const router = useRouter();
-  const [profile, setProfile] = useState<Profile | null>(null);
-  const [chats, setChats] = useState<Chat[]>([]);
-  const [previews, setPreviews] = useState<Record<string, Message>>({});
-  const [partners, setPartners] = useState<Record<string, Profile>>({});
-  const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
-  const [muteStates, setMuteStates] = useState<Record<string, MuteState>>({});
+  const cache = getChatListCache();
+  const [profile, setProfile] = useState<Profile | null>(cache?.profile ?? null);
+  const [chats, setChats] = useState<Chat[]>(cache?.chats ?? []);
+  const [previews, setPreviews] = useState<Record<string, Message>>(cache?.previews ?? {});
+  const [partners, setPartners] = useState<Record<string, Profile>>(cache?.partners ?? {});
+  const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>(cache?.unreadCounts ?? {});
+  const [muteStates, setMuteStates] = useState<Record<string, MuteState>>(cache?.muteStates ?? {});
   const [folder, setFolder] = useState<Folder>('all');
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!cache);
+  // Каскадное появление строк — только при самой первой загрузке, а не при каждом переходе между чатами
+  const [animateList] = useState(!cache);
+  // Какой чат сейчас открыт (подсветка на ПК-раскладке)
+  const [activeChatId] = useState<string | null>(() =>
+    typeof window !== 'undefined' && window.location.pathname.includes('/chat/')
+      ? new URLSearchParams(window.location.search).get('id')
+      : null
+  );
+  // Чаты, в которые только что пришло сообщение — на секунду подсвечиваем строку
+  const [flashIds, setFlashIds] = useState<Set<string>>(new Set());
 
   const [query, setQuery] = useState('');
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
@@ -80,6 +93,12 @@ export function ChatListPanel() {
 
       setUnreadCounts(await getUnreadCounts(chatIds, me.id));
       setMuteStates(await getMuteStates(chatIds, me.id));
+    } else {
+      setChats([]);
+      setPreviews({});
+      setPartners({});
+      setUnreadCounts({});
+      setMuteStates({});
     }
     setLoading(false);
   }
@@ -88,6 +107,16 @@ export function ChatListPanel() {
     (async () => {
       const me = await getCurrentProfile();
       if (!me) return;
+      // Кэш от другого аккаунта (выход/вход в одной вкладке) — не показываем чужое
+      if (getChatListCache() && getChatListCache()!.profile.id !== me.id) {
+        clearChatListCache();
+        setChats([]);
+        setPreviews({});
+        setPartners({});
+        setUnreadCounts({});
+        setMuteStates({});
+        setLoading(true);
+      }
       setProfile(me);
       await loadChats(me);
     })();
@@ -132,6 +161,15 @@ export function ChatListPanel() {
         }));
 
         if (row.sender_id !== profile.id) {
+          setFlashIds((prev) => new Set(prev).add(row.chat_id));
+          setTimeout(() => {
+            setFlashIds((prev) => {
+              const next = new Set(prev);
+              next.delete(row.chat_id);
+              return next;
+            });
+          }, 1400);
+
           const isCurrentlyOpenChat =
             typeof window !== 'undefined' &&
             window.location.pathname.includes('/chat/') &&
@@ -176,6 +214,13 @@ export function ChatListPanel() {
     };
   }, [profile]);
 
+  // Любые изменения (в т.ч. живые) сразу пишем в кэш — следующий переход между страницами покажет актуальный список мгновенно
+  useEffect(() => {
+    if (profile && !loading) {
+      setChatListCache({ profile, chats, previews, partners, unreadCounts, muteStates });
+    }
+  }, [profile, loading, chats, previews, partners, unreadCounts, muteStates]);
+
   useEffect(() => {
     if (!profile) return;
     if (!query.trim()) {
@@ -206,7 +251,7 @@ export function ChatListPanel() {
     router.push(`/chat/?id=${chat.id}`);
   }
 
-  if (loading || !profile) return <p style={{ padding: 16, color: 'var(--text-muted)' }}>Загрузка…</p>;
+  if (loading || !profile) return <ChatListSkeleton />;
 
   const filtered = chats.filter((c) => folder === 'all' || c.type === folder);
   const sorted = [...filtered].sort((a, b) => {
@@ -322,8 +367,8 @@ export function ChatListPanel() {
       ) : sorted.length === 0 ? (
         <div className="empty-state">Пока пусто в этой папке.</div>
       ) : (
-        <div>
-          {sorted.map((chat) => {
+        <div className={animateList ? 'stagger-list' : undefined}>
+          {sorted.map((chat, index) => {
             const preview = previews[chat.id];
             const partner = chat.type === 'direct' ? partners[chat.id] : null;
             const displayName = partner ? partner.display_name : chat.title ?? TYPE_LABEL[chat.type];
@@ -331,7 +376,12 @@ export function ChatListPanel() {
             const isVerified = partner ? partner.is_verified : chat.is_verified;
 
             return (
-              <Link key={chat.id} href={`/chat/?id=${chat.id}`} className="chat-item-preview">
+              <Link
+                key={chat.id}
+                href={`/chat/?id=${chat.id}`}
+                className={`chat-item-preview${activeChatId === chat.id ? ' active' : ''}${flashIds.has(chat.id) ? ' flash' : ''}`}
+                style={{ '--i': index } as React.CSSProperties}
+              >
                 <div
                   className="avatar"
                   style={{
@@ -351,7 +401,10 @@ export function ChatListPanel() {
                     <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
                       {preview && <span className="chat-item-time">{formatTime(preview.sent_at)}</span>}
                       {unreadCounts[chat.id] > 0 && (
-                        <span className={`unread-badge ${muteStates[chat.id]?.muted ? 'muted' : ''}`}>
+                        <span
+                          key={unreadCounts[chat.id]}
+                          className={`unread-badge ${muteStates[chat.id]?.muted ? 'muted' : ''}`}
+                        >
                           {unreadCounts[chat.id] > 99 ? '99+' : unreadCounts[chat.id]}
                         </span>
                       )}

@@ -15,6 +15,7 @@ import {
 import type { Chat, Profile } from '@pixchats/core';
 import { UserRow } from '../../components/UserRow';
 import { isBanned } from '../../lib/ban';
+import { Loading } from '../../components/Loading';
 
 function ChatMembersInner() {
   const searchParams = useSearchParams();
@@ -109,7 +110,7 @@ function ChatMembersInner() {
     );
   }
 
-  if (!chat) return <p style={{ padding: 24, color: 'var(--text-muted)' }}>Загрузка…</p>;
+  if (!chat) return <Loading />;
 
   return (
     <main className="container-wide">
@@ -187,7 +188,7 @@ function ChatMembersInner() {
 
 export default function ChatMembersPage() {
   return (
-    <Suspense fallback={<p style={{ padding: 24, color: 'var(--text-muted)' }}>Загрузка…</p>}>
+    <Suspense fallback={<Loading />}>
       <ChatMembersInner />
     </Suspense>
   );

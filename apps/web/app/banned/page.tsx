@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { getCurrentProfile, hasActiveSession, signOut } from '@pixchats/core';
 import { isBanned } from '../../lib/ban';
+import { clearChatListCache } from '../../lib/chatListCache';
 
 function formatRemaining(ms: number): string {
   if (ms <= 0) return '0с';
@@ -105,6 +106,7 @@ export default function BannedPage() {
           className="btn"
           style={{ width: 'auto', marginTop: 16 }}
           onClick={async () => {
+            clearChatListCache();
             await signOut();
             router.push('/login');
           }}
