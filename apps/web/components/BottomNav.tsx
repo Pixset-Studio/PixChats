@@ -2,12 +2,13 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { ChatsIcon, FriendsIcon, SettingsIcon, ProfileIcon } from './Icons';
 
 const TABS = [
-  { href: '/chats/', label: 'Чаты', icon: '💬' },
-  { href: '/friends/', label: 'Друзья', icon: '👤' },
-  { href: '/settings/', label: 'Настройки', icon: '⚙' },
-  { href: '/profile/', label: 'Профиль', icon: '◆' },
+  { href: '/chats/', label: 'Чаты', icon: <ChatsIcon size={20} /> },
+  { href: '/friends/', label: 'Друзья', icon: <FriendsIcon size={20} /> },
+  { href: '/settings/', label: 'Настройки', icon: <SettingsIcon size={20} /> },
+  { href: '/profile/', label: 'Профиль', icon: <ProfileIcon size={20} /> },
 ];
 
 export function BottomNav() {

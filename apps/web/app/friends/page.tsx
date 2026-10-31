@@ -18,6 +18,7 @@ import { UserRow } from '../../components/UserRow';
 import { BottomNav } from '../../components/BottomNav';
 import { resolveLastSeenLabel } from '../../lib/lastSeen';
 import { isBanned } from '../../lib/ban';
+import { SearchIcon } from '../../components/Icons';
 
 export default function FriendsPage() {
   const router = useRouter();
@@ -135,13 +136,19 @@ export default function FriendsPage() {
 
         {error && <p className="error">{error}</p>}
 
-        <input
-          className="input"
-          style={{ marginBottom: 16 }}
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Поиск среди друзей…"
-        />
+        <div style={{ position: 'relative', marginBottom: 16 }}>
+          <SearchIcon
+            size={16}
+            style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', pointerEvents: 'none' }}
+          />
+          <input
+            className="input"
+            style={{ width: '100%', paddingLeft: 36 }}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Поиск среди друзей…"
+          />
+        </div>
         <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: -12, marginBottom: 16 }}>
           Чтобы добавить нового друга — найдите человека через поиск на странице «Чаты».
         </p>

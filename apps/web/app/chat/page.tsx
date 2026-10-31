@@ -34,6 +34,22 @@ import {
 } from '@pixchats/core';
 import type { Message, Chat, Profile, ReactionPayload } from '@pixchats/core';
 import { Loading } from '../../components/Loading';
+import { EmojiPicker } from '../../components/EmojiPicker';
+import {
+  BackIcon,
+  PaperclipIcon,
+  SmileIcon,
+  SendIcon,
+  MicIcon,
+  StopIcon,
+  ReplyIcon,
+  CopyIcon,
+  ForwardIcon,
+  PinIcon,
+  TrashIcon,
+  EditIcon,
+  LinkIcon,
+} from '../../components/Icons';
 
 function formatMessageTime(iso: string): string {
   return new Date(iso).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
@@ -83,6 +99,8 @@ function ChatWindowInner() {
   const messageRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const [activeReactionPickerMsgId, setActiveReactionPickerMsgId] = useState<string | null>(null);
+  const [fullEmojiPickerMsgId, setFullEmojiPickerMsgId] = useState<string | null>(null);
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const [editingMessage, setEditingMessage] = useState<Message | null>(null);
   const [forwardTarget, setForwardTarget] = useState<Message | null>(null);
@@ -472,8 +490,12 @@ function ChatWindowInner() {
   return (
     <main className="chat-shell">
       <header className="chat-header">
-        <Link href="/chats/" style={{ color: 'var(--text-muted)', fontSize: 13, textDecoration: 'none' }}>
-          ← Назад
+        <Link
+          href="/chats/"
+          style={{ color: 'var(--text-muted)', fontSize: 13, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+        >
+          <BackIcon size={18} />
+          <span>Назад</span>
         </Link>
 
         {chat.type === 'direct' && otherProfile ? (
@@ -603,6 +625,8 @@ function ChatWindowInner() {
                   <div
                     onClick={(e) => {
                       e.stopPropagation();
+                      setActiveReactionPickerMsgId(null);
+                      setFullEmojiPickerMsgId(null);
                       if (!m.is_deleted) setOpenMenuId(openMenuId === m.id ? null : m.id);
                     }}
                     style={{ cursor: 'pointer' }}
@@ -669,47 +693,91 @@ function ChatWindowInner() {
                     </div>
                   )}
 
+                  {/* Всплывающий выбор реакции (открывается ТОЛЬКО по кнопке реакции) */}
+                  {activeReactionPickerMsgId === m.id && !m.is_deleted && (
+                    <div className={`reaction-picker-popover ${isMine ? 'mine' : ''}`} onClick={(e) => e.stopPropagation()}>
+                      {QUICK_REACTIONS.map((emoji) => {
+                        const hasReacted = me && reactions[m.id]?.[emoji]?.includes(me.id);
+                        return (
+                          <button
+                            key={emoji}
+                            type="button"
+                            className={`reaction-popover-item ${hasReacted ? 'active' : ''}`}
+                            onClick={() => {
+                              handleToggleReaction(m.id, emoji);
+                              setActiveReactionPickerMsgId(null);
+                            }}
+                            title={emoji}
+                          >
+                            {emoji}
+                          </button>
+                        );
+                      })}
+                      <button
+                        type="button"
+                        className="reaction-popover-more"
+                        title="Все эмодзи"
+                        onClick={() => {
+                          setFullEmojiPickerMsgId(m.id);
+                          setActiveReactionPickerMsgId(null);
+                        }}
+                      >
+                        +
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Полный каталог абсолютно всех эмодзи для реакций */}
+                  {fullEmojiPickerMsgId === m.id && !m.is_deleted && (
+                    <div className={`message-full-emoji-popover ${isMine ? 'mine' : ''}`} onClick={(e) => e.stopPropagation()}>
+                      <EmojiPicker
+                        onSelect={(emoji) => {
+                          handleToggleReaction(m.id, emoji);
+                          setFullEmojiPickerMsgId(null);
+                        }}
+                        onClose={() => setFullEmojiPickerMsgId(null)}
+                        title="Все реакции"
+                      />
+                    </div>
+                  )}
+
+                  {/* Меню действий сообщения (открывается ТОЛЬКО по клику на сообщение) */}
                   {openMenuId === m.id && !m.is_deleted && (
                     <div className={`message-menu ${isMine ? 'mine' : ''}`}>
-                      <div className="menu-reactions-picker">
-                        {QUICK_REACTIONS.map((emoji) => {
-                          const hasReacted = me && reactions[m.id]?.[emoji]?.includes(me.id);
-                          return (
-                            <button
-                              key={emoji}
-                              type="button"
-                              className={`menu-reaction-btn ${hasReacted ? 'active' : ''}`}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleToggleReaction(m.id, emoji);
-                              }}
-                              title={emoji}
-                            >
-                              {emoji}
-                            </button>
-                          );
-                        })}
-                      </div>
                       {!isMine && (
-                        <button onClick={() => { setReplyingTo(m); setOpenMenuId(null); }}>Ответить</button>
+                        <button onClick={() => { setReplyingTo(m); setOpenMenuId(null); }}>
+                          <ReplyIcon size={15} /> Ответить
+                        </button>
                       )}
-                      <button onClick={() => handleCopy(m)}>Копировать</button>
-                      <button onClick={() => openForwardModal(m)}>Переслать</button>
+                      <button onClick={() => handleCopy(m)}>
+                        <CopyIcon size={15} /> Копировать
+                      </button>
+                      <button onClick={() => openForwardModal(m)}>
+                        <ForwardIcon size={15} /> Переслать
+                      </button>
                       {canPin &&
                         (pinnedMessage?.id === m.id ? (
-                          <button onClick={handleUnpin}>Открепить</button>
+                          <button onClick={handleUnpin}>
+                            <PinIcon size={15} /> Открепить
+                          </button>
                         ) : (
-                          <button onClick={() => handlePin(m)}>Закрепить</button>
+                          <button onClick={() => handlePin(m)}>
+                            <PinIcon size={15} /> Закрепить
+                          </button>
                         ))}
-                      {isGroupOrChannel && <button onClick={() => handleCopyLink(m)}>Скопировать ссылку</button>}
+                      {isGroupOrChannel && (
+                        <button onClick={() => handleCopyLink(m)}>
+                          <LinkIcon size={15} /> Скопировать ссылку
+                        </button>
+                      )}
                       {isMine && (
                         <button onClick={() => { setEditingMessage(m); setDraft(m.text); setOpenMenuId(null); }}>
-                          Изменить
+                          <EditIcon size={15} /> Изменить
                         </button>
                       )}
                       {(isMine || canModerate) && (
                         <button className="danger" onClick={() => handleDelete(m)}>
-                          🗑 Удалить у всех
+                          <TrashIcon size={15} /> Удалить у всех
                         </button>
                       )}
                     </div>
@@ -723,10 +791,12 @@ function ChatWindowInner() {
                     title="Отреагировать"
                     onClick={(e) => {
                       e.stopPropagation();
-                      setOpenMenuId(openMenuId === m.id ? null : m.id);
+                      setOpenMenuId(null);
+                      setFullEmojiPickerMsgId(null);
+                      setActiveReactionPickerMsgId(activeReactionPickerMsgId === m.id ? null : m.id);
                     }}
                   >
-                    😊
+                    <SmileIcon size={15} />
                   </button>
                 )}
               </div>
@@ -812,8 +882,9 @@ function ChatWindowInner() {
               style={{ width: 'auto', padding: '10px 14px' }}
               onClick={() => fileInputRef.current?.click()}
               disabled={uploading}
+              title="Прикрепить файл"
             >
-              📎
+              <PaperclipIcon size={18} />
             </button>
             <input ref={fileInputRef} type="file" style={{ display: 'none' }} onChange={handleFileSelected} />
 
@@ -832,12 +903,12 @@ function ChatWindowInner() {
                 rows={1}
               />
               {showEmoji && (
-                <div className="emoji-panel">
-                  {EMOJI_LIST.map((emoji) => (
-                    <button key={emoji} type="button" onClick={() => insertEmoji(emoji)}>
-                      {emoji}
-                    </button>
-                  ))}
+                <div className="composer-emoji-popover">
+                  <EmojiPicker
+                    onSelect={(emoji) => insertEmoji(emoji)}
+                    onClose={() => setShowEmoji(false)}
+                    title="Все эмодзи"
+                  />
                 </div>
               )}
             </div>
@@ -847,13 +918,19 @@ function ChatWindowInner() {
               className="btn"
               style={{ width: 'auto', padding: '10px 14px' }}
               onClick={() => setShowEmoji((v) => !v)}
+              title="Выбрать эмодзи"
             >
-              😊
+              <SmileIcon size={18} />
             </button>
 
             {draft.trim() || editingMessage || pendingFile ? (
-              <button type="submit" className="btn btn-primary" style={{ width: 'auto', padding: '10px 20px' }}>
-                {editingMessage ? 'Сохранить' : 'Отправить'}
+              <button
+                type="submit"
+                className="btn btn-primary"
+                style={{ width: 'auto', padding: '10px 18px', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+              >
+                <SendIcon size={16} />
+                <span>{editingMessage ? 'Сохранить' : 'Отправить'}</span>
               </button>
             ) : (
               <button
@@ -862,8 +939,9 @@ function ChatWindowInner() {
                 style={{ width: 'auto', padding: '10px 14px' }}
                 onClick={isRecording ? stopRecording : startRecording}
                 disabled={uploading}
+                title={isRecording ? 'Остановить запись' : 'Голосовое сообщение'}
               >
-                {isRecording ? '⏹' : '🎙'}
+                {isRecording ? <StopIcon size={18} /> : <MicIcon size={18} />}
               </button>
             )}
           </form>

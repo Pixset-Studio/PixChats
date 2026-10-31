@@ -16,6 +16,7 @@ import type { Chat, Profile } from '@pixchats/core';
 import { UserRow } from '../../components/UserRow';
 import { isBanned } from '../../lib/ban';
 import { Loading } from '../../components/Loading';
+import { BackIcon, PlusIcon } from '../../components/Icons';
 
 function ChatMembersInner() {
   const searchParams = useSearchParams();
@@ -130,8 +131,12 @@ function ChatMembersInner() {
 
   return (
     <main className="container-wide">
-      <Link href={`/chat-info/?id=${chatId}`} style={{ color: 'var(--text-muted)', fontSize: 13, textDecoration: 'none' }}>
-        ← Назад к профилю чата
+      <Link
+        href={`/chat-info/?id=${chatId}`}
+        style={{ color: 'var(--text-muted)', fontSize: 13, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+      >
+        <BackIcon size={16} />
+        <span>Назад к профилю чата</span>
       </Link>
       <h1 style={{ fontFamily: 'var(--font-display)', fontSize: 20 }}>
         {chat.type === 'channel' ? 'Подписчики' : 'Участники'} ({members.length})
@@ -143,8 +148,13 @@ function ChatMembersInner() {
       {canManage && (
         <div style={{ marginBottom: 20 }}>
           {!showAddPanel ? (
-            <button className="btn btn-primary" style={{ width: 'auto' }} onClick={() => setShowAddPanel(true)}>
-              + Пригласить друга
+            <button
+              className="btn btn-primary"
+              style={{ width: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+              onClick={() => setShowAddPanel(true)}
+            >
+              <PlusIcon size={16} />
+              <span>Пригласить друга</span>
             </button>
           ) : (
             <div className="card">

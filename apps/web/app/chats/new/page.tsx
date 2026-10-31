@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { createChat, getCurrentProfile } from '@pixchats/core';
 import type { ChatType, ChatVisibility } from '@pixchats/core';
 import { isBanned } from '../../../lib/ban';
+import { BackIcon } from '../../../components/Icons';
 
 export default function NewChatPage() {
   const router = useRouter();
@@ -100,7 +101,10 @@ export default function NewChatPage() {
         </div>
 
         <p className="muted-link">
-          <Link href="/chats/">← Назад к чатам</Link>
+          <Link href="/chats/" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <BackIcon size={16} />
+            <span>Назад к чатам</span>
+          </Link>
         </p>
       </div>
     </main>

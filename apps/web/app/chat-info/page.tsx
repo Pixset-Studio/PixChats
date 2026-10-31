@@ -23,6 +23,7 @@ import { buildAppUrl } from '../../lib/url';
 import { isBanned } from '../../lib/ban';
 import { MuteControl } from '../../components/MuteControl';
 import { Loading } from '../../components/Loading';
+import { BackIcon } from '../../components/Icons';
 
 const TYPE_LABEL: Record<Chat['type'], string> = {
   direct: 'Личный чат',
@@ -175,8 +176,12 @@ function ChatInfoInner() {
 
   return (
     <main className="container-wide">
-      <Link href={`/chat/?id=${chat.id}`} style={{ color: 'var(--text-muted)', fontSize: 13, textDecoration: 'none' }}>
-        ← Назад в чат
+      <Link
+        href={`/chat/?id=${chat.id}`}
+        style={{ color: 'var(--text-muted)', fontSize: 13, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+      >
+        <BackIcon size={16} />
+        <span>Назад в чат</span>
       </Link>
 
       <div className="profile-hero">

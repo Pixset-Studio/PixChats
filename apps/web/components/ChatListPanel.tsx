@@ -18,6 +18,7 @@ import { NameWithBadges } from './NameBadges';
 import { VerifiedBadge } from './VerifiedBadge';
 import { ChatListSkeleton } from './Loading';
 import { getChatListCache, setChatListCache, clearChatListCache } from '../lib/chatListCache';
+import { SearchIcon, PlusIcon, ChatsIcon } from './Icons';
 
 const TYPE_LABEL: Record<Chat['type'], string> = {
   direct: 'Личный чат',
@@ -278,15 +279,26 @@ export function ChatListPanel() {
   return (
     <div>
       <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-        <input
-          className="input"
-          style={{ flex: 1 }}
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Поиск: @юзернейм или имя/название…"
-        />
-        <Link href="/chats/new" className="btn btn-primary" style={{ width: 'auto', padding: '0 16px' }}>
-          + Создать
+        <div style={{ position: 'relative', flex: 1 }}>
+          <SearchIcon
+            size={16}
+            style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', pointerEvents: 'none' }}
+          />
+          <input
+            className="input"
+            style={{ width: '100%', paddingLeft: 36 }}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Поиск по чатам, сообщениям или @username…"
+          />
+        </div>
+        <Link
+          href="/chats/new"
+          className="btn btn-primary"
+          style={{ width: 'auto', padding: '0 16px', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+        >
+          <PlusIcon size={16} />
+          <span>Создать</span>
         </Link>
       </div>
 
@@ -311,8 +323,21 @@ export function ChatListPanel() {
         <div>
           {matchedLocalChats.length > 0 && (
             <div style={{ marginBottom: 16 }}>
-              <div className="section-title" style={{ fontSize: 13, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--accent)', marginBottom: 8 }}>
-                💬 В ваших чатах ({matchedLocalChats.length})
+              <div
+                className="section-title"
+                style={{
+                  fontSize: 13,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.05em',
+                  color: 'var(--accent)',
+                  marginBottom: 8,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                }}
+              >
+                <ChatsIcon size={16} />
+                <span>В ваших чатах ({matchedLocalChats.length})</span>
               </div>
               {matchedLocalChats.map((chat) => {
                 const preview = previews[chat.id];
