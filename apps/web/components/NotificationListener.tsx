@@ -4,6 +4,11 @@ import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { getCurrentProfile, getSupabaseClient, getMuteStates, decryptMessageE2EE } from '@pixchats/core';
 import type { Profile } from '@pixchats/core';
+import { getNotificationPrefs } from '../lib/notificationPrefs';
+import {
+  ensureNotificationPermissionEverywhere,
+  sendNativeOrWebNotification,
+} from '../lib/nativePlatform';
 
 const MEDIA_LABELS: Record<string, string> = {
   image: '📷 Фото',
@@ -53,42 +58,31 @@ function playChime() {
 }
 
 /**
- * Универсальный слушатель push-уведомлений:
- * 1. Новые сообщения и упоминания (@username)
- * 2. Входящие заявки в друзья и принятые заявки
- * 3. Добавление в группы и каналы
- * 4. Изменение статуса профиля и бейджей
- * 5. Интерактивный запрос разрешения на системные Push-уведомления браузера
+ * Универсальный кроссплатформенный слушатель уведомлений (.exe, .apk, Web):
+ * Автоматически запрашивает разрешение на всех платформах без лишних кнопок
+ * и фильтрует события согласно настройкам раздела «Уведомления» в /settings.
  */
 export function NotificationListener() {
   const router = useRouter();
   const [toasts, setToasts] = useState<InAppToast[]>([]);
-  const [permState, setPermState] = useState<NotificationPermission | 'unsupported'>('granted');
-  const [promptDismissed, setPromptDismissed] = useState(false);
   const meRef = useRef<Profile | null>(null);
 
   function pushAlert(title: string, body: string, url?: string, badge?: string) {
-    playChime();
+    const prefs = getNotificationPrefs();
+    if (!prefs.enabled) return;
 
-    // Системное браузерное уведомление (OS Push Notification)
-    if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
-      const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
-      try {
-        const notif = new Notification(title, {
-          body,
-          icon: `${basePath}/logo/icon.png`,
-          badge: `${basePath}/logo/icon.png`,
-        });
-        if (url) {
-          notif.onclick = () => {
-            window.focus();
-            router.push(url);
-          };
-        }
-      } catch {
-        // браузерные ограничения
-      }
+    if (prefs.sound) {
+      playChime();
     }
+
+    // Отправляем нативное уведомление ОС (.exe Windows Toast / .apk Android NotificationManager / Web Push)
+    void sendNativeOrWebNotification({
+      title,
+      body,
+      url,
+      silent: !prefs.sound,
+      onNavigate: (targetUrl) => router.push(targetUrl),
+    });
 
     // Всплывающее уведомление внутри приложения (In-App Toast)
     const toastId = `${Date.now()}-${Math.random()}`;
@@ -98,44 +92,28 @@ export function NotificationListener() {
     }, 5000);
   }
 
-  async function handleRequestPermission() {
-    if (typeof window === 'undefined' || !('Notification' in window)) return;
-    try {
-      const res = await Notification.requestPermission();
-      setPermState(res);
-      if (res === 'granted') {
-        setPromptDismissed(true);
-        pushAlert('🔔 Push-уведомления включены', 'Теперь вы будете получать мгновенные уведомления обо всём!', undefined, '🔔');
-      }
-    } catch {
-      // если браузер блокирует в iframe
-    }
-  }
-
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
-    if (!('Notification' in window)) {
-      setPermState('unsupported');
-    } else {
-      setPermState(Notification.permission);
-      if (Notification.permission === 'default') {
-        // Пробуем запросить сразу и также подписываемся на первый жест пользователя
-        Notification.requestPermission()
-          .then((res) => setPermState(res))
-          .catch(() => {});
+    // Автоматически запрашиваем разрешение на уведомления сразу везде (Android APK, Windows EXE, Web)
+    ensureNotificationPermissionEverywhere();
 
-        const onFirstGesture = () => {
-          if ('Notification' in window && Notification.permission === 'default') {
-            Notification.requestPermission()
-              .then((res) => setPermState(res))
-              .catch(() => {});
-          }
-          window.removeEventListener('click', onFirstGesture);
-        };
-        window.addEventListener('click', onFirstGesture, { once: true });
-      }
+    // Подписка на переход по клику на нативное уведомление в Windows (.exe)
+    let unsubscribeDesktopNav: (() => void) | undefined;
+    if (window.pixchatsDesktop?.onNavigate) {
+      unsubscribeDesktopNav = window.pixchatsDesktop.onNavigate((targetUrl: string) => {
+        if (targetUrl) router.push(targetUrl);
+      });
     }
+
+    // Подписка на переход по клику на нативное уведомление в Android (.apk)
+    const onAndroidNavigate = (e: Event) => {
+      const custom = e as CustomEvent<{ url?: string }>;
+      if (custom.detail?.url) {
+        router.push(custom.detail.url);
+      }
+    };
+    window.addEventListener('pixchats:native_navigate', onAndroidNavigate);
 
     let channel: ReturnType<ReturnType<typeof getSupabaseClient>['channel']> | null = null;
 
@@ -155,6 +133,9 @@ export function NotificationListener() {
             const row = payload.new;
             if (!row || row.sender_id === me.id) return;
 
+            const prefs = getNotificationPrefs();
+            if (!prefs.enabled) return;
+
             try {
               const mutes = await getMuteStates([row.chat_id], me.id);
               if (mutes[row.chat_id]?.muted) return;
@@ -162,30 +143,53 @@ export function NotificationListener() {
               return;
             }
 
-            // Не показывать, если пользователь прямо сейчас смотрит этот чат
+            // Не показывать, если пользователь прямо сейчас смотрит этот чат в активном окне
             if (
+              document.visibilityState === 'visible' &&
               window.location.pathname.includes('/chat') &&
               window.location.search.includes(String(row.chat_id))
             ) {
               return;
             }
 
-            const { data: sender } = await supabase
-              .from('profiles')
-              .select('display_name, username')
-              .eq('id', row.sender_id)
-              .maybeSingle();
+            const [{ data: sender }, { data: chatRow }] = await Promise.all([
+              supabase
+                .from('profiles')
+                .select('display_name, username')
+                .eq('id', row.sender_id)
+                .maybeSingle(),
+              supabase
+                .from('chats')
+                .select('type, title')
+                .eq('id', row.chat_id)
+                .maybeSingle(),
+            ]);
 
             const decrypted = await decryptMessageE2EE(row.chat_id, row.ciphertext);
-            const text = row.message_type !== 'text' && MEDIA_LABELS[row.message_type]
-              ? MEDIA_LABELS[row.message_type]
-              : decrypted;
+            const text =
+              row.message_type !== 'text' && MEDIA_LABELS[row.message_type]
+                ? MEDIA_LABELS[row.message_type]
+                : decrypted;
 
-            // Проверяем, упоминают ли пользователя
-            const isMention = text.includes(`@${me.username}`);
+            const isMention = Boolean(me.username && text.includes(`@${me.username}`));
+            const isDirect = !chatRow || chatRow.type === 'direct';
+
+            // Проверяем настройки разделов уведомлений
+            if (isMention) {
+              if (!prefs.mentions && !(isDirect ? prefs.directMessages : prefs.groupMessages)) {
+                return;
+              }
+            } else if (isDirect) {
+              if (!prefs.directMessages) return;
+            } else {
+              if (!prefs.groupMessages) return;
+            }
+
             const title = isMention
               ? `📣 ${sender?.display_name ?? 'Кто-то'} упомянул вас`
-              : (sender?.display_name ?? 'Новое сообщение');
+              : isDirect
+                ? (sender?.display_name ?? 'Новое сообщение')
+                : `${chatRow?.title ?? 'Группа'}: ${sender?.display_name ?? 'Сообщение'}`;
 
             pushAlert(title, text, `/chat/?id=${row.chat_id}`, '💬');
           }
@@ -197,6 +201,9 @@ export function NotificationListener() {
           async (payload: any) => {
             const row = payload.new;
             if (!row) return;
+
+            const prefs = getNotificationPrefs();
+            if (!prefs.enabled || !prefs.friendRequests) return;
 
             if (row.addressee_id === me.id && row.status === 'pending') {
               const { data: sender } = await supabase
@@ -219,6 +226,9 @@ export function NotificationListener() {
           async (payload: any) => {
             const row = payload.new;
             if (!row) return;
+
+            const prefs = getNotificationPrefs();
+            if (!prefs.enabled || !prefs.friendRequests) return;
 
             if (row.requester_id === me.id && row.status === 'accepted') {
               const { data: friend } = await supabase
@@ -243,13 +253,16 @@ export function NotificationListener() {
             const row = payload.new;
             if (!row || row.user_id !== me.id) return;
 
+            const prefs = getNotificationPrefs();
+            if (!prefs.enabled || !prefs.chatInvites) return;
+
             const { data: chatRow } = await supabase
               .from('chats')
               .select('title, type')
               .eq('id', row.chat_id)
               .maybeSingle();
 
-            if (chatRow) {
+            if (chatRow && chatRow.type !== 'direct') {
               const typeLabel = chatRow.type === 'channel' ? 'канал' : 'группу';
               pushAlert(
                 '👥 Добавление в чат',
@@ -269,7 +282,11 @@ export function NotificationListener() {
             if (!row || row.id !== me.id) return;
 
             const old = meRef.current;
+            meRef.current = row;
             if (!old) return;
+
+            const prefs = getNotificationPrefs();
+            if (!prefs.enabled || !prefs.accountEvents) return;
 
             if (row.role !== old.role) {
               pushAlert('⭐ Новая роль', `Ваша роль изменена на: ${row.role}`, '/profile', '⭐');
@@ -280,20 +297,19 @@ export function NotificationListener() {
             } else if (row.frozen && !old.frozen) {
               pushAlert('❄️ Заморозка', 'Ваш аккаунт был временно заморожен администратором', '/chats', '❄️');
             }
-            meRef.current = row;
           }
         )
         .subscribe();
     })();
 
     return () => {
+      if (unsubscribeDesktopNav) unsubscribeDesktopNav();
+      window.removeEventListener('pixchats:native_navigate', onAndroidNavigate);
       if (channel) getSupabaseClient().removeChannel(channel);
     };
   }, [router]);
 
-  const showPermissionBanner = permState === 'default' && !promptDismissed;
-
-  if (toasts.length === 0 && !showPermissionBanner) return null;
+  if (toasts.length === 0) return null;
 
   return (
     <div
@@ -311,75 +327,6 @@ export function NotificationListener() {
         pointerEvents: 'none',
       }}
     >
-      {showPermissionBanner && (
-        <div
-          style={{
-            pointerEvents: 'auto',
-            background: 'var(--surface-raised)',
-            border: '1.5px solid var(--accent)',
-            boxShadow: '0 8px 28px rgba(0, 0, 0, 0.55)',
-            borderRadius: 10,
-            padding: '12px 14px',
-            color: 'var(--text)',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 10,
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-            <div
-              style={{
-                width: 32,
-                height: 32,
-                borderRadius: 8,
-                background: 'var(--surface)',
-                border: '1px solid var(--border)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontSize: 16,
-                flexShrink: 0,
-              }}
-            >
-              🔔
-            </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--accent)' }}>
-                Включить Push-уведомления
-              </div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2, lineHeight: 1.35 }}>
-                Разрешите доступ к уведомлениям, чтобы получать сообщения и заявки в реальном времени.
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={() => setPromptDismissed(true)}
-              style={{
-                background: 'none',
-                border: 'none',
-                color: 'var(--text-muted)',
-                cursor: 'pointer',
-                padding: 4,
-                fontSize: 14,
-                lineHeight: 1,
-              }}
-              title="Скрыть"
-            >
-              ✕
-            </button>
-          </div>
-          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-            <button
-              type="button"
-              className="btn btn-primary"
-              style={{ width: 'auto', padding: '6px 14px', fontSize: 12 }}
-              onClick={handleRequestPermission}
-            >
-              Разрешить доступ
-            </button>
-          </div>
-        </div>
-      )}
       {toasts.map((toast) => (
         <div
           key={toast.id}

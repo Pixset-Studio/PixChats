@@ -23,6 +23,13 @@ import { isBanned } from '../../lib/ban';
 import { buildAppUrl } from '../../lib/url';
 import { PIXSET_THEMES, applyTheme, getCurrentTheme } from '../../components/ThemeManager';
 import { fileToBase64Image } from '../../lib/imageUtils';
+import {
+  getNotificationPrefs,
+  updateNotificationPref,
+  type NotificationPreferences,
+  DEFAULT_NOTIFICATION_PREFS,
+} from '../../lib/notificationPrefs';
+import { ensureNotificationPermissionEverywhere, requestPermissionNow } from '../../lib/nativePlatform';
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -50,6 +57,7 @@ export default function SettingsPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [avatarUploading, setAvatarUploading] = useState(false);
+  const [notifPrefs, setNotifPrefs] = useState<NotificationPreferences>(DEFAULT_NOTIFICATION_PREFS);
 
   useEffect(() => {
     (async () => {
@@ -82,8 +90,18 @@ export default function SettingsPage() {
         // не критично для остальной страницы
       }
       setPixsetAccount(getSavedPixsetStudioAccount());
+      setNotifPrefs(getNotificationPrefs());
+      ensureNotificationPermissionEverywhere();
     })();
   }, [router]);
+
+  function handleToggleNotifPref(key: keyof NotificationPreferences, value: boolean) {
+    const next = updateNotificationPref(key, value);
+    setNotifPrefs(next);
+    if (value) {
+      void requestPermissionNow();
+    }
+  }
 
   async function handleSaveProfile(e: React.FormEvent) {
     e.preventDefault();
@@ -297,47 +315,95 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      <div className="section-title">Push-уведомления</div>
-      <div className="card" style={{ marginBottom: 24, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
-        <div>
-          <div style={{ fontWeight: 600, fontSize: 14 }}>Системные уведомления браузера</div>
-          <div style={{ fontSize: 12.5, color: 'var(--text-muted)', marginTop: 4 }}>
-            Статус:{' '}
-            <strong style={{ color: 'var(--accent)' }}>
-              {typeof window !== 'undefined' && 'Notification' in window
-                ? Notification.permission === 'granted'
-                  ? '✓ Разрешены'
-                  : Notification.permission === 'denied'
-                    ? '✕ Заблокированы в настройках браузера'
-                    : 'Ожидает подтверждения'
-                : 'Не поддерживается'}
-            </strong>
-          </div>
-        </div>
-        <button
-          type="button"
-          className="btn btn-primary"
-          style={{ width: 'auto' }}
-          onClick={async () => {
-            if (typeof window === 'undefined' || !('Notification' in window)) return;
-            try {
-              const res = await Notification.requestPermission();
-              if (res === 'granted') {
-                setNotice('Push-уведомления успешно включены!');
-                new Notification('PixChats', {
-                  body: 'Системные Push-уведомления активны!',
-                  icon: `${process.env.NEXT_PUBLIC_BASE_PATH || ''}/logo/icon.png`,
-                });
-              } else {
-                setError('Доступ к уведомлениям не предоставлен браузером');
-              }
-            } catch {
-              setError('Не удалось запросить доступ к уведомлениям');
-            }
-          }}
-        >
-          🔔 Запросить доступ к уведомлениям
-        </button>
+      <div className="section-title">Уведомления</div>
+      <div className="card" style={{ marginBottom: 24, display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <p style={{ fontSize: 13, color: 'var(--text-muted)', margin: 0 }}>
+          Настройте, какие именно уведомления вы хотите получать (разрешение запрашивается автоматически на всех устройствах):
+        </p>
+
+        {[
+          {
+            key: 'enabled' as const,
+            title: 'Все уведомления',
+            desc: 'Главный переключатель всех системных и внутриприложенческих уведомлений',
+          },
+          {
+            key: 'directMessages' as const,
+            title: 'Личные сообщения',
+            desc: 'Новые входящие сообщения в личных диалогах',
+          },
+          {
+            key: 'groupMessages' as const,
+            title: 'Группы и каналы',
+            desc: 'Новые сообщения в групповых чатах и каналах',
+          },
+          {
+            key: 'mentions' as const,
+            title: 'Упоминания (@username)',
+            desc: 'Уведомлять, когда вас отмечают через @ даже если уведомления групп выключены',
+          },
+          {
+            key: 'friendRequests' as const,
+            title: 'Заявки в друзья',
+            desc: 'Новые запросы в друзья и уведомления о принятых заявках',
+          },
+          {
+            key: 'chatInvites' as const,
+            title: 'Приглашения в чаты',
+            desc: 'Когда вас добавляют в новую группу или канал',
+          },
+          {
+            key: 'accountEvents' as const,
+            title: 'Статус аккаунта и бейджи',
+            desc: 'Изменение роли, получение галочки верификации или бейджа Pixset Studio',
+          },
+          {
+            key: 'sound' as const,
+            title: 'Звуковой сигнал',
+            desc: 'Проигрывать мелодию при поступлении нового уведомления',
+          },
+        ].map((item) => {
+          const isMaster = item.key === 'enabled';
+          const isDisabled = !isMaster && !notifPrefs.enabled;
+          const checked = Boolean(notifPrefs[item.key]);
+
+          return (
+            <label
+              key={item.key}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 16,
+                padding: '10px 12px',
+                borderRadius: 10,
+                background: isMaster ? 'var(--surface-raised)' : 'var(--bg-secondary)',
+                border: `1px solid ${checked && !isDisabled ? 'var(--border-accent, var(--border))' : 'var(--border)'}`,
+                opacity: isDisabled ? 0.5 : 1,
+                cursor: isDisabled ? 'not-allowed' : 'pointer',
+                transition: 'all 0.15s ease',
+              }}
+            >
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 600, fontSize: 14, color: 'var(--text)' }}>{item.title}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>{item.desc}</div>
+              </div>
+              <input
+                type="checkbox"
+                checked={checked}
+                disabled={isDisabled}
+                onChange={(e) => handleToggleNotifPref(item.key, e.target.checked)}
+                style={{
+                  width: 20,
+                  height: 20,
+                  accentColor: 'var(--accent)',
+                  cursor: isDisabled ? 'not-allowed' : 'pointer',
+                  flexShrink: 0,
+                }}
+              />
+            </label>
+          );
+        })}
       </div>
 
       <div className="section-title">Учётная запись Pixset Studio</div>

@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { detectRuntimePlatform } from '../lib/nativePlatform';
 
 const CURRENT_VERSION = '0.1.0';
 const GITHUB_REPO = 'Pixset-Studio/PixChats';
@@ -39,33 +40,17 @@ export function UpdateNotifier() {
   const [release, setRelease] = useState<GitHubRelease | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [updating, setUpdating] = useState(false);
-  const [platform, setPlatform] = useState<'desktop' | 'mobile' | 'web'>('web');
+  const [platform, setPlatform] = useState<'desktop-exe' | 'android-apk' | 'web'>('web');
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
-    // Определение окружения: ПК (Electron), телефон (Capacitor/Cordova/Android PWA) или Web
-    const ua = navigator.userAgent.toLowerCase();
-    const isDesktopApp =
-      Boolean((window as any).pixchatsDesktop) ||
-      ua.includes('electron') ||
-      window.location.port === '47821';
-    const isMobileApp =
-      Boolean((window as any).Capacitor) ||
-      ua.includes('capacitor') ||
-      ua.includes('pixchats-mobile') ||
-      window.matchMedia('(display-mode: standalone)').matches;
-
-    if (isDesktopApp) {
-      setPlatform('desktop');
-    } else if (isMobileApp) {
-      setPlatform('mobile');
-    } else {
-      setPlatform('web');
-      return; // Автообновления предназначены только для ПК (Electron) и телефона (Android/Capacitor), не для Web
+    const detected = detectRuntimePlatform();
+    setPlatform(detected);
+    if (detected === 'web') {
+      return; // Автообновления предназначены только для нативных приложений ПК (.exe) и Android (.apk)
     }
 
-    // Проверяем обновления в GitHub Releases
     async function checkForUpdates() {
       try {
         const dismissedTag = sessionStorage.getItem('pixchats:dismissed_update');
@@ -83,12 +68,11 @@ export function UpdateNotifier() {
           setRelease(data);
           setShowModal(true);
         }
-      } catch (err) {
+      } catch {
         // Оффлайн или лимит GitHub API — тихо игнорируем
       }
     }
 
-    // Первая проверка при запуске, затем каждые 30 минут
     checkForUpdates();
     const interval = setInterval(checkForUpdates, 30 * 60 * 1000);
     return () => clearInterval(interval);
@@ -105,24 +89,49 @@ export function UpdateNotifier() {
     setShowModal(false);
   }
 
-  function handleInstallUpdate() {
+  async function handleInstallUpdate() {
     if (!release) return;
     setUpdating(true);
 
-    // Подбираем инсталлятор под платформу пользователя
     let targetAsset: ReleaseAsset | undefined;
 
-    if (platform === 'desktop') {
-      // Ищем .exe инсталлятор для Windows
+    if (platform === 'desktop-exe') {
       targetAsset = release.assets.find((a) => a.name.toLowerCase().endsWith('.exe'));
-    } else if (platform === 'mobile') {
-      // Ищем .apk для Android
+    } else if (platform === 'android-apk') {
       targetAsset = release.assets.find((a) => a.name.toLowerCase().endsWith('.apk'));
     }
 
     const downloadUrl = targetAsset ? targetAsset.browser_download_url : release.html_url;
 
-    // Запускаем загрузку/обновление
+    // 1. Нативное обновление Windows (.exe): скачивание в %TEMP% и запуск инсталлятора
+    if (platform === 'desktop-exe' && window.pixchatsDesktop?.installUpdate && targetAsset) {
+      try {
+        const ok = await window.pixchatsDesktop.installUpdate(downloadUrl, targetAsset.name);
+        if (ok) {
+          setUpdating(false);
+          setShowModal(false);
+          return;
+        }
+      } catch {
+        // fallback ниже
+      }
+    }
+
+    // 2. Нативное обновление Android (.apk): через Kotlin DownloadManager + Intent.ACTION_VIEW
+    if (platform === 'android-apk' && window.PixChatsAndroid?.downloadAndInstallApk && targetAsset) {
+      try {
+        window.PixChatsAndroid.downloadAndInstallApk(downloadUrl);
+        setTimeout(() => {
+          setUpdating(false);
+          setShowModal(false);
+        }, 1500);
+        return;
+      } catch {
+        // fallback ниже
+      }
+    }
+
+    // 3. Fallback: прямая загрузка
     const a = document.createElement('a');
     a.href = downloadUrl;
     a.download = targetAsset ? targetAsset.name : 'PixChats-Update';
@@ -169,7 +178,7 @@ export function UpdateNotifier() {
             onClick={handleInstallUpdate}
             disabled={updating}
           >
-            {updating ? 'Загрузка обновления…' : 'Установить обновление'}
+            {updating ? 'Установка обновления…' : 'Установить обновление'}
           </button>
           <button
             type="button"

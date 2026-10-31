@@ -28,6 +28,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "native-win/**/*",
       "web-dist/**/*"
     ],
     "protocols": [
