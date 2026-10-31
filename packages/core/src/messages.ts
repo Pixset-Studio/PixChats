@@ -178,11 +178,109 @@ export async function getLastMessagesForChats(chatIds: string[]): Promise<Record
   return result;
 }
 
-/** Подписка на новые/изменённые сообщения в чате через Supabase Realtime. Возвращает функцию отписки. */
+export interface ReactionPayload {
+  messageId: string;
+  emoji: string;
+  userId: string;
+  action: 'add' | 'remove';
+}
+
+function getStoredReactions(chatId: string): Record<string, Record<string, string[]>> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = localStorage.getItem(`pixchats:reactions:${chatId}`);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveStoredReactions(chatId: string, reactions: Record<string, Record<string, string[]>>) {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(`pixchats:reactions:${chatId}`, JSON.stringify(reactions));
+  } catch {}
+}
+
+/** Получить реакции для сообщений в чате */
+export async function getChatReactions(chatId: string, messageIds: string[]): Promise<Record<string, Record<string, string[]>>> {
+  const result: Record<string, Record<string, string[]>> = getStoredReactions(chatId);
+  if (messageIds.length === 0) return result;
+
+  try {
+    const supabase = getSupabaseClient();
+    const { data } = await supabase
+      .from('message_reactions')
+      .select('message_id, emoji, user_id')
+      .in('message_id', messageIds);
+
+    if (data && data.length > 0) {
+      for (const row of data) {
+        if (!result[row.message_id]) result[row.message_id] = {};
+        if (!result[row.message_id][row.emoji]) result[row.message_id][row.emoji] = [];
+        if (!result[row.message_id][row.emoji].includes(row.user_id)) {
+          result[row.message_id][row.emoji].push(row.user_id);
+        }
+      }
+      saveStoredReactions(chatId, result);
+    }
+  } catch {
+    // broadcast + local fallback
+  }
+
+  return result;
+}
+
+/** Переключить реакцию (поставить или снять) с мгновенной рассылкой в Realtime */
+export async function toggleMessageReaction(
+  chatId: string,
+  messageId: string,
+  emoji: string,
+  userId: string
+): Promise<ReactionPayload> {
+  const current = getStoredReactions(chatId);
+  const msgReactions = current[messageId] ?? {};
+  const userList = msgReactions[emoji] ?? [];
+  const hasReacted = userList.includes(userId);
+  const action: 'add' | 'remove' = hasReacted ? 'remove' : 'add';
+
+  if (action === 'add') {
+    msgReactions[emoji] = [...userList, userId];
+  } else {
+    msgReactions[emoji] = userList.filter((id) => id !== userId);
+    if (msgReactions[emoji].length === 0) delete msgReactions[emoji];
+  }
+  current[messageId] = msgReactions;
+  saveStoredReactions(chatId, current);
+
+  // Broadcast через Supabase Realtime канал чата
+  try {
+    const supabase = getSupabaseClient();
+    const channel = supabase.channel(`messages:${chatId}`);
+    channel.send({
+      type: 'broadcast',
+      event: 'reaction',
+      payload: { messageId, emoji, userId, action },
+    });
+
+    if (action === 'add') {
+      supabase.from('message_reactions').insert({ message_id: messageId, emoji, user_id: userId }).then(() => {});
+    } else {
+      supabase.from('message_reactions').delete().eq('message_id', messageId).eq('emoji', emoji).eq('user_id', userId).then(() => {});
+    }
+  } catch {
+    // fallback
+  }
+
+  return { messageId, emoji, userId, action };
+}
+
+/** Подписка на новые/изменённые сообщения и реакции в чате через Supabase Realtime. */
 export function subscribeToMessages(
   chatId: string,
   onInsert: (message: Message) => void,
-  onUpdate?: (message: Message) => void
+  onUpdate?: (message: Message) => void,
+  onReaction?: (reaction: ReactionPayload) => void
 ): () => void {
   const supabase = getSupabaseClient();
   const channel = supabase
@@ -197,6 +295,9 @@ export function subscribeToMessages(
       { event: 'UPDATE', schema: 'public', table: 'messages', filter: `chat_id=eq.${chatId}` },
       (payload) => onUpdate?.(mapRow(payload.new))
     )
+    .on('broadcast', { event: 'reaction' }, (payload) => {
+      if (payload.payload) onReaction?.(payload.payload as ReactionPayload);
+    })
     .subscribe();
 
   return () => {

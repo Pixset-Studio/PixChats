@@ -23,16 +23,21 @@ jobs:
       - name: Install dependencies (весь монорепозиторий)
         run: npm install
 
-      - name: Собрать Windows-инсталлятор
-        working-directory: apps/desktop
+      - name: Собрать веб-версию (без basePath для десктопа)
+        working-directory: apps/web
         env:
-          # Те же публичные значения, что и в build-desktop.yml для веб-версии —
-          # см. комментарий в deploy.yml про то, почему их безопасно хранить в коде.
-          NEXT_PUBLIC_SUPABASE_URL: https://kibhezfpafhitcvpkquu.supabase.co
-          NEXT_PUBLIC_SUPABASE_ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtpYmhlemZwYWZoaXRjdnBrcXV1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQxOTI4NjUsImV4cCI6MjA5OTc2ODg2NX0.HO1uskn4k7AWmFNFpFXd2vdgO8BKYz_bb8lpj2znSoI
-          # Пусто — desktop-сборка не живёт под /PixChats/, грузится из своего локального сервера
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL || 'https://kibhezfpafhitcvpkquu.supabase.co' }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtpYmhlemZwYWZoaXRjdnBrcXV1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQxOTI4NjUsImV4cCI6MjA5OTc2ODg2NX0.HO1uskn4k7AWmFNFpFXd2vdgO8BKYz_bb8lpj2znSoI' }}
           NEXT_PUBLIC_BASE_PATH: ''
-        run: npm run dist
+        run: npm run build
+
+      - name: Скопировать веб-сборку в apps/desktop/web-dist
+        working-directory: apps/desktop
+        run: node copy-web-dist.js
+
+      - name: Собрать Windows-инсталлятор (.exe)
+        working-directory: apps/desktop
+        run: npx electron-builder --win --publish never
 
       - uses: actions/upload-artifact@v4
         with:

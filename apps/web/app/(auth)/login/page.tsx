@@ -6,22 +6,25 @@ import Link from 'next/link';
 import {
   signInWithEmail,
   signInWithGoogle,
-  signInWithVK,
-  signInWithYandex,
   requestLoginCode,
   verifyLoginCode,
+  signInWithPixsetStudioAccount,
 } from '@pixchats/core';
 import { buildAppUrl } from '../../../lib/url';
 import { isRussianVisitor } from '../../../lib/geo';
 
 export default function LoginPage() {
   const router = useRouter();
-  const [mode, setMode] = useState<'password' | 'code'>('password');
+  const [mode, setMode] = useState<'password' | 'code' | 'pixset'>('password');
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
   const [codeSent, setCodeSent] = useState(false);
+
+  // Pixset Studio Login State
+  const [pixsetLogin, setPixsetLogin] = useState('');
+  const [pixsetPassword, setPixsetPassword] = useState('');
 
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -75,42 +78,67 @@ export default function LoginPage() {
     }
   }
 
+  async function handlePixsetSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setLoading(true);
+    try {
+      await signInWithPixsetStudioAccount(pixsetLogin, pixsetPassword);
+      router.push('/chats');
+    } catch (err: any) {
+      setError(err.message ?? 'Не удалось войти через учётную запись Pixset Studio');
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <main className="page-center">
       <div className="container-narrow">
         <div style={{ textAlign: 'center', marginBottom: 24 }}>
-          <span className="brand">
-            PixChats<span className="brand-dot" />
+          <span className="brand" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            <img src={`${process.env.NEXT_PUBLIC_BASE_PATH || ''}/logo/icon.png`} alt="" width={26} height={26} />
+            PixChats
           </span>
         </div>
 
         <div className="card">
-          <h1 style={{ fontFamily: 'var(--font-display)', fontSize: 20, marginTop: 0 }}>Вход</h1>
+          <h1 style={{ fontFamily: 'var(--font-display)', fontSize: 20, marginTop: 0 }}>
+            {mode === 'pixset' ? 'Вход через Pixset Studio' : 'Вход'}
+          </h1>
 
-          <div className="btn-row" style={{ flexDirection: 'row', marginBottom: 16 }}>
-            <button
-              className="btn"
-              style={{ borderColor: mode === 'password' ? 'var(--accent)' : undefined }}
-              onClick={() => {
-                setMode('password');
-                setError(null);
-                setNotice(null);
-              }}
-            >
-              Пароль
-            </button>
-            <button
-              className="btn"
-              style={{ borderColor: mode === 'code' ? 'var(--accent)' : undefined }}
-              onClick={() => {
-                setMode('code');
-                setError(null);
-                setNotice(null);
-              }}
-            >
-              Код с почты
-            </button>
-          </div>
+          {mode !== 'pixset' && (
+            <div className="btn-row" style={{ flexDirection: 'row', marginBottom: 16 }}>
+              <button
+                className="btn"
+                style={{
+                  borderColor: mode === 'password' ? 'var(--accent)' : undefined,
+                  color: mode === 'password' ? 'var(--accent)' : undefined,
+                }}
+                onClick={() => {
+                  setMode('password');
+                  setError(null);
+                  setNotice(null);
+                }}
+              >
+                Пароль
+              </button>
+              <button
+                className="btn"
+                style={{
+                  borderColor: mode === 'code' ? 'var(--accent)' : undefined,
+                  color: mode === 'code' ? 'var(--accent)' : undefined,
+                }}
+                onClick={() => {
+                  setMode('code');
+                  setError(null);
+                  setNotice(null);
+                }}
+              >
+                Код с почты
+              </button>
+            </div>
+          )}
 
           {mode === 'password' ? (
             <form onSubmit={handlePasswordSubmit}>
@@ -134,6 +162,59 @@ export default function LoginPage() {
               <button type="submit" className="btn btn-primary" disabled={loading}>
                 {loading ? 'Входим…' : 'Войти'}
               </button>
+            </form>
+          ) : mode === 'pixset' ? (
+            <form onSubmit={handlePixsetSubmit}>
+              <div style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', borderRadius: 8, padding: 12, marginBottom: 16 }}>
+                <span style={{ fontSize: 13, color: 'var(--accent)', fontWeight: 600, display: 'block', marginBottom: 4 }}>
+                  ⚡ Учётная запись Pixset Studio
+                </span>
+                <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  Используйте единый логин и пароль от аккаунта студии (игры Byte Blaster, store и портал pixset-studio.github.io).
+                </span>
+              </div>
+
+              <div className="field">
+                <label>Никнейм или Email в Pixset Studio</label>
+                <input
+                  className="input"
+                  type="text"
+                  placeholder="никнейм или email"
+                  value={pixsetLogin}
+                  onChange={(e) => setPixsetLogin(e.target.value)}
+                  required
+                />
+              </div>
+
+              <div className="field">
+                <label>Пароль</label>
+                <input
+                  className="input"
+                  type="password"
+                  value={pixsetPassword}
+                  onChange={(e) => setPixsetPassword(e.target.value)}
+                  required
+                />
+              </div>
+
+              {error && <p className="error">{error}</p>}
+
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button type="submit" className="btn btn-primary" disabled={loading} style={{ flex: 1 }}>
+                  {loading ? 'Проверяем аккаунт Pixset…' : 'Войти через Pixset Studio'}
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ width: 'auto' }}
+                  onClick={() => {
+                    setMode('password');
+                    setError(null);
+                  }}
+                >
+                  ← Назад
+                </button>
+              </div>
             </form>
           ) : !codeSent ? (
             <form onSubmit={handleSendCode}>
@@ -168,17 +249,24 @@ export default function LoginPage() {
           <hr className="divider" />
 
           <div className="btn-row">
+            {mode !== 'pixset' && (
+              <button
+                className="btn"
+                style={{ borderColor: 'var(--accent)', color: 'var(--accent)' }}
+                onClick={() => {
+                  setMode('pixset');
+                  setError(null);
+                  setNotice(null);
+                }}
+              >
+                ⚡ Войти через Pixset Studio
+              </button>
+            )}
             {!hideGoogle && (
               <button className="btn" onClick={() => signInWithGoogle(buildAppUrl('/chats/'))}>
                 Продолжить с Google
               </button>
             )}
-            <button className="btn" onClick={() => signInWithVK(buildAppUrl('/chats/'))}>
-              Продолжить с VK
-            </button>
-            <button className="btn" onClick={() => signInWithYandex(buildAppUrl('/chats/'))}>
-              Продолжить с Яндекс
-            </button>
           </div>
         </div>
 

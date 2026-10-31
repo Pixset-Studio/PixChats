@@ -11,6 +11,7 @@ import {
   getIncomingRequests,
   getOutgoingRequests,
   createDirectChat,
+  getSupabaseClient,
 } from '@pixchats/core';
 import type { Profile, FriendWithProfile } from '@pixchats/core';
 import { UserRow } from '../../components/UserRow';
@@ -50,6 +51,7 @@ export default function FriendsPage() {
   }
 
   useEffect(() => {
+    let channel: any;
     (async () => {
       const active = await hasActiveSession();
       if (!active) {
@@ -67,7 +69,27 @@ export default function FriendsPage() {
       }
       setMe(profile);
       await reload(profile.id);
+
+      // Realtime subscription: обновление списка друзей и заявок без перезагрузки страницы
+      const supabase = getSupabaseClient();
+      channel = supabase
+        .channel(`realtime-friends-${profile.id}`)
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'friendships' },
+          () => {
+            reload(profile.id);
+          }
+        )
+        .subscribe();
     })();
+
+    return () => {
+      if (channel) {
+        const supabase = getSupabaseClient();
+        supabase.removeChannel(channel);
+      }
+    };
   }, [router]);
 
   async function handleAccept(friendshipId: string) {

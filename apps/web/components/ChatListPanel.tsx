@@ -260,6 +260,19 @@ export function ChatListPanel() {
     return new Date(tb).getTime() - new Date(ta).getTime();
   });
 
+  const q = query.trim().toLowerCase();
+  const matchedLocalChats = q
+    ? chats.filter((c) => {
+        const partner = c.type === 'direct' ? partners[c.id] : null;
+        const titleMatch = c.title?.toLowerCase().includes(q);
+        const usernameMatch = c.username?.toLowerCase().includes(q);
+        const partnerNameMatch = partner?.display_name.toLowerCase().includes(q);
+        const partnerUserMatch = partner?.username.toLowerCase().includes(q);
+        const previewMatch = previews[c.id]?.text?.toLowerCase().includes(q);
+        return titleMatch || usernameMatch || partnerNameMatch || partnerUserMatch || previewMatch;
+      })
+    : [];
+
   const isSearchMode = query.trim().length > 0;
 
   return (
@@ -295,75 +308,128 @@ export function ChatListPanel() {
       )}
 
       {isSearchMode ? (
-        searching ? (
-          <p style={{ color: 'var(--text-muted)' }}>Ищем…</p>
-        ) : searchResults.length === 0 ? (
-          <div className="empty-state">Ничего не найдено.</div>
-        ) : (
-          <div>
-            {searchResults.map((result) =>
-              result.kind === 'user' ? (
-                <div
-                  key={`user-${result.profile.id}`}
-                  className="chat-item-preview"
-                  style={{ cursor: 'pointer' }}
-                  onClick={() => handleOpenUser(result.profile.id)}
-                >
-                  <div
-                    className="avatar"
-                    style={{
-                      backgroundImage: result.profile.avatar_url ? `url(${result.profile.avatar_url})` : undefined,
-                      backgroundSize: 'cover',
-                      backgroundPosition: 'center',
-                    }}
+        <div>
+          {matchedLocalChats.length > 0 && (
+            <div style={{ marginBottom: 16 }}>
+              <div className="section-title" style={{ fontSize: 13, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--accent)', marginBottom: 8 }}>
+                💬 В ваших чатах ({matchedLocalChats.length})
+              </div>
+              {matchedLocalChats.map((chat) => {
+                const preview = previews[chat.id];
+                const partner = chat.type === 'direct' ? partners[chat.id] : null;
+                const displayName = partner ? partner.display_name : chat.title ?? TYPE_LABEL[chat.type];
+                const avatarUrl = partner ? partner.avatar_url : chat.avatar_url;
+                const isVerified = partner ? partner.is_verified : chat.is_verified;
+
+                return (
+                  <Link
+                    key={`local-${chat.id}`}
+                    href={`/chat/?id=${chat.id}`}
+                    className={`chat-item-preview${activeChatId === chat.id ? ' active' : ''}`}
                   >
-                    {!result.profile.avatar_url && result.profile.display_name.slice(0, 1).toUpperCase()}
-                  </div>
-                  <div className="chat-item-body">
-                    <div className="chat-item-name">
-                      <NameWithBadges
-                        name={result.profile.display_name}
-                        role={result.profile.role}
-                        isVerified={result.profile.is_verified}
-                        isPixsetEmployee={result.profile.is_pixset_employee}
-                        isFrozen={result.profile.frozen}
-                      />
+                    <div
+                      className="avatar"
+                      style={{
+                        backgroundImage: avatarUrl ? `url(${avatarUrl})` : undefined,
+                        backgroundSize: 'cover',
+                        backgroundPosition: 'center',
+                      }}
+                    >
+                      {!avatarUrl && displayName.slice(0, 1).toUpperCase()}
                     </div>
-                    <div className="chat-item-preview-text">@{result.profile.username} · пользователь</div>
-                  </div>
-                </div>
-              ) : (
-                <div
-                  key={`chat-${result.chat.id}`}
-                  className="chat-item-preview"
-                  style={{ cursor: 'pointer' }}
-                  onClick={() => handleOpenChat(result.chat)}
-                >
+                    <div className="chat-item-body">
+                      <div className="chat-item-top-row">
+                        <span className="chat-item-name">
+                          {displayName}
+                          {isVerified && <VerifiedBadge size={14} />}
+                        </span>
+                        {preview && <span className="chat-item-time">{formatTime(preview.sent_at)}</span>}
+                      </div>
+                      <div className="chat-item-preview-text">
+                        {preview
+                          ? formatPreviewText(preview)
+                          : `${TYPE_LABEL[chat.type]}${chat.username ? ` · @${chat.username}` : ''}`}
+                      </div>
+                    </div>
+                  </Link>
+                );
+              })}
+            </div>
+          )}
+
+          {searching ? (
+            <p style={{ color: 'var(--text-muted)' }}>Ищем в глобальном поиске…</p>
+          ) : searchResults.length > 0 ? (
+            <div>
+              <div className="section-title" style={{ fontSize: 13, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: 8 }}>
+                🌐 Глобальный поиск
+              </div>
+              {searchResults.map((result) =>
+                result.kind === 'user' ? (
                   <div
-                    className="avatar"
-                    style={{
-                      backgroundImage: result.chat.avatar_url ? `url(${result.chat.avatar_url})` : undefined,
-                      backgroundSize: 'cover',
-                      backgroundPosition: 'center',
-                    }}
+                    key={`user-${result.profile.id}`}
+                    className="chat-item-preview"
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => handleOpenUser(result.profile.id)}
                   >
-                    {!result.chat.avatar_url && (result.chat.title ?? '#').slice(0, 1).toUpperCase()}
-                  </div>
-                  <div className="chat-item-body">
-                    <div className="chat-item-name">
-                      {result.chat.title}
-                      {result.chat.is_verified && <VerifiedBadge size={14} />}
+                    <div
+                      className="avatar"
+                      style={{
+                        backgroundImage: result.profile.avatar_url ? `url(${result.profile.avatar_url})` : undefined,
+                        backgroundSize: 'cover',
+                        backgroundPosition: 'center',
+                      }}
+                    >
+                      {!result.profile.avatar_url && result.profile.display_name.slice(0, 1).toUpperCase()}
                     </div>
-                    <div className="chat-item-preview-text">
-                      {TYPE_LABEL[result.chat.type]}
-                      {result.chat.username ? ` · @${result.chat.username}` : ''}
+                    <div className="chat-item-body">
+                      <div className="chat-item-name">
+                        <NameWithBadges
+                          name={result.profile.display_name}
+                          role={result.profile.role}
+                          isVerified={result.profile.is_verified}
+                          isPixsetEmployee={result.profile.is_pixset_employee}
+                          isFrozen={result.profile.frozen}
+                        />
+                      </div>
+                      <div className="chat-item-preview-text">@{result.profile.username} · пользователь</div>
                     </div>
                   </div>
-                </div>
-              )
-            )}
-          </div>
-        )
+                ) : (
+                  <div
+                    key={`chat-${result.chat.id}`}
+                    className="chat-item-preview"
+                    style={{ cursor: 'pointer' }}
+                    onClick={() => handleOpenChat(result.chat)}
+                  >
+                    <div
+                      className="avatar"
+                      style={{
+                        backgroundImage: result.chat.avatar_url ? `url(${result.chat.avatar_url})` : undefined,
+                        backgroundSize: 'cover',
+                        backgroundPosition: 'center',
+                      }}
+                    >
+                      {!result.chat.avatar_url && (result.chat.title ?? '#').slice(0, 1).toUpperCase()}
+                    </div>
+                    <div className="chat-item-body">
+                      <div className="chat-item-name">
+                        {result.chat.title}
+                        {result.chat.is_verified && <VerifiedBadge size={14} />}
+                      </div>
+                      <div className="chat-item-preview-text">
+                        {TYPE_LABEL[result.chat.type]}
+                        {result.chat.username ? ` · @${result.chat.username}` : ''}
+                      </div>
+                    </div>
+                  </div>
+                )
+              )}
+            </div>
+          ) : matchedLocalChats.length === 0 ? (
+            <div className="empty-state">Ничего не найдено ни в ваших чатах, ни глобально.</div>
+          ) : null}
+        </div>
       ) : sorted.length === 0 ? (
         <div className="empty-state">Пока пусто в этой папке.</div>
       ) : (

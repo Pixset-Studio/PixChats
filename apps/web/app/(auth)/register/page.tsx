@@ -6,8 +6,6 @@ import Link from 'next/link';
 import {
   signUpWithEmail,
   signInWithGoogle,
-  signInWithVK,
-  signInWithYandex,
   checkUsernameAvailable,
   verifySignupCode,
   ensureKeyBundle,
@@ -114,8 +112,9 @@ export default function RegisterPage() {
     <main className="page-center">
       <div className="container-narrow">
         <div style={{ textAlign: 'center', marginBottom: 24 }}>
-          <span className="brand">
-            PixChats<span className="brand-dot" />
+          <span className="brand" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            <img src={`${process.env.NEXT_PUBLIC_BASE_PATH || ''}/logo/icon.png`} alt="" width={26} height={26} />
+            PixChats
           </span>
         </div>
 
@@ -203,17 +202,23 @@ export default function RegisterPage() {
               <hr className="divider" />
 
               <div className="btn-row">
+                <Link
+                  href="/login"
+                  className="btn"
+                  style={{
+                    borderColor: 'var(--accent)',
+                    color: 'var(--accent)',
+                    textDecoration: 'none',
+                    textAlign: 'center',
+                  }}
+                >
+                  ⚡ Войти через аккаунт Pixset Studio
+                </Link>
                 {!hideGoogle && (
                   <button className="btn" onClick={() => signInWithGoogle(buildAppUrl('/chats/'))}>
                     Продолжить с Google
                   </button>
                 )}
-                <button className="btn" onClick={() => signInWithVK(buildAppUrl('/chats/'))}>
-                  Продолжить с VK
-                </button>
-                <button className="btn" onClick={() => signInWithYandex(buildAppUrl('/chats/'))}>
-                  Продолжить с Яндекс
-                </button>
               </div>
             </>
           )}

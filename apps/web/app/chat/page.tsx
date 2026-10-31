@@ -29,8 +29,10 @@ import {
   leaveChat,
   getMyChatRole,
   markChatAsRead,
+  toggleMessageReaction,
+  getChatReactions,
 } from '@pixchats/core';
-import type { Message, Chat, Profile } from '@pixchats/core';
+import type { Message, Chat, Profile, ReactionPayload } from '@pixchats/core';
 import { Loading } from '../../components/Loading';
 
 function formatMessageTime(iso: string): string {
@@ -52,6 +54,8 @@ function formatDateDivider(iso: string): string {
   });
 }
 
+const QUICK_REACTIONS = ['👍', '❤️', '🔥', '😂', '😮', '😢', '👏', '🎉'];
+
 function ChatWindowInner() {
   const searchParams = useSearchParams();
   const chatId = searchParams.get('id') ?? '';
@@ -70,6 +74,7 @@ function ChatWindowInner() {
   const [canModerate, setCanModerate] = useState(false); // owner/admin этого чата
 
   const [messages, setMessages] = useState<Message[]>([]);
+  const [reactions, setReactions] = useState<Record<string, Record<string, string[]>>>({});
   const [senderProfiles, setSenderProfiles] = useState<Record<string, Profile>>({});
   const initialIdsRef = useRef<Set<string>>(new Set());
   const [draft, setDraft] = useState('');
@@ -253,6 +258,13 @@ function ChatWindowInner() {
       setMessages(initialMessages);
       await markChatAsRead(profile.id, chatId);
 
+      if (initialMessages.length > 0) {
+        try {
+          const initialReactions = await getChatReactions(chatId, initialMessages.map((m) => m.id));
+          setReactions(initialReactions);
+        } catch {}
+      }
+
       if (chatRow.type !== 'direct') {
         const uniqueSenderIds = Array.from(new Set(initialMessages.map((m) => m.sender_id))).filter((id) => id !== profile.id);
         if (uniqueSenderIds.length > 0) {
@@ -287,13 +299,52 @@ function ChatWindowInner() {
               });
             }
           },
-          (msg) => setMessages((prev) => prev.map((m) => (m.id === msg.id ? msg : m)))
+          (msg) => setMessages((prev) => prev.map((m) => (m.id === msg.id ? msg : m))),
+          (reactionPayload) => {
+            setReactions((prev) => {
+              const msgReactions = { ...(prev[reactionPayload.messageId] ?? {}) };
+              const currentUsers = msgReactions[reactionPayload.emoji] ?? [];
+              if (reactionPayload.action === 'add') {
+                if (!currentUsers.includes(reactionPayload.userId)) {
+                  msgReactions[reactionPayload.emoji] = [...currentUsers, reactionPayload.userId];
+                }
+              } else {
+                msgReactions[reactionPayload.emoji] = currentUsers.filter((id) => id !== reactionPayload.userId);
+                if (msgReactions[reactionPayload.emoji].length === 0) {
+                  delete msgReactions[reactionPayload.emoji];
+                }
+              }
+              return { ...prev, [reactionPayload.messageId]: msgReactions };
+            });
+          }
         );
       }
     })();
 
     return () => unsubscribe?.();
   }, [chatId, router]);
+
+  async function handleToggleReaction(messageId: string, emoji: string) {
+    if (!me) return;
+    try {
+      const payload = await toggleMessageReaction(chatId, messageId, emoji, me.id);
+      setReactions((prev) => {
+        const msgReactions = { ...(prev[payload.messageId] ?? {}) };
+        const currentUsers = msgReactions[payload.emoji] ?? [];
+        if (payload.action === 'add') {
+          if (!currentUsers.includes(me.id)) {
+            msgReactions[payload.emoji] = [...currentUsers, me.id];
+          }
+        } else {
+          msgReactions[payload.emoji] = currentUsers.filter((id) => id !== me.id);
+          if (msgReactions[payload.emoji].length === 0) {
+            delete msgReactions[payload.emoji];
+          }
+        }
+        return { ...prev, [payload.messageId]: msgReactions };
+      });
+    } catch {}
+  }
 
   // Прокрутка и подсветка при переходе по ссылке на конкретное сообщение
   useEffect(() => {
@@ -594,8 +645,51 @@ function ChatWindowInner() {
                     <div className="bubble-time-standalone">{formatMessageTime(m.sent_at)}</div>
                   </div>
 
+                  {reactions[m.id] && Object.keys(reactions[m.id]).length > 0 && (
+                    <div className={`reactions-row ${isMine ? 'mine' : ''}`}>
+                      {Object.entries(reactions[m.id]).map(([emoji, userIds]) => {
+                        if (!userIds || userIds.length === 0) return null;
+                        const hasReacted = me ? userIds.includes(me.id) : false;
+                        return (
+                          <button
+                            key={emoji}
+                            type="button"
+                            className={`reaction-pill ${hasReacted ? 'active' : ''}`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleToggleReaction(m.id, emoji);
+                            }}
+                            title={hasReacted ? 'Нажмите, чтобы снять реакцию' : 'Нажмите, чтобы отреагировать'}
+                          >
+                            <span>{emoji}</span>
+                            <span className="reaction-count">{userIds.length}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+
                   {openMenuId === m.id && !m.is_deleted && (
                     <div className={`message-menu ${isMine ? 'mine' : ''}`}>
+                      <div className="menu-reactions-picker">
+                        {QUICK_REACTIONS.map((emoji) => {
+                          const hasReacted = me && reactions[m.id]?.[emoji]?.includes(me.id);
+                          return (
+                            <button
+                              key={emoji}
+                              type="button"
+                              className={`menu-reaction-btn ${hasReacted ? 'active' : ''}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleToggleReaction(m.id, emoji);
+                              }}
+                              title={emoji}
+                            >
+                              {emoji}
+                            </button>
+                          );
+                        })}
+                      </div>
                       {!isMine && (
                         <button onClick={() => { setReplyingTo(m); setOpenMenuId(null); }}>Ответить</button>
                       )}
@@ -621,6 +715,20 @@ function ChatWindowInner() {
                     </div>
                   )}
                 </div>
+
+                {!m.is_deleted && (
+                  <button
+                    type="button"
+                    className="reaction-quick-trigger"
+                    title="Отреагировать"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setOpenMenuId(openMenuId === m.id ? null : m.id);
+                    }}
+                  >
+                    😊
+                  </button>
+                )}
               </div>
             </div>
           );

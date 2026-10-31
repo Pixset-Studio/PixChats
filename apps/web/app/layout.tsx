@@ -4,8 +4,14 @@ import { NotificationListener } from '../components/NotificationListener';
 const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH || '';
 
 export const metadata = {
+  metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL || 'https://pixchats.app'),
   title: 'PixChats',
-  description: 'Мессенджер PixChats',
+  description: 'Мессенджер PixChats — веб-клиент для обмена сообщениями, каналов и групп.',
+  openGraph: {
+    title: 'PixChats',
+    description: 'Мессенджер PixChats — веб-клиент для обмена сообщениями, каналов и групп.',
+    images: [`${BASE_PATH}/logo/icon.png`],
+  },
   icons: {
     icon: `${BASE_PATH}/logo/icon.png`,
   },
@@ -13,7 +19,7 @@ export const metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="ru">
+    <html lang="ru" suppressHydrationWarning>
       <head>
         <link rel="icon" href={`${BASE_PATH}/logo/icon.png`} />
         <link rel="preconnect" href="https://fonts.googleapis.com" />

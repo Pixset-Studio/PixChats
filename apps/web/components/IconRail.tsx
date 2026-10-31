@@ -15,7 +15,15 @@ export function IconRail() {
 
   return (
     <nav className="icon-rail">
-      <div className="icon-rail-logo">P</div>
+      <div className="icon-rail-logo" style={{ padding: 4, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <img
+          src={`${process.env.NEXT_PUBLIC_BASE_PATH || ''}/logo/icon.png`}
+          alt="PixChats"
+          width={26}
+          height={26}
+          style={{ objectFit: 'contain' }}
+        />
+      </div>
       {ITEMS.map((item) => {
         const active = pathname === item.href || pathname === item.href.replace(/\/$/, '');
         return (

@@ -6,7 +6,7 @@
   "author": "Pixset Studio",
   "main": "main.js",
   "scripts": {
-    "build:web": "cd ../web && cross-env NEXT_PUBLIC_BASE_PATH= npm run build",
+    "build:web": "cross-env NEXT_PUBLIC_BASE_PATH=\"\" npm run build --workspace=@pixchats/web",
     "copy:web": "node copy-web-dist.js",
     "prebuild": "npm run build:web && npm run copy:web",
     "dev": "npm run prebuild && electron .",

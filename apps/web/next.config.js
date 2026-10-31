@@ -1,6 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  output: 'export',           // статическая выгрузка — то, что умеет отдавать GitHub Pages
+  output: 'export',
   trailingSlash: true,        // ссылки вида /chats/ вместо /chats — так GitHub Pages отдаёт index.html корректно
   images: {
     unoptimized: true,        // next/image без серверной оптимизации — на статике её нет

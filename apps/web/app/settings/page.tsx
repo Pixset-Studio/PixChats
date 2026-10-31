@@ -12,11 +12,12 @@ import {
   updatePrivacySettings,
   getLinkedIdentities,
   linkGoogle,
-  linkVK,
-  linkYandex,
   linkEmailPassword,
+  getSavedPixsetStudioAccount,
+  signInWithPixsetStudioAccount,
+  unlinkPixsetStudioAccount,
 } from '@pixchats/core';
-import type { Profile, LinkedIdentity } from '@pixchats/core';
+import type { Profile, LinkedIdentity, PixsetStudioAccount } from '@pixchats/core';
 import { BottomNav } from '../../components/BottomNav';
 import { isBanned } from '../../lib/ban';
 import { buildAppUrl } from '../../lib/url';
@@ -36,6 +37,13 @@ export default function SettingsPage() {
   const [linkedProviders, setLinkedProviders] = useState<string[]>([]);
   const [linkEmail, setLinkEmail] = useState('');
   const [linkPassword, setLinkPassword] = useState('');
+
+  // Pixset Studio account integration
+  const [pixsetAccount, setPixsetAccount] = useState<PixsetStudioAccount | null>(null);
+  const [showPixsetForm, setShowPixsetForm] = useState(false);
+  const [pixsetLogin, setPixsetLogin] = useState('');
+  const [pixsetPassword, setPixsetPassword] = useState('');
+  const [pixsetLoading, setPixsetLoading] = useState(false);
 
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -70,6 +78,7 @@ export default function SettingsPage() {
       } catch {
         // не критично для остальной страницы
       }
+      setPixsetAccount(getSavedPixsetStudioAccount());
     })();
   }, [router]);
 
@@ -106,16 +115,38 @@ export default function SettingsPage() {
     await persistTheme(profile.id, newTheme);
   }
 
-  async function handleLinkProvider(provider: 'google' | 'vk' | 'yandex') {
+  async function handleLinkProvider(provider: 'google') {
     setError(null);
     try {
       const redirectTo = buildAppUrl('/settings/');
       if (provider === 'google') await linkGoogle(redirectTo);
-      if (provider === 'vk') await linkVK(redirectTo);
-      if (provider === 'yandex') await linkYandex(redirectTo);
     } catch (err: any) {
-      setError(err.message ?? 'Не удалось привязать — включите Manual Linking в настройках Supabase Auth');
+      setError(err.message ?? 'Не удалось привязать Google аккаунт');
     }
+  }
+
+  async function handleLinkPixsetStudio(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setPixsetLoading(true);
+    try {
+      const acc = await signInWithPixsetStudioAccount(pixsetLogin, pixsetPassword);
+      setPixsetAccount(acc);
+      setShowPixsetForm(false);
+      setPixsetLogin('');
+      setPixsetPassword('');
+      setNotice(`Учётная запись Pixset Studio (@${acc.nickname}) успешно привязана!`);
+    } catch (err: any) {
+      setError(err.message ?? 'Не удалось привязать аккаунт Pixset Studio');
+    } finally {
+      setPixsetLoading(false);
+    }
+  }
+
+  function handleUnlinkPixset() {
+    unlinkPixsetStudioAccount();
+    setPixsetAccount(null);
+    setNotice('Учётная запись Pixset Studio отвязана');
   }
 
   async function handleLinkEmailPassword(e: React.FormEvent) {
@@ -246,20 +277,100 @@ export default function SettingsPage() {
         </div>
       </div>
 
+      <div className="section-title">Учётная запись Pixset Studio</div>
+      <div className="card" style={{ marginBottom: 24 }}>
+        <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 0 }}>
+          Интеграция с единым порталом Pixset Studio (pixset-studio.github.io). Привязка аккаунта подтверждает статус разработчика/сотрудника и синхронизирует профиль.
+        </p>
+
+        {pixsetAccount ? (
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div
+                className="avatar"
+                style={{
+                  width: 44,
+                  height: 44,
+                  backgroundImage: pixsetAccount.avatar_url ? `url(${pixsetAccount.avatar_url})` : undefined,
+                  backgroundSize: 'cover',
+                  backgroundPosition: 'center',
+                }}
+              >
+                {!pixsetAccount.avatar_url && pixsetAccount.nickname.slice(0, 1).toUpperCase()}
+              </div>
+              <div>
+                <div style={{ fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  @{pixsetAccount.nickname}
+                  {pixsetAccount.is_admin && (
+                    <span style={{ fontSize: 11, background: 'var(--accent)', color: '#000', padding: '1px 6px', borderRadius: 4, fontWeight: 700 }}>
+                      Сотрудник Pixset
+                    </span>
+                  )}
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  {pixsetAccount.email || 'Аккаунт студии подключён'}
+                </div>
+              </div>
+            </div>
+
+            <button className="btn" style={{ width: 'auto', color: 'var(--danger)' }} onClick={handleUnlinkPixset}>
+              Отвязать
+            </button>
+          </div>
+        ) : (
+          <div>
+            {!showPixsetForm ? (
+              <button
+                className="btn btn-primary"
+                style={{ width: 'auto' }}
+                onClick={() => setShowPixsetForm(true)}
+              >
+                ⚡ Привязать аккаунт Pixset Studio
+              </button>
+            ) : (
+              <form onSubmit={handleLinkPixsetStudio} style={{ marginTop: 12 }}>
+                <div className="field">
+                  <label>Никнейм или Email Pixset Studio</label>
+                  <input
+                    className="input"
+                    value={pixsetLogin}
+                    onChange={(e) => setPixsetLogin(e.target.value)}
+                    placeholder="никнейм или email"
+                    required
+                  />
+                </div>
+                <div className="field">
+                  <label>Пароль</label>
+                  <input
+                    className="input"
+                    type="password"
+                    value={pixsetPassword}
+                    onChange={(e) => setPixsetPassword(e.target.value)}
+                    required
+                  />
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button type="submit" className="btn btn-primary" style={{ width: 'auto' }} disabled={pixsetLoading}>
+                    {pixsetLoading ? 'Проверяем…' : 'Подтвердить привязку'}
+                  </button>
+                  <button type="button" className="btn" style={{ width: 'auto' }} onClick={() => setShowPixsetForm(false)}>
+                    Отмена
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        )}
+      </div>
+
       <div className="section-title">Способы входа</div>
       <div className="card" style={{ marginBottom: 24 }}>
         <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 0 }}>
-          Привяжите ещё один способ входа — пригодится, если забудете пароль или потеряете доступ к одному из аккаунтов.
+          Привяжите дополнительный способ входа — пригодится, если забудете пароль или потеряете доступ к одному из аккаунтов.
         </p>
         <div className="btn-row" style={{ flexDirection: 'row', flexWrap: 'wrap', marginBottom: 16 }}>
           <button className="btn" onClick={() => handleLinkProvider('google')} disabled={linkedProviders.includes('google')}>
             {linkedProviders.includes('google') ? '✓ Google привязан' : 'Привязать Google'}
-          </button>
-          <button className="btn" onClick={() => handleLinkProvider('vk')} disabled={linkedProviders.includes('vk')}>
-            {linkedProviders.includes('vk') ? '✓ VK привязан' : 'Привязать VK'}
-          </button>
-          <button className="btn" onClick={() => handleLinkProvider('yandex')} disabled={linkedProviders.includes('yandex')}>
-            {linkedProviders.includes('yandex') ? '✓ Яндекс привязан' : 'Привязать Яндекс'}
           </button>
         </div>
 

@@ -69,8 +69,9 @@ export default function CompleteProfilePage() {
     <main className="page-center">
       <div className="container-narrow">
         <div style={{ textAlign: 'center', marginBottom: 24 }}>
-          <span className="brand">
-            PixChats<span className="brand-dot" />
+          <span className="brand" style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            <img src={`${process.env.NEXT_PUBLIC_BASE_PATH || ''}/logo/icon.png`} alt="" width={26} height={26} />
+            PixChats
           </span>
         </div>
 

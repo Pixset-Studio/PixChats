@@ -1,0 +1,9 @@
+{
+  "name": "PixChats",
+  "description": "Мессенджер PixChats — веб-клиент для обмена сообщениями, каналов и групп.",
+  "requestFeedback": false,
+  "userFacing": true,
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

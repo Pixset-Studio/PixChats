@@ -69,6 +69,22 @@ function ChatMembersInner() {
       setCanManage(role === 'owner' || role === 'admin');
 
       if (chatRow) await reload(profile, chatRow);
+
+      // Realtime subscription: обновление участников в реальном времени
+      const channel = supabase
+        .channel(`chat-members-${chatId}`)
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'chat_members', filter: `chat_id=eq.${chatId}` },
+          () => {
+            if (chatRow) reload(profile, chatRow);
+          }
+        )
+        .subscribe();
+
+      return () => {
+        supabase.removeChannel(channel);
+      };
     })();
   }, [chatId, router]);
 

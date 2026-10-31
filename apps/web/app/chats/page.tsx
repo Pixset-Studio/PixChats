@@ -60,8 +60,9 @@ export default function ChatsPage() {
     <>
       <main className="container-wide with-bottom-nav">
         <header className="app-header">
-          <span className="brand" style={{ fontSize: 18 }}>
-            PixChats<span className="brand-dot" />
+          <span className="brand" style={{ fontSize: 18, display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            <img src={`${process.env.NEXT_PUBLIC_BASE_PATH || ''}/logo/icon.png`} alt="" width={22} height={22} />
+            PixChats
           </span>
         </header>
 

@@ -1,12 +1,12 @@
 :root {
-  --bg: #0f1117;
-  --surface: #171a23;
-  --surface-raised: #1e212c;
-  --border: #272b38;
-  --text: #e8e9ee;
-  --text-muted: #8890a3;
-  --accent: #7c6fff;
-  --accent-hover: #9086ff;
+  --bg: #15130b;
+  --surface: #1e1b10;
+  --surface-raised: #282416;
+  --border: #3d3622;
+  --text: #f7f4ea;
+  --text-muted: #a39c87;
+  --accent: #f59e0b;
+  --accent-hover: #fbbf24;
   --verified: #4c9eff;
   --success: #34d399;
   --danger: #f0637c;
@@ -20,14 +20,14 @@
 }
 
 [data-theme='light'] {
-  --bg: #f5f5f8;
+  --bg: #faf7ed;
   --surface: #ffffff;
-  --surface-raised: #eeeef3;
-  --border: #dcdce3;
-  --text: #171923;
-  --text-muted: #6b7080;
-  --accent: #6c5ce7;
-  --accent-hover: #5b4bd6;
+  --surface-raised: #f4edd9;
+  --border: #dfd5be;
+  --text: #1a170d;
+  --text-muted: #787058;
+  --accent: #d97706;
+  --accent-hover: #b45309;
   --verified: #2b7fe0;
   --success: #1f9d72;
   --danger: #d43f5a;
@@ -113,7 +113,7 @@ textarea {
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background-image: radial-gradient(circle at 1px 1px, rgba(124, 111, 255, 0.08) 1px, transparent 0);
+  background-image: radial-gradient(circle at 1px 1px, rgba(245, 158, 11, 0.12) 1px, transparent 0);
   background-size: 24px 24px;
 }
 
@@ -981,16 +981,16 @@ select.input:focus {
 :root {
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
-  --accent-glow: rgba(124, 111, 255, 0.28);
-  --scroll-thumb: rgba(136, 144, 163, 0.28);
-  --scroll-thumb-hover: rgba(124, 111, 255, 0.65);
+  --accent-glow: rgba(245, 158, 11, 0.35);
+  --scroll-thumb: rgba(163, 156, 135, 0.28);
+  --scroll-thumb-hover: rgba(245, 158, 11, 0.65);
   /* Нативные элементы (аудио/видео-плеер, select, скроллбары) подстраиваются под тему */
   color-scheme: dark;
 }
 [data-theme='light'] {
-  --accent-glow: rgba(108, 92, 231, 0.24);
-  --scroll-thumb: rgba(107, 112, 128, 0.32);
-  --scroll-thumb-hover: rgba(108, 92, 231, 0.65);
+  --accent-glow: rgba(217, 119, 6, 0.25);
+  --scroll-thumb: rgba(120, 112, 88, 0.32);
+  --scroll-thumb-hover: rgba(217, 119, 6, 0.65);
   color-scheme: light;
 }
 
@@ -1418,6 +1418,101 @@ select.input:focus {
   filter: drop-shadow(0 12px 28px rgba(255, 213, 0, 0.28));
 }
 
+/* ---------- реакции на сообщения ---------- */
+.reactions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+.reactions-row.mine {
+  justify-content: flex-end;
+}
+.reaction-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 14px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+.reaction-pill:hover {
+  background: rgba(245, 158, 11, 0.15);
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+.reaction-pill.active {
+  background: rgba(245, 158, 11, 0.22);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.2);
+}
+.reaction-count {
+  font-size: 12px;
+  font-family: var(--font-display);
+}
+
+.menu-reactions-picker {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  margin-bottom: 6px;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 8px;
+  overflow-x: auto;
+}
+.menu-reaction-btn {
+  background: none;
+  border: none;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 6px;
+  transition: transform 0.12s ease, background 0.12s ease;
+}
+.menu-reaction-btn:hover {
+  transform: scale(1.25);
+  background: rgba(245, 158, 11, 0.2);
+}
+.menu-reaction-btn.active {
+  background: rgba(245, 158, 11, 0.35);
+  box-shadow: 0 0 6px var(--accent);
+}
+
+.reaction-quick-trigger {
+  opacity: 0;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  cursor: pointer;
+  color: var(--text-muted);
+}
+.bubble-row:hover .reaction-quick-trigger {
+  opacity: 1;
+}
+.reaction-quick-trigger:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  transform: scale(1.1);
+}
+
 /* ---------- плавная смена темы ---------- */
 html.theme-transition,
 html.theme-transition *,
@@ -1439,3 +1534,4 @@ html.theme-transition *::after {
     scroll-behavior: auto !important;
   }
 }
+
