@@ -36,8 +36,14 @@ export default function ChatsPage() {
       setProfile(me);
       await ensureKeyBundle(me);
       if (typeof window !== 'undefined') {
-        localStorage.setItem('pixchats:theme', me.theme);
-        document.documentElement.setAttribute('data-theme', me.theme);
+        const currentSaved = localStorage.getItem('pixchats:theme');
+        if (!currentSaved || currentSaved === 'dark') {
+          const initialTheme = me.theme && me.theme !== 'dark' ? me.theme : 'pixchats';
+          localStorage.setItem('pixchats:theme', initialTheme);
+          document.documentElement.setAttribute('data-theme', initialTheme);
+        } else {
+          document.documentElement.setAttribute('data-theme', currentSaved);
+        }
       }
       setLoading(false);
     })();

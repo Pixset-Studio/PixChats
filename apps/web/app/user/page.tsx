@@ -23,6 +23,7 @@ import { resolveLastSeenLabel } from '../../lib/lastSeen';
 import { isBanned } from '../../lib/ban';
 import { MuteControl } from '../../components/MuteControl';
 import { Loading } from '../../components/Loading';
+import { DesktopShell } from '../../components/DesktopShell';
 
 function UserProfileInner() {
   const searchParams = useSearchParams();
@@ -39,6 +40,42 @@ function UserProfileInner() {
   const [lastSeenLabel, setLastSeenLabel] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [isPinned, setIsPinned] = useState(false);
+
+  useEffect(() => {
+    if (!existingChatId) return;
+    try {
+      const list: string[] = JSON.parse(localStorage.getItem('pixchats:pinned_chats') || '[]');
+      setIsPinned(list.includes(existingChatId));
+    } catch {}
+  }, [existingChatId]);
+
+  async function handleTogglePin() {
+    let targetChatId = existingChatId;
+    if (!targetChatId && user) {
+      try {
+        const newChat = await createDirectChat(user.id);
+        targetChatId = newChat.id;
+        setExistingChatId(newChat.id);
+      } catch (err: any) {
+        setError(err.message ?? 'Не удалось найти чат');
+        return;
+      }
+    }
+    if (!targetChatId) return;
+
+    try {
+      const list: string[] = JSON.parse(localStorage.getItem('pixchats:pinned_chats') || '[]');
+      const next = list.includes(targetChatId)
+        ? list.filter((id) => id !== targetChatId)
+        : [targetChatId, ...list];
+      localStorage.setItem('pixchats:pinned_chats', JSON.stringify(next));
+      setIsPinned(next.includes(targetChatId));
+      window.dispatchEvent(new CustomEvent('pixchats:pinned_changed'));
+      setNotice(next.includes(targetChatId) ? 'Чат закреплён 📌' : 'Чат откреплён');
+      setTimeout(() => setNotice(null), 1500);
+    } catch {}
+  }
 
   useEffect(() => {
     if (!userId) {
@@ -205,9 +242,12 @@ function UserProfileInner() {
           </div>
         )}
 
-        {!isSelf && existingChatId && (
-          <div className="btn-row" style={{ maxWidth: 280, margin: '8px auto 0', flexDirection: 'row', flexWrap: 'wrap' }}>
-            <MuteControl muteState={muteState} onMute={handleMute} onUnmute={handleUnmute} />
+        {!isSelf && (
+          <div className="btn-row" style={{ maxWidth: 320, margin: '8px auto 0', flexDirection: 'row', flexWrap: 'wrap' }}>
+            <button className="btn" onClick={handleTogglePin}>
+              {isPinned ? '📌 Открепить чат' : '📍 Закрепить чат'}
+            </button>
+            {existingChatId && <MuteControl muteState={muteState} onMute={handleMute} onUnmute={handleUnmute} />}
           </div>
         )}
       </div>
@@ -217,8 +257,10 @@ function UserProfileInner() {
 
 export default function UserProfilePage() {
   return (
-    <Suspense fallback={<Loading />}>
-      <UserProfileInner />
-    </Suspense>
+    <DesktopShell>
+      <Suspense fallback={<Loading />}>
+        <UserProfileInner />
+      </Suspense>
+    </DesktopShell>
   );
 }

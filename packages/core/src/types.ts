@@ -13,7 +13,7 @@ export interface Profile {
   last_seen: string | null;
   created_at: string;
   public_identity_key: string | null;
-  theme: 'pixchats' | 'byte_blaster' | 'matrix' | 'crimson' | 'midnight' | 'dark' | 'light';
+  theme: 'pixchats' | 'industrial' | 'arcade' | 'minimal' | 'byteblaster' | 'byte_blaster' | 'dark' | 'light';
   privacy_who_can_message: 'everyone' | 'friends_only' | 'nobody';
   privacy_show_last_seen: 'everyone' | 'friends_only' | 'nobody';
   privacy_who_can_add_to_groups: 'everyone' | 'friends_only' | 'nobody';

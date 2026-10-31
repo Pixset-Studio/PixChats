@@ -16,6 +16,7 @@ import {
 import type { Profile, FriendWithProfile } from '@pixchats/core';
 import { UserRow } from '../../components/UserRow';
 import { BottomNav } from '../../components/BottomNav';
+import { DesktopShell } from '../../components/DesktopShell';
 import { resolveLastSeenLabel } from '../../lib/lastSeen';
 import { isBanned } from '../../lib/ban';
 import { SearchIcon } from '../../components/Icons';
@@ -128,7 +129,7 @@ export default function FriendsPage() {
     : friends;
 
   return (
-    <>
+    <DesktopShell>
       <main className="container-wide with-bottom-nav">
         <header className="app-header">
           <h1 style={{ fontFamily: 'var(--font-display)', fontSize: 20, margin: 0 }}>Друзья</h1>
@@ -226,6 +227,6 @@ export default function FriendsPage() {
         )}
       </main>
       <BottomNav />
-    </>
+    </DesktopShell>
   );
 }

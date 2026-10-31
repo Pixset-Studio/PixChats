@@ -1,10 +1,17 @@
 import { getSupabaseClient } from './supabaseClient';
+import {
+  encryptMessageE2EE,
+  decryptMessageE2EE,
+  decodeLegacyBase64Text,
+  encodeLegacyBase64Text,
+  isEncryptedE2EEPayload,
+} from './crypto';
 
 export interface Message {
   id: string;
   chat_id: string;
   sender_id: string;
-  text: string; // декодировано из ciphertext (заглушка Фазы 1 — просто base64(plaintext))
+  text: string; // расшифровано через E2EE AES-256-GCM (или декодировано из старого формата Фазы 1)
   message_type: string;
   media_path: string | null;
   caption: string | null;
@@ -14,32 +21,21 @@ export interface Message {
   edited_at: string | null;
   is_deleted: boolean;
   forwarded_from_chat_id: string | null;
-}
-
-function encodeText(text: string): string {
-  // Фаза 1: заглушка — просто base64 от UTF-8 текста.
-  // Фаза 2: здесь будет вызов libsignal Double Ratchet encrypt(), а результат
-  // (реальный шифротекст) точно так же ляжет в это же поле ciphertext.
-  return btoa(unescape(encodeURIComponent(text)));
-}
-
-function decodeText(ciphertext: string): string {
-  try {
-    return decodeURIComponent(escape(atob(ciphertext)));
-  } catch {
-    return '[не удалось расшифровать]';
-  }
+  is_e2ee?: boolean;
 }
 
 const SELECT_FIELDS =
   'id, chat_id, sender_id, ciphertext, message_type, media_path, caption, caption_position, sent_at, reply_to_id, edited_at, is_deleted, forwarded_from_chat_id';
 
-function mapRow(row: any): Message {
+async function mapRowAsync(row: any): Promise<Message> {
+  const decryptedText = row.is_deleted
+    ? 'Сообщение удалено'
+    : await decryptMessageE2EE(row.chat_id, row.ciphertext);
   return {
     id: row.id,
     chat_id: row.chat_id,
     sender_id: row.sender_id,
-    text: row.is_deleted ? 'Сообщение удалено' : decodeText(row.ciphertext),
+    text: decryptedText,
     message_type: row.message_type,
     media_path: row.media_path,
     caption: row.caption,
@@ -49,6 +45,7 @@ function mapRow(row: any): Message {
     edited_at: row.edited_at,
     is_deleted: row.is_deleted,
     forwarded_from_chat_id: row.forwarded_from_chat_id,
+    is_e2ee: isEncryptedE2EEPayload(row.ciphertext),
   };
 }
 
@@ -60,16 +57,30 @@ export interface SendMessageOptions {
   captionPosition?: 'above' | 'below';
 }
 
-/** Загружает произвольный файл (любого типа) в бакет message-media (папка = chatId), возвращает публичный URL. */
+/** Загружает произвольный файл в бакет message-media (с фолбэком в Base64 Data URL для небольших файлов/изображений). */
 export async function uploadMessageFile(chatId: string, file: File): Promise<{ url: string; name: string; size: number }> {
-  const supabase = getSupabaseClient();
-  const path = `${chatId}/${Date.now()}-${file.name}`;
+  // Для небольших картинок (< 1.5 МБ) или если бакет недоступен, конвертируем в Base64
+  try {
+    const supabase = getSupabaseClient();
+    const path = `${chatId}/${Date.now()}-${file.name}`;
 
-  const { error } = await supabase.storage.from('message-media').upload(path, file);
-  if (error) throw error;
+    const { error } = await supabase.storage.from('message-media').upload(path, file);
+    if (error) throw error;
 
-  const { data } = supabase.storage.from('message-media').getPublicUrl(path);
-  return { url: data.publicUrl, name: file.name, size: file.size };
+    const { data } = supabase.storage.from('message-media').getPublicUrl(path);
+    return { url: data.publicUrl, name: file.name, size: file.size };
+  } catch (err) {
+    if (file.size <= 3 * 1024 * 1024 && typeof FileReader !== 'undefined') {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(err);
+        reader.readAsDataURL(file);
+      });
+      return { url: dataUrl, name: file.name, size: file.size };
+    }
+    throw err;
+  }
 }
 
 export async function sendMessage(chatId: string, text: string, options: SendMessageOptions = {}): Promise<void> {
@@ -78,10 +89,12 @@ export async function sendMessage(chatId: string, text: string, options: SendMes
   const senderId = sessionData.session?.user.id;
   if (!senderId) throw new Error('Нужно войти в аккаунт');
 
+  const ciphertext = await encryptMessageE2EE(chatId, text);
+
   const { error } = await supabase.from('messages').insert({
     chat_id: chatId,
     sender_id: senderId,
-    ciphertext: encodeText(text),
+    ciphertext,
     message_type: options.messageType ?? 'text',
     media_path: options.mediaPath ?? null,
     reply_to_id: options.replyToId ?? null,
@@ -100,22 +113,31 @@ export async function getMessages(chatId: string, limit = 200): Promise<Message[
     .order('sent_at', { ascending: true })
     .limit(limit);
   if (error) throw error;
-  return (data ?? []).map(mapRow);
+  return Promise.all((data ?? []).map(mapRowAsync));
 }
 
 export async function getMessageById(messageId: string): Promise<Message | null> {
   const supabase = getSupabaseClient();
   const { data, error } = await supabase.from('messages').select(SELECT_FIELDS).eq('id', messageId).maybeSingle();
   if (error) throw error;
-  return data ? mapRow(data) : null;
+  return data ? mapRowAsync(data) : null;
 }
 
-/** Редактирование своего сообщения — отмечает edited_at, UI показывает пометку "изменено". */
-export async function editMessage(messageId: string, newText: string): Promise<void> {
+/** Редактирование своего сообщения — шифрует новый текст через E2EE AES-256-GCM и отмечает edited_at. */
+export async function editMessage(messageId: string, newText: string, chatId?: string): Promise<void> {
   const supabase = getSupabaseClient();
+  let targetChatId = chatId;
+  if (!targetChatId) {
+    const { data } = await supabase.from('messages').select('chat_id').eq('id', messageId).maybeSingle();
+    targetChatId = data?.chat_id;
+  }
+  const ciphertext = targetChatId
+    ? await encryptMessageE2EE(targetChatId, newText)
+    : encodeLegacyBase64Text(newText);
+
   const { error } = await supabase
     .from('messages')
-    .update({ ciphertext: encodeText(newText), edited_at: new Date().toISOString() })
+    .update({ ciphertext, edited_at: new Date().toISOString() })
     .eq('id', messageId);
   if (error) throw error;
 }
@@ -125,7 +147,7 @@ export async function deleteMessage(messageId: string): Promise<void> {
   const supabase = getSupabaseClient();
   const { error } = await supabase
     .from('messages')
-    .update({ is_deleted: true, ciphertext: encodeText('') })
+    .update({ is_deleted: true, ciphertext: encodeLegacyBase64Text('') })
     .eq('id', messageId);
   if (error) throw error;
 }
@@ -145,8 +167,6 @@ export async function unpinMessage(chatId: string): Promise<void> {
 /** Пересылка: копирует текст в другой чат, помечая forwarded_from_chat_id (откуда переслано). */
 export async function forwardMessage(message: Message, targetChatId: string): Promise<void> {
   await sendMessage(targetChatId, message.text, { messageType: message.message_type });
-  // Помечаем последнюю вставленную запись как пересланную отдельным update, т.к. insert
-  // не возвращает id в текущей реализации sendMessage — проще и надёжнее отдельным шагом.
   const supabase = getSupabaseClient();
   const { data: sessionData } = await supabase.auth.getSession();
   const senderId = sessionData.session?.user.id;
@@ -171,9 +191,19 @@ export async function getLastMessagesForChats(chatIds: string[]): Promise<Record
     .limit(500);
   if (error) throw error;
 
-  const result: Record<string, Message> = {};
+  const latestRows: any[] = [];
+  const seenChats = new Set<string>();
   for (const row of data ?? []) {
-    if (!result[row.chat_id]) result[row.chat_id] = mapRow(row);
+    if (!seenChats.has(row.chat_id)) {
+      seenChats.add(row.chat_id);
+      latestRows.push(row);
+    }
+  }
+
+  const mapped = await Promise.all(latestRows.map(mapRowAsync));
+  const result: Record<string, Message> = {};
+  for (const msg of mapped) {
+    result[msg.chat_id] = msg;
   }
   return result;
 }
@@ -288,12 +318,20 @@ export function subscribeToMessages(
     .on(
       'postgres_changes',
       { event: 'INSERT', schema: 'public', table: 'messages', filter: `chat_id=eq.${chatId}` },
-      (payload) => onInsert(mapRow(payload.new))
+      async (payload) => {
+        const msg = await mapRowAsync(payload.new);
+        onInsert(msg);
+      }
     )
     .on(
       'postgres_changes',
       { event: 'UPDATE', schema: 'public', table: 'messages', filter: `chat_id=eq.${chatId}` },
-      (payload) => onUpdate?.(mapRow(payload.new))
+      async (payload) => {
+        if (onUpdate) {
+          const msg = await mapRowAsync(payload.new);
+          onUpdate(msg);
+        }
+      }
     )
     .on('broadcast', { event: 'reaction' }, (payload) => {
       if (payload.payload) onReaction?.(payload.payload as ReactionPayload);
@@ -304,3 +342,4 @@ export function subscribeToMessages(
     supabase.removeChannel(channel);
   };
 }
+

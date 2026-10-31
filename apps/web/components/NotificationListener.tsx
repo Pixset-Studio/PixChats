@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { getCurrentProfile, getSupabaseClient, getMuteStates } from '@pixchats/core';
+import { getCurrentProfile, getSupabaseClient, getMuteStates, decryptMessageE2EE } from '@pixchats/core';
 import type { Profile } from '@pixchats/core';
 
 const MEDIA_LABELS: Record<string, string> = {
@@ -12,14 +12,6 @@ const MEDIA_LABELS: Record<string, string> = {
   voice: '🎤 Голосовое сообщение',
   file: '📎 Файл',
 };
-
-function decodeText(ciphertext: string): string {
-  try {
-    return decodeURIComponent(escape(atob(ciphertext)));
-  } catch {
-    return 'Новое сообщение';
-  }
-}
 
 interface InAppToast {
   id: string;
@@ -66,10 +58,13 @@ function playChime() {
  * 2. Входящие заявки в друзья и принятые заявки
  * 3. Добавление в группы и каналы
  * 4. Изменение статуса профиля и бейджей
+ * 5. Интерактивный запрос разрешения на системные Push-уведомления браузера
  */
 export function NotificationListener() {
   const router = useRouter();
   const [toasts, setToasts] = useState<InAppToast[]>([]);
+  const [permState, setPermState] = useState<NotificationPermission | 'unsupported'>('granted');
+  const [promptDismissed, setPromptDismissed] = useState(false);
   const meRef = useRef<Profile | null>(null);
 
   function pushAlert(title: string, body: string, url?: string, badge?: string) {
@@ -103,11 +98,43 @@ export function NotificationListener() {
     }, 5000);
   }
 
+  async function handleRequestPermission() {
+    if (typeof window === 'undefined' || !('Notification' in window)) return;
+    try {
+      const res = await Notification.requestPermission();
+      setPermState(res);
+      if (res === 'granted') {
+        setPromptDismissed(true);
+        pushAlert('🔔 Push-уведомления включены', 'Теперь вы будете получать мгновенные уведомления обо всём!', undefined, '🔔');
+      }
+    } catch {
+      // если браузер блокирует в iframe
+    }
+  }
+
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
-    if ('Notification' in window && Notification.permission === 'default') {
-      Notification.requestPermission().catch(() => {});
+    if (!('Notification' in window)) {
+      setPermState('unsupported');
+    } else {
+      setPermState(Notification.permission);
+      if (Notification.permission === 'default') {
+        // Пробуем запросить сразу и также подписываемся на первый жест пользователя
+        Notification.requestPermission()
+          .then((res) => setPermState(res))
+          .catch(() => {});
+
+        const onFirstGesture = () => {
+          if ('Notification' in window && Notification.permission === 'default') {
+            Notification.requestPermission()
+              .then((res) => setPermState(res))
+              .catch(() => {});
+          }
+          window.removeEventListener('click', onFirstGesture);
+        };
+        window.addEventListener('click', onFirstGesture, { once: true });
+      }
     }
 
     let channel: ReturnType<ReturnType<typeof getSupabaseClient>['channel']> | null = null;
@@ -149,9 +176,10 @@ export function NotificationListener() {
               .eq('id', row.sender_id)
               .maybeSingle();
 
+            const decrypted = await decryptMessageE2EE(row.chat_id, row.ciphertext);
             const text = row.message_type !== 'text' && MEDIA_LABELS[row.message_type]
               ? MEDIA_LABELS[row.message_type]
-              : decodeText(row.ciphertext);
+              : decrypted;
 
             // Проверяем, упоминают ли пользователя
             const isMention = text.includes(`@${me.username}`);
@@ -263,7 +291,9 @@ export function NotificationListener() {
     };
   }, [router]);
 
-  if (toasts.length === 0) return null;
+  const showPermissionBanner = permState === 'default' && !promptDismissed;
+
+  if (toasts.length === 0 && !showPermissionBanner) return null;
 
   return (
     <div
@@ -281,6 +311,75 @@ export function NotificationListener() {
         pointerEvents: 'none',
       }}
     >
+      {showPermissionBanner && (
+        <div
+          style={{
+            pointerEvents: 'auto',
+            background: 'var(--surface-raised)',
+            border: '1.5px solid var(--accent)',
+            boxShadow: '0 8px 28px rgba(0, 0, 0, 0.55)',
+            borderRadius: 10,
+            padding: '12px 14px',
+            color: 'var(--text)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 10,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+            <div
+              style={{
+                width: 32,
+                height: 32,
+                borderRadius: 8,
+                background: 'var(--surface)',
+                border: '1px solid var(--border)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: 16,
+                flexShrink: 0,
+              }}
+            >
+              🔔
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--accent)' }}>
+                Включить Push-уведомления
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2, lineHeight: 1.35 }}>
+                Разрешите доступ к уведомлениям, чтобы получать сообщения и заявки в реальном времени.
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setPromptDismissed(true)}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: 'var(--text-muted)',
+                cursor: 'pointer',
+                padding: 4,
+                fontSize: 14,
+                lineHeight: 1,
+              }}
+              title="Скрыть"
+            >
+              ✕
+            </button>
+          </div>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button
+              type="button"
+              className="btn btn-primary"
+              style={{ width: 'auto', padding: '6px 14px', fontSize: 12 }}
+              onClick={handleRequestPermission}
+            >
+              Разрешить доступ
+            </button>
+          </div>
+        </div>
+      )}
       {toasts.map((toast) => (
         <div
           key={toast.id}

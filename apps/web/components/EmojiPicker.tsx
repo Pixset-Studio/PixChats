@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
+import { getAllStickers, type StickerItem } from '../lib/stickers';
 
 export interface EmojiPickerProps {
   onSelect: (emoji: string) => void;
@@ -77,18 +78,6 @@ const EMOJI_CATEGORIES: Category[] = [
   },
 ];
 
-// Стикеры Pixset Studio
-const PIXSET_STICKERS = [
-  { id: 'byte-blaster', label: 'Byte Blaster', icon: '👾', url: 'https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=300&auto=format&fit=crop&q=80' },
-  { id: 'pixel-cat', label: 'PixCat', icon: '🐱', url: 'https://images.unsplash.com/photo-1514888286974-6c03e2ca1dba?w=300&auto=format&fit=crop&q=80' },
-  { id: 'gg-wp', label: 'GG WP', icon: '🏆', url: 'https://images.unsplash.com/photo-1511512578047-dfb367046420?w=300&auto=format&fit=crop&q=80' },
-  { id: 'fire-matrix', label: 'Matrix Flame', icon: '🔥', url: 'https://images.unsplash.com/photo-1544256718-3bcf237f3974?w=300&auto=format&fit=crop&q=80' },
-  { id: 'cyber-heart', label: 'Neon Heart', icon: '💖', url: 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=300&auto=format&fit=crop&q=80' },
-  { id: 'pix-rocket', label: 'To The Moon', icon: '🚀', url: 'https://images.unsplash.com/photo-1517976487541-118fd7d93414?w=300&auto=format&fit=crop&q=80' },
-  { id: 'coder-mode', label: 'Dev Mode', icon: '💻', url: 'https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=300&auto=format&fit=crop&q=80' },
-  { id: 'arcade-star', label: 'Star Player', icon: '⭐', url: 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=300&auto=format&fit=crop&q=80' },
-];
-
 // Трендовые GIF-анимации
 const POPULAR_GIFS = [
   { id: 'cheers', label: 'Cheers', url: 'https://media.giphy.com/media/g9582DNuQppxC/giphy.gif' },
@@ -110,6 +99,14 @@ export function EmojiPicker({
   const [pickerType, setPickerType] = useState<'emoji' | 'stickers' | 'gif'>('emoji');
   const [activeTab, setActiveTab] = useState('smileys');
   const [search, setSearch] = useState('');
+  const [stickers, setStickers] = useState<StickerItem[]>([]);
+
+  useEffect(() => {
+    setStickers(getAllStickers());
+    const reload = () => setStickers(getAllStickers());
+    window.addEventListener('pixchats:stickers_updated', reload);
+    return () => window.removeEventListener('pixchats:stickers_updated', reload);
+  }, []);
 
   const filteredEmojis = useMemo(() => {
     const q = search.trim();
@@ -217,15 +214,16 @@ export function EmojiPicker({
 
       {pickerType === 'stickers' && (
         <div className="stickers-grid">
-          {PIXSET_STICKERS.map((stk) => (
+          {stickers.map((stk) => (
             <button
               key={stk.id}
               type="button"
               className="sticker-item-btn"
-              onClick={() => onSelectMedia?.(stk.url, `Стикер: ${stk.label}`)}
+              onClick={() => onSelectMedia?.(stk.dataUrl, `Стикер: ${stk.title}`)}
+              title={`${stk.title} (${stk.pack})`}
             >
-              <span className="sticker-preview-char">{stk.icon}</span>
-              <span className="sticker-label">{stk.label}</span>
+              <img src={stk.dataUrl} alt={stk.title} className="sticker-preview-img" />
+              <span className="sticker-label">{stk.title}</span>
             </button>
           ))}
         </div>

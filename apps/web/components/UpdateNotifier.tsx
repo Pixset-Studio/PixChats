@@ -62,18 +62,20 @@ export function UpdateNotifier() {
       setPlatform('mobile');
     } else {
       setPlatform('web');
+      return; // Автообновления предназначены только для ПК (Electron) и телефона (Android/Capacitor), не для Web
     }
 
     // Проверяем обновления в GitHub Releases
     async function checkForUpdates() {
       try {
         const dismissedTag = sessionStorage.getItem('pixchats:dismissed_update');
-        const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
+        const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=1`, {
           headers: { Accept: 'application/vnd.github.v3+json' },
         });
         if (!res.ok) return;
-        const data: GitHubRelease = await res.json();
-        if (!data.tag_name) return;
+        const list: GitHubRelease[] = await res.json();
+        const data = Array.isArray(list) ? list[0] : null;
+        if (!data || !data.tag_name) return;
 
         if (data.tag_name === dismissedTag) return;
 

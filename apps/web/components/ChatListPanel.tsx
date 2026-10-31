@@ -82,7 +82,7 @@ export function ChatListPanel() {
     return () => window.removeEventListener('popstate', syncActiveChat);
   }, []);
 
-  // Закреплённые чаты
+  // Закреплённые чаты (управляются из профиля собеседника / инфо о чате)
   const [pinnedChatIds, setPinnedChatIds] = useState<string[]>(() => {
     if (typeof window === 'undefined') return [];
     try {
@@ -92,17 +92,19 @@ export function ChatListPanel() {
     }
   });
 
-  function togglePin(e: React.MouseEvent, chatId: string) {
-    e.preventDefault();
-    e.stopPropagation();
-    setPinnedChatIds((prev) => {
-      const next = prev.includes(chatId) ? prev.filter((id) => id !== chatId) : [chatId, ...prev];
+  useEffect(() => {
+    const syncPinned = () => {
       try {
-        localStorage.setItem('pixchats:pinned_chats', JSON.stringify(next));
+        setPinnedChatIds(JSON.parse(localStorage.getItem('pixchats:pinned_chats') || '[]'));
       } catch {}
-      return next;
-    });
-  }
+    };
+    window.addEventListener('pixchats:pinned_changed', syncPinned);
+    window.addEventListener('storage', syncPinned);
+    return () => {
+      window.removeEventListener('pixchats:pinned_changed', syncPinned);
+      window.removeEventListener('storage', syncPinned);
+    };
+  }, []);
 
   // Чаты, в которые только что пришло сообщение — на секунду подсвечиваем строку
   const [flashIds, setFlashIds] = useState<Set<string>>(new Set());
@@ -531,17 +533,7 @@ export function ChatListPanel() {
                       {isVerified && <VerifiedBadge size={14} />}
                     </span>
                     <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                        {preview && <span className="chat-item-time">{formatTime(preview.sent_at)}</span>}
-                        <button
-                          type="button"
-                          className="pin-toggle-btn"
-                          onClick={(e) => togglePin(e, chat.id)}
-                          title={isPinned ? 'Открепить' : 'Закрепить'}
-                        >
-                          {isPinned ? '📌' : '📍'}
-                        </button>
-                      </div>
+                      {preview && <span className="chat-item-time">{formatTime(preview.sent_at)}</span>}
                       {unreadCounts[chat.id] > 0 && (
                         <span
                           key={unreadCounts[chat.id]}

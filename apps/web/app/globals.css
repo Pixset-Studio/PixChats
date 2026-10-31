@@ -2,121 +2,146 @@
 [data-theme='pixchats'],
 [data-theme='dark'] {
   --theme-id: 'pixchats';
+  --y: #ffd400;
+  --y-warm: #ffa300;
+  --y-soft: #ffe066;
+  --ink: #2b2400;
   --bg: #09090b;
   --surface: #121215;
   --surface-raised: #18181c;
-  --border: #27272a;
+  --border: #262218;
   --text: #f4f4f5;
-  --text-muted: #9ca3af;
-  --accent: #facc15;
-  --accent-hover: #fde047;
-  --accent-contrast: #09090b;
+  --text-muted: #8a8578;
+  --accent: #ffd400;
+  --accent-hover: #ffe066;
+  --accent-contrast: #2b2400;
   --bubble-mine-bg: #222013;
-  --bubble-mine-border: rgba(250, 204, 21, 0.35);
+  --bubble-mine-border: rgba(255, 212, 0, 0.35);
   --bubble-mine-text: #fef08a;
-  --avatar-placeholder-bg: linear-gradient(135deg, #18181c 0%, #09090b 60%, rgba(250, 204, 21, 0.28) 100%);
-  --avatar-placeholder-border: #facc15;
-  --avatar-placeholder-color: #facc15;
+  --avatar-placeholder-bg: linear-gradient(135deg, #18181c 0%, #09090b 60%, rgba(255, 212, 0, 0.25) 100%);
+  --avatar-placeholder-border: #ffd400;
+  --avatar-placeholder-color: #ffd400;
   --verified: #38bdf8;
   --success: #22c55e;
   --danger: #ef4444;
 
   --font-display: 'Space Mono', ui-monospace, monospace;
   --font-body: 'Inter', system-ui, -apple-system, sans-serif;
-  --radius: 10px;
+  --radius: 8px;
   --pixel-cut: 4px;
 }
 
-/* Тема Byte Blaster (с сайта Pixset Studio) — ретро-кибернеон */
+/* 1. Индустриальная (Оригинальная тема Pixset Studio — жёлтая лента, крупный шрифт) */
+[data-theme='industrial'] {
+  --theme-id: 'industrial';
+  --y: #ffd400;
+  --y-warm: #ffa300;
+  --y-soft: #ffe066;
+  --ink: #2b2400;
+  --bg: #0a0a0a;
+  --surface: #121110;
+  --surface-raised: #161510;
+  --border: #262218;
+  --text: #e7e1d2;
+  --text-muted: #8a8578;
+  --accent: #ffd400;
+  --accent-hover: #ffa300;
+  --accent-contrast: #2b2400;
+  --bubble-mine-bg: #1c1809;
+  --bubble-mine-border: #3a3208;
+  --bubble-mine-text: #ffe066;
+  --avatar-placeholder-bg: linear-gradient(135deg, #161510 0%, #0a0a0a 60%, rgba(255, 212, 0, 0.3) 100%);
+  --avatar-placeholder-border: #ffd400;
+  --avatar-placeholder-color: #ffd400;
+  --verified: #ffd400;
+  --success: #22c55e;
+  --danger: #ef4444;
+  --radius: 4px;
+}
+
+/* 2. Аркадная (Оригинальная тема Pixset Studio — пиксельный ретро-терминал) */
+[data-theme='arcade'] {
+  --theme-id: 'arcade';
+  --y: #ffd400;
+  --y-warm: #ffa300;
+  --y-soft: #ffe066;
+  --ink: #2b2400;
+  --bg: #04040a;
+  --surface: #0a0a14;
+  --surface-raised: #0e0e18;
+  --border: #1e1e2e;
+  --text: #d8d2c2;
+  --text-muted: #8a8578;
+  --accent: #ffd400;
+  --accent-hover: #ffe066;
+  --accent-contrast: #04040a;
+  --bubble-mine-bg: #141208;
+  --bubble-mine-border: #3a3208;
+  --bubble-mine-text: #ffd400;
+  --avatar-placeholder-bg: linear-gradient(135deg, #0e0e18 0%, #04040a 60%, rgba(255, 212, 0, 0.3) 100%);
+  --avatar-placeholder-border: #ffd400;
+  --avatar-placeholder-color: #ffd400;
+  --verified: #38bdf8;
+  --success: #22c55e;
+  --danger: #ef4444;
+  --radius: 0px;
+}
+
+/* 3. Минимализм (Оригинальная тема Pixset Studio — чёрный лист и золотая линия) */
+[data-theme='minimal'] {
+  --theme-id: 'minimal';
+  --y: #ffd400;
+  --y-warm: #ffa300;
+  --y-soft: #ffe066;
+  --ink: #2b2400;
+  --bg: #070707;
+  --surface: #0c0c0c;
+  --surface-raised: #101010;
+  --border: #1c1a14;
+  --text: #f2efe8;
+  --text-muted: #6d6858;
+  --accent: #ffd400;
+  --accent-hover: #ffe066;
+  --accent-contrast: #070707;
+  --bubble-mine-bg: #13120d;
+  --bubble-mine-border: #2a2820;
+  --bubble-mine-text: #f2efe8;
+  --avatar-placeholder-bg: linear-gradient(135deg, #101010 0%, #070707 60%, rgba(255, 212, 0, 0.25) 100%);
+  --avatar-placeholder-border: #ffd400;
+  --avatar-placeholder-color: #ffd400;
+  --verified: #ffd400;
+  --success: #22c55e;
+  --danger: #ef4444;
+  --radius: 2px;
+}
+
+/* 4. Byte Blaster (Оригинальная тема игры с сайта Pixset Studio — неон, бирюзовый и маджента) */
+[data-theme='byteblaster'],
 [data-theme='byte_blaster'] {
-  --theme-id: 'byte_blaster';
-  --bg: #070913;
-  --surface: #0e1222;
-  --surface-raised: #141b30;
-  --border: #1f2947;
-  --text: #f1f5f9;
-  --text-muted: #8e9bb5;
-  --accent: #00f0ff;
-  --accent-hover: #38bdf8;
-  --accent-contrast: #070913;
-  --bubble-mine-bg: #0c1d2e;
-  --bubble-mine-border: rgba(0, 240, 255, 0.45);
-  --bubble-mine-text: #cffafe;
-  --avatar-placeholder-bg: linear-gradient(135deg, #141b30 0%, #070913 60%, rgba(0, 240, 255, 0.3) 100%);
-  --avatar-placeholder-border: #00f0ff;
-  --avatar-placeholder-color: #00f0ff;
-  --verified: #00f0ff;
+  --theme-id: 'byteblaster';
+  --y: #00ffff;
+  --y-warm: #ff00ff;
+  --y-soft: #aaffff;
+  --ink: #04040f;
+  --bg: #04040f;
+  --surface: #080820;
+  --surface-raised: #0a0a20;
+  --border: #16203a;
+  --text: #dbe9ff;
+  --text-muted: #6f8bb5;
+  --accent: #00ffff;
+  --accent-hover: #ff00ff;
+  --accent-contrast: #04040f;
+  --bubble-mine-bg: #091326;
+  --bubble-mine-border: rgba(0, 255, 255, 0.4);
+  --bubble-mine-text: #aaffff;
+  --avatar-placeholder-bg: linear-gradient(135deg, #0a0a20 0%, #04040f 60%, rgba(0, 255, 255, 0.3) 100%);
+  --avatar-placeholder-border: #00ffff;
+  --avatar-placeholder-color: #00ffff;
+  --verified: #00ffff;
   --success: #10b981;
   --danger: #f43f5e;
-}
-
-/* Тема Matrix (Кибер-терминал Pixset) */
-[data-theme='matrix'] {
-  --theme-id: 'matrix';
-  --bg: #050906;
-  --surface: #0b140e;
-  --surface-raised: #122016;
-  --border: #1a3323;
-  --text: #f0fdf4;
-  --text-muted: #86a792;
-  --accent: #10b981;
-  --accent-hover: #34d399;
-  --accent-contrast: #050906;
-  --bubble-mine-bg: #0d2518;
-  --bubble-mine-border: rgba(16, 185, 129, 0.45);
-  --bubble-mine-text: #d1fae5;
-  --avatar-placeholder-bg: linear-gradient(135deg, #122016 0%, #050906 60%, rgba(16, 185, 129, 0.3) 100%);
-  --avatar-placeholder-border: #10b981;
-  --avatar-placeholder-color: #10b981;
-  --verified: #38bdf8;
-  --success: #10b981;
-  --danger: #ef4444;
-}
-
-/* Тема Crimson (Багровый Pixset Studio) */
-[data-theme='crimson'] {
-  --theme-id: 'crimson';
-  --bg: #0c0608;
-  --surface: #170c10;
-  --surface-raised: #221217;
-  --border: #3b1b24;
-  --text: #fff1f2;
-  --text-muted: #b38a92;
-  --accent: #f43f5e;
-  --accent-hover: #fb7185;
-  --accent-contrast: #ffffff;
-  --bubble-mine-bg: #291016;
-  --bubble-mine-border: rgba(244, 63, 94, 0.45);
-  --bubble-mine-text: #ffe4e6;
-  --avatar-placeholder-bg: linear-gradient(135deg, #221217 0%, #0c0608 60%, rgba(244, 63, 94, 0.3) 100%);
-  --avatar-placeholder-border: #f43f5e;
-  --avatar-placeholder-color: #f43f5e;
-  --verified: #38bdf8;
-  --success: #22c55e;
-  --danger: #f43f5e;
-}
-
-/* Тема Midnight (Сапфир / Глубокий космос) */
-[data-theme='midnight'] {
-  --theme-id: 'midnight';
-  --bg: #060911;
-  --surface: #0b1220;
-  --surface-raised: #121c30;
-  --border: #1b2944;
-  --text: #f0f6ff;
-  --text-muted: #8ca3c7;
-  --accent: #3b82f6;
-  --accent-hover: #60a5fa;
-  --accent-contrast: #ffffff;
-  --bubble-mine-bg: #101e38;
-  --bubble-mine-border: rgba(59, 130, 246, 0.45);
-  --bubble-mine-text: #dbeafe;
-  --avatar-placeholder-bg: linear-gradient(135deg, #121c30 0%, #060911 60%, rgba(59, 130, 246, 0.3) 100%);
-  --avatar-placeholder-border: #3b82f6;
-  --avatar-placeholder-color: #3b82f6;
-  --verified: #38bdf8;
-  --success: #22c55e;
-  --danger: #ef4444;
+  --radius: 0px;
 }
 
 [data-theme='light'] {
@@ -2153,6 +2178,12 @@ select.input:focus {
   transform: scale(1.08);
   border-color: var(--accent);
 }
+.sticker-preview-img {
+  width: 56px;
+  height: 56px;
+  object-fit: contain;
+  display: block;
+}
 .sticker-preview-char {
   font-size: 28px;
 }
@@ -2160,6 +2191,41 @@ select.input:focus {
   font-size: 10px;
   color: var(--text-muted);
   text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.media-sticker {
+  width: 148px;
+  height: 148px;
+  object-fit: contain;
+  display: block;
+  border-radius: 8px;
+  filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.45));
+  transition: transform 0.18s var(--ease-spring);
+}
+.media-sticker:hover {
+  transform: scale(1.06);
+}
+.e2ee-badge-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  padding: 4px 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--accent);
+  background: rgba(250, 204, 21, 0.1);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.e2ee-badge-btn:hover {
+  border-color: var(--accent);
+  background: rgba(250, 204, 21, 0.18);
 }
 .gif-grid {
   display: grid;

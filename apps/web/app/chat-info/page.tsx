@@ -24,6 +24,8 @@ import { isBanned } from '../../lib/ban';
 import { MuteControl } from '../../components/MuteControl';
 import { Loading } from '../../components/Loading';
 import { BackIcon } from '../../components/Icons';
+import { DesktopShell } from '../../components/DesktopShell';
+import { fileToBase64Image } from '../../lib/imageUtils';
 
 const TYPE_LABEL: Record<Chat['type'], string> = {
   direct: 'Личный чат',
@@ -48,6 +50,7 @@ function ChatInfoInner() {
 
   const [mediaItems, setMediaItems] = useState<Message[]>([]);
   const [mediaTab, setMediaTab] = useState<'media' | 'files' | 'voice'>('media');
+  const [isPinned, setIsPinned] = useState(false);
 
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -55,6 +58,27 @@ function ChatInfoInner() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+
+  useEffect(() => {
+    if (!chatId) return;
+    try {
+      const list: string[] = JSON.parse(localStorage.getItem('pixchats:pinned_chats') || '[]');
+      setIsPinned(list.includes(chatId));
+    } catch {}
+  }, [chatId]);
+
+  function handleTogglePin() {
+    if (!chatId) return;
+    try {
+      const list: string[] = JSON.parse(localStorage.getItem('pixchats:pinned_chats') || '[]');
+      const next = list.includes(chatId) ? list.filter((id) => id !== chatId) : [chatId, ...list];
+      localStorage.setItem('pixchats:pinned_chats', JSON.stringify(next));
+      setIsPinned(next.includes(chatId));
+      window.dispatchEvent(new CustomEvent('pixchats:pinned_changed'));
+      setNotice(next.includes(chatId) ? 'Чат закреплён 📌' : 'Чат откреплён');
+      setTimeout(() => setNotice(null), 1500);
+    } catch {}
+  }
 
   useEffect(() => {
     if (!chatId) {
@@ -125,8 +149,9 @@ function ChatInfoInner() {
     setUploading(true);
     setError(null);
     try {
-      const url = await uploadChatAvatar(chat.id, e.target.files[0]);
-      setChat({ ...chat, avatar_url: url });
+      const base64Url = await fileToBase64Image(e.target.files[0], 256, 0.85);
+      await updateChatInfo(chat.id, { avatarUrl: base64Url });
+      setChat({ ...chat, avatar_url: base64Url });
     } catch (err: any) {
       setError(err.message ?? 'Не удалось загрузить аватар');
     } finally {
@@ -224,7 +249,10 @@ function ChatInfoInner() {
           {chat.username ? ` · @${chat.username}` : ''}
         </div>
 
-        <div className="btn-row" style={{ maxWidth: 320, margin: '12px auto 0', flexDirection: 'row', flexWrap: 'wrap' }}>
+        <div className="btn-row" style={{ maxWidth: 340, margin: '12px auto 0', flexDirection: 'row', flexWrap: 'wrap' }}>
+          <button className="btn" onClick={handleTogglePin}>
+            {isPinned ? '📌 Открепить чат' : '📍 Закрепить чат'}
+          </button>
           {canEdit && !editing && (
             <button className="btn" onClick={() => setEditing(true)}>
               ✎ Редактировать
@@ -404,8 +432,10 @@ function ChatInfoInner() {
 
 export default function ChatInfoPage() {
   return (
-    <Suspense fallback={<Loading />}>
-      <ChatInfoInner />
-    </Suspense>
+    <DesktopShell>
+      <Suspense fallback={<Loading />}>
+        <ChatInfoInner />
+      </Suspense>
+    </DesktopShell>
   );
 }

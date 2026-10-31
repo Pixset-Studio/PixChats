@@ -166,34 +166,55 @@ export interface UpdateChatInfoParams {
   title?: string;
   description?: string;
   username?: string | null;
+  avatarUrl?: string | null;
 }
 
-/** Редактирование названия/описания/юзернейма группы или канала. RLS дополнительно проверяет права owner/admin. */
+/** Редактирование названия/описания/юзернейма/Base64-аватара группы или канала. RLS дополнительно проверяет права owner/admin. */
 export async function updateChatInfo(chatId: string, params: UpdateChatInfoParams): Promise<void> {
   const supabase = getSupabaseClient();
   const patch: Record<string, string | null> = {};
   if (params.title !== undefined) patch.title = params.title;
   if (params.description !== undefined) patch.description = params.description;
   if (params.username !== undefined) patch.username = params.username;
+  if (params.avatarUrl !== undefined) patch.avatar_url = params.avatarUrl;
 
   const { error } = await supabase.from('chats').update(patch).eq('id', chatId);
   if (error) throw error;
 }
 
-/** Загрузка нового аватара группы/канала в бакет chat-avatars (папка = chatId). RLS: только owner/admin. */
+/** Конвертирует аватар группы/канала в сжатый Base64 Data URL (без загрузки в Supabase Storage) и сохраняет в chats.avatar_url. */
 export async function uploadChatAvatar(chatId: string, file: File): Promise<string> {
   const supabase = getSupabaseClient();
-  const ext = file.name.split('.').pop() ?? 'png';
-  const path = `${chatId}/avatar.${ext}`;
-
-  const { error: uploadError } = await supabase.storage.from('chat-avatars').upload(path, file, {
-    upsert: true,
-    cacheControl: '3600',
+  const avatarUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Не удалось прочитать файл аватара'));
+    reader.onload = () => {
+      if (typeof document === 'undefined') {
+        resolve(String(reader.result));
+        return;
+      }
+      const img = new Image();
+      img.onerror = () => resolve(String(reader.result));
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const minDim = Math.min(img.width, img.height);
+        const sx = (img.width - minDim) / 2;
+        const sy = (img.height - minDim) / 2;
+        const target = Math.min(256, minDim);
+        canvas.width = target;
+        canvas.height = target;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve(String(reader.result));
+          return;
+        }
+        ctx.drawImage(img, sx, sy, minDim, minDim, 0, 0, target, target);
+        resolve(canvas.toDataURL('image/webp', 0.85));
+      };
+      img.src = String(reader.result);
+    };
+    reader.readAsDataURL(file);
   });
-  if (uploadError) throw uploadError;
-
-  const { data: publicUrlData } = supabase.storage.from('chat-avatars').getPublicUrl(path);
-  const avatarUrl = `${publicUrlData.publicUrl}?t=${Date.now()}`;
 
   const { error: updateError } = await supabase.from('chats').update({ avatar_url: avatarUrl }).eq('id', chatId);
   if (updateError) throw updateError;

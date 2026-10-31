@@ -67,15 +67,28 @@ function startServer() {
   });
 }
 
+function resolveAppIcon() {
+  const candidates = [
+    path.join(__dirname, 'build', 'icon-256.png'),
+    path.join(WEB_DIST, 'logo', 'icon.png'),
+    path.join(__dirname, '..', 'web', 'public', 'logo', 'icon.png'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p;
+  }
+  return undefined;
+}
+
 function createWindow() {
+  const iconPath = resolveAppIcon();
   const win = new BrowserWindow({
     width: 1200,
     height: 800,
     minWidth: 400,
     minHeight: 500,
-    icon: path.join(__dirname, 'build', 'icon-256.png'),
+    ...(iconPath ? { icon: iconPath } : {}),
     autoHideMenuBar: true,
-    backgroundColor: '#0f1117', // фон темы PixChats — без белой вспышки при старте
+    backgroundColor: '#09090b', // фон темы PixChats — без белой вспышки при старте
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,

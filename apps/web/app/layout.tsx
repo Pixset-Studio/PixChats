@@ -1,6 +1,7 @@
 import './globals.css';
 import { NotificationListener } from '../components/NotificationListener';
 import { UpdateNotifier } from '../components/UpdateNotifier';
+import { ThemeManager } from '../components/ThemeManager';
 
 const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH || '';
 
@@ -26,7 +27,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
         <link
-          href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Inter:wght@400;500;600;700&display=swap"
+          href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Press+Start+2P&family=Rajdhani:wght@400;500;600;700&family=Share+Tech+Mono&family=Space+Mono:wght@400;700&display=swap"
           rel="stylesheet"
         />
         {/* Применяем сохранённую тему до первой отрисовки — иначе будет вспышка дефолтной темы */}
@@ -44,6 +45,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         />
       </head>
       <body>
+        <ThemeManager />
         {children}
         <NotificationListener />
         <UpdateNotifier />

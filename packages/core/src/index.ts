@@ -10,3 +10,5 @@ export * from './search';
 export * from './notifications';
 export * from './accountLinking';
 export * from './pixsetStudioAuth';
+export * from './crypto';
+

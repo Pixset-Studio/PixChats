@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
@@ -24,7 +24,15 @@ import {
 import type { Profile, AdminStatsOverview, SystemStatusRow, ErrorLogRow, UserRole } from '@pixchats/core';
 import { NameWithBadges } from '../../components/NameBadges';
 import { BottomNav } from '../../components/BottomNav';
+import { DesktopShell } from '../../components/DesktopShell';
 import { isBanned } from '../../lib/ban';
+import {
+  getAllStickers,
+  addCustomStickerFromFile,
+  addCustomStickerFromBase64,
+  removeCustomSticker,
+  type StickerItem,
+} from '../../lib/stickers';
 
 export default function AdminPage() {
   const router = useRouter();
@@ -39,6 +47,14 @@ export default function AdminPage() {
   const [bannedUsernames, setBannedUsernames] = useState<string[]>([]);
   const [newBannedUsername, setNewBannedUsername] = useState('');
 
+  // Стикеры (Base64 без Supabase Storage)
+  const [stickers, setStickers] = useState<StickerItem[]>([]);
+  const [stickerTitle, setStickerTitle] = useState('');
+  const [stickerPack, setStickerPack] = useState('Pixset Custom');
+  const [stickerBase64Input, setStickerBase64Input] = useState('');
+  const [stickerNotice, setStickerNotice] = useState<string | null>(null);
+  const stickerFileRef = useRef<HTMLInputElement>(null);
+
   useEffect(() => {
     (async () => {
       const profile = await getCurrentProfile();
@@ -51,6 +67,7 @@ export default function AdminPage() {
         return;
       }
       setMe(profile);
+      setStickers(getAllStickers());
 
       try {
         setStats(await getAdminStats());
@@ -70,6 +87,47 @@ export default function AdminPage() {
       }
     })();
   }, [router]);
+
+  async function handleStickerFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setStickerNotice(null);
+    try {
+      const titleToUse = stickerTitle.trim() || file.name.replace(/\.[^.]+$/, '');
+      const added = await addCustomStickerFromFile(file, titleToUse, stickerPack.trim() || 'Pixset Custom');
+      setStickers(getAllStickers());
+      setStickerTitle('');
+      setStickerNotice(`Стикер «${added.title}» сжат и сохранён в Base64 (${Math.round(added.dataUrl.length / 1024)} КБ, без загрузки в Supabase Storage)`);
+    } catch (err: any) {
+      setStickerNotice(err.message ?? 'Ошибка загрузки стикера');
+    } finally {
+      if (stickerFileRef.current) stickerFileRef.current.value = '';
+    }
+  }
+
+  function handleAddStickerByBase64() {
+    setStickerNotice(null);
+    if (!stickerBase64Input.trim()) return;
+    try {
+      const added = addCustomStickerFromBase64(
+        stickerBase64Input.trim(),
+        stickerTitle.trim() || 'Стикер',
+        stickerPack.trim() || 'Pixset Custom'
+      );
+      setStickers(getAllStickers());
+      setStickerBase64Input('');
+      setStickerTitle('');
+      setStickerNotice(`Стикер «${added.title}» добавлен в Base64 (${Math.round(added.dataUrl.length / 1024)} КБ)`);
+    } catch (err: any) {
+      setStickerNotice(err.message ?? 'Некорректная строка Base64');
+    }
+  }
+
+  function handleDeleteSticker(id: string, title: string) {
+    removeCustomSticker(id);
+    setStickers(getAllStickers());
+    setStickerNotice(`Стикер «${title}» удалён`);
+  }
 
   async function handleSearch() {
     if (!query) return;
@@ -173,7 +231,7 @@ export default function AdminPage() {
   if (!me) return null;
 
   return (
-    <>
+    <DesktopShell>
     <main className="container-wide with-bottom-nav">
       <header className="app-header">
         <div>
@@ -374,9 +432,125 @@ export default function AdminPage() {
           ))}
         </ul>
       )}
+
+      <div className="section-title">Управление стикерами (Base64 — без хранения в Supabase)</div>
+      <div className="card" style={{ marginBottom: 20 }}>
+        <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 0, marginBottom: 12 }}>
+          Стикеры хранятся в формате сжатых изображений Base64 (Data URL) и не занимают место в бакетах Supabase Storage.
+        </p>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10, marginBottom: 12 }}>
+          <div>
+            <label className="label">Название стикера</label>
+            <input
+              className="input"
+              value={stickerTitle}
+              onChange={(e) => setStickerTitle(e.target.value)}
+              placeholder="Напр.: Кибер Кот"
+            />
+          </div>
+          <div>
+            <label className="label">Набор стикеров</label>
+            <input
+              className="input"
+              value={stickerPack}
+              onChange={(e) => setStickerPack(e.target.value)}
+              placeholder="Pixset Custom"
+            />
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center', marginBottom: 12 }}>
+          <input
+            ref={stickerFileRef}
+            type="file"
+            accept="image/*"
+            style={{ display: 'none' }}
+            onChange={handleStickerFileChange}
+          />
+          <button
+            type="button"
+            className="btn btn-primary"
+            style={{ width: 'auto' }}
+            onClick={() => stickerFileRef.current?.click()}
+          >
+            + Загрузить картинку (конвертация в Base64)
+          </button>
+        </div>
+
+        <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+          <input
+            className="input"
+            value={stickerBase64Input}
+            onChange={(e) => setStickerBase64Input(e.target.value)}
+            placeholder="Или вставьте готовую строку data:image/...;base64,..."
+          />
+          <button
+            type="button"
+            className="btn"
+            style={{ width: 'auto', flexShrink: 0 }}
+            onClick={handleAddStickerByBase64}
+          >
+            Добавить Base64
+          </button>
+        </div>
+
+        {stickerNotice && <p className="notice" style={{ marginBottom: 12 }}>{stickerNotice}</p>}
+
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))',
+            gap: 10,
+            marginTop: 12,
+          }}
+        >
+          {stickers.map((stk) => {
+            const isCustom = stk.id.startsWith('custom-');
+            const sizeKb = Math.max(1, Math.round(stk.dataUrl.length / 1024));
+            return (
+              <div
+                key={stk.id}
+                style={{
+                  background: 'var(--bg)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 10,
+                  padding: 10,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: 6,
+                }}
+              >
+                <img
+                  src={stk.dataUrl}
+                  alt={stk.title}
+                  style={{ width: 64, height: 64, objectFit: 'contain' }}
+                />
+                <div style={{ fontSize: 12, fontWeight: 600, textAlign: 'center' }}>{stk.title}</div>
+                <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                  {stk.pack} · {sizeKb} КБ
+                </div>
+                {isCustom ? (
+                  <button
+                    type="button"
+                    className="btn"
+                    style={{ width: '100%', padding: '4px 8px', fontSize: 11, color: 'var(--danger)' }}
+                    onClick={() => handleDeleteSticker(stk.id, stk.title)}
+                  >
+                    Удалить
+                  </button>
+                ) : (
+                  <span style={{ fontSize: 10, color: 'var(--accent)' }}>Базовый Base64</span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
     </main>
     <BottomNav />
-    </>
+    </DesktopShell>
   );
 }
 

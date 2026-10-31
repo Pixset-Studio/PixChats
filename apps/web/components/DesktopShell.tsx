@@ -12,10 +12,8 @@ const useIsoLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : use
 let savedListScroll = 0;
 
 /**
- * На широких экранах (ПК) показывает рейл папок + список чатов слева и содержимое
- * страницы (сам чат, или заглушку "выберите чат") справа — как в десктопной версии
- * Telegram. На мобильном — просто рендерит children без изменений (там уже есть
- * BottomNav и собственный список чатов внутри страницы /chats).
+ * На широких экранах (ПК) показывает горизонтальную панель вкладок сверху,
+ * список чатов слева и содержимое страницы справа.
  */
 export function DesktopShell({ children }: { children: React.ReactNode }) {
   const isDesktop = useIsDesktop();
@@ -30,16 +28,18 @@ export function DesktopShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="desktop-shell">
       <IconRail />
-      <div
-        className="desktop-list-pane"
-        ref={listRef}
-        onScroll={(e) => {
-          savedListScroll = e.currentTarget.scrollTop;
-        }}
-      >
-        <ChatListPanel />
+      <div className="desktop-body">
+        <div
+          className="desktop-list-pane"
+          ref={listRef}
+          onScroll={(e) => {
+            savedListScroll = e.currentTarget.scrollTop;
+          }}
+        >
+          <ChatListPanel />
+        </div>
+        <div className="desktop-content-pane">{children}</div>
       </div>
-      <div className="desktop-content-pane">{children}</div>
     </div>
   );
 }

@@ -6,9 +6,10 @@ export interface UpdateProfileParams {
   displayName?: string;
   username?: string;
   bio?: string;
+  avatarUrl?: string;
 }
 
-/** Смена отображаемого имени, юзернейма и/или описания профиля. */
+/** Смена отображаемого имени, юзернейма, описания и/или Base64-аватара профиля. */
 export async function updateProfile(userId: string, params: UpdateProfileParams): Promise<void> {
   const supabase = getSupabaseClient();
   const patch: Record<string, string> = {};
@@ -33,6 +34,9 @@ export async function updateProfile(userId: string, params: UpdateProfileParams)
   if (params.bio !== undefined) {
     patch.bio = params.bio;
   }
+  if (params.avatarUrl !== undefined) {
+    patch.avatar_url = params.avatarUrl;
+  }
 
   if (Object.keys(patch).length === 0) return;
 
@@ -40,20 +44,39 @@ export async function updateProfile(userId: string, params: UpdateProfileParams)
   if (error) throw error;
 }
 
-/** Загружает новый файл аватара в Storage (бакет avatars/<userId>/...) и обновляет profiles.avatar_url. */
+/** Конвертирует файл в сжатый Base64 Data URL (без загрузки в Supabase Storage) и сохраняет в profiles.avatar_url. */
 export async function uploadAvatar(userId: string, file: File): Promise<string> {
   const supabase = getSupabaseClient();
-  const ext = file.name.split('.').pop() ?? 'png';
-  const path = `${userId}/avatar.${ext}`;
-
-  const { error: uploadError } = await supabase.storage.from('avatars').upload(path, file, {
-    upsert: true,
-    cacheControl: '3600',
+  const avatarUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Не удалось прочитать файл аватара'));
+    reader.onload = () => {
+      if (typeof document === 'undefined') {
+        resolve(String(reader.result));
+        return;
+      }
+      const img = new Image();
+      img.onerror = () => resolve(String(reader.result));
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const minDim = Math.min(img.width, img.height);
+        const sx = (img.width - minDim) / 2;
+        const sy = (img.height - minDim) / 2;
+        const target = Math.min(256, minDim);
+        canvas.width = target;
+        canvas.height = target;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve(String(reader.result));
+          return;
+        }
+        ctx.drawImage(img, sx, sy, minDim, minDim, 0, 0, target, target);
+        resolve(canvas.toDataURL('image/webp', 0.85));
+      };
+      img.src = String(reader.result);
+    };
+    reader.readAsDataURL(file);
   });
-  if (uploadError) throw uploadError;
-
-  const { data: publicUrlData } = supabase.storage.from('avatars').getPublicUrl(path);
-  const avatarUrl = `${publicUrlData.publicUrl}?t=${Date.now()}`; // бастер кэша, чтобы новая аватарка сразу отобразилась
 
   const { error: updateError } = await supabase.from('profiles').update({ avatar_url: avatarUrl }).eq('id', userId);
   if (updateError) throw updateError;
@@ -61,7 +84,7 @@ export async function uploadAvatar(userId: string, file: File): Promise<string> 
   return avatarUrl;
 }
 
-export type AppTheme = 'pixchats' | 'byte_blaster' | 'matrix' | 'crimson' | 'midnight' | 'dark' | 'light';
+export type AppTheme = 'pixchats' | 'industrial' | 'arcade' | 'minimal' | 'byteblaster' | 'byte_blaster' | 'dark' | 'light';
 
 export async function setTheme(userId: string, theme: AppTheme): Promise<void> {
   // Сначала применяем тему визуально (с плавным переходом цветов), потом сохраняем в профиль —

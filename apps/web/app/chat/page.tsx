@@ -31,8 +31,11 @@ import {
   markChatAsRead,
   toggleMessageReaction,
   getChatReactions,
+  getChatSafetyFingerprint,
+  getChatCustomPassphrase,
+  setChatCustomPassphrase,
 } from '@pixchats/core';
-import type { Message, Chat, Profile, ReactionPayload } from '@pixchats/core';
+import type { Message, Chat, Profile, ReactionPayload, ChatSafetyFingerprint } from '@pixchats/core';
 import { Loading } from '../../components/Loading';
 import { EmojiPicker } from '../../components/EmojiPicker';
 import {
@@ -115,6 +118,11 @@ function ChatWindowInner() {
   const [isRecording, setIsRecording] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+
+  // Сквозное шифрование (E2EE)
+  const [showE2EEModal, setShowE2EEModal] = useState(false);
+  const [e2eeFingerprint, setE2eeFingerprint] = useState<ChatSafetyFingerprint | null>(null);
+  const [customPassInput, setCustomPassInput] = useState('');
 
   const [typingUsers, setTypingUsers] = useState<Record<string, string>>({});
   const lastBroadcastTypingRef = useRef<number>(0);
@@ -310,6 +318,13 @@ function ChatWindowInner() {
       initialIdsRef.current = new Set(initialMessages.map((m) => m.id));
       setMessages(initialMessages);
       await markChatAsRead(profile.id, chatId);
+
+      // Загружаем статус сквозного шифрования (E2EE) и отпечаток безопасности
+      try {
+        setCustomPassInput(getChatCustomPassphrase(chatId));
+        const fp = await getChatSafetyFingerprint(chatId, profile.id);
+        setE2eeFingerprint(fp);
+      } catch {}
 
       if (initialMessages.length > 0) {
         try {
@@ -621,6 +636,23 @@ function ChatWindowInner() {
             </div>
           </Link>
         )}
+
+        <button
+          type="button"
+          className="e2ee-badge-btn"
+          onClick={async () => {
+            if (me) {
+              const fp = await getChatSafetyFingerprint(chatId, me.id, otherProfile?.id);
+              setE2eeFingerprint(fp);
+            }
+            setCustomPassInput(getChatCustomPassphrase(chatId));
+            setShowE2EEModal(true);
+          }}
+          title="Сквозное шифрование (AES-256-GCM) активно. Нажмите для проверки отпечатка ключей."
+        >
+          <span>🔒</span>
+          <span>E2EE</span>
+        </button>
       </header>
 
       {me.frozen && (
@@ -701,7 +733,11 @@ function ChatWindowInner() {
                       <img
                         src={m.media_path}
                         alt={m.text}
-                        className="media-image"
+                        className={
+                          m.text?.startsWith('Стикер:') || m.media_path.startsWith('data:image/svg+xml')
+                            ? 'media-sticker'
+                            : 'media-image'
+                        }
                         onClick={(e) => e.stopPropagation()}
                       />
                     ) : m.message_type === 'video' && m.media_path ? (
@@ -1044,6 +1080,102 @@ function ChatWindowInner() {
             <button className="btn" style={{ width: 'auto', marginTop: 12 }} onClick={() => setForwardTarget(null)}>
               Отмена
             </button>
+          </div>
+        </div>
+      )}
+
+      {showE2EEModal && (
+        <div className="modal-overlay" onClick={() => setShowE2EEModal(false)}>
+          <div className="modal-card" style={{ maxWidth: 440 }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ marginTop: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span>🔒</span>
+              <span>Сквозное шифрование (E2EE)</span>
+            </h3>
+            <p style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.45 }}>
+              Сообщения в этом чате шифруются на вашем устройстве по стандарту{' '}
+              <strong style={{ color: 'var(--text)' }}>AES-256-GCM (Web Crypto API)</strong> перед отправкой на сервер.
+            </p>
+
+            {e2eeFingerprint && (
+              <div
+                style={{
+                  background: 'var(--bg)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 10,
+                  padding: 14,
+                  marginBottom: 14,
+                  textAlign: 'center',
+                }}
+              >
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>
+                  Контрольные эмодзи канала
+                </div>
+                <div style={{ fontSize: 28, letterSpacing: 10, marginBottom: 10 }}>
+                  {e2eeFingerprint.emojis.join(' ')}
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>
+                  Отпечаток безопасности SHA-256
+                </div>
+                <div
+                  style={{
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 13,
+                    color: 'var(--accent)',
+                    letterSpacing: 1.5,
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(4, 1fr)',
+                    gap: 6,
+                  }}
+                >
+                  {e2eeFingerprint.hexBlocks.map((blk, idx) => (
+                    <span key={idx}>{blk}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div style={{ marginBottom: 14 }}>
+              <label className="label">Дополнительный секретный пароль чата (опционально)</label>
+              <input
+                type="password"
+                className="input"
+                value={customPassInput}
+                onChange={(e) => setCustomPassInput(e.target.value)}
+                placeholder="Оставьте пустым для автоматического ключа чата"
+              />
+              <span style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                Если задать секретный пароль, прочитать сообщения сможет только собеседник, введший точно такой же пароль.
+              </span>
+            </div>
+
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button
+                type="button"
+                className="btn"
+                style={{ width: 'auto' }}
+                onClick={() => setShowE2EEModal(false)}
+              >
+                Закрыть
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                style={{ width: 'auto' }}
+                onClick={async () => {
+                  setChatCustomPassphrase(chatId, customPassInput);
+                  const refreshed = await getMessages(chatId);
+                  setMessages(refreshed);
+                  if (me) {
+                    setE2eeFingerprint(await getChatSafetyFingerprint(chatId, me.id, otherProfile?.id));
+                  }
+                  setShowE2EEModal(false);
+                  setNotice(customPassInput.trim() ? 'Личный ключ E2EE применён' : 'Включён стандартный ключ E2EE');
+                  setTimeout(() => setNotice(null), 2000);
+                }}
+              >
+                Сохранить ключ
+              </button>
+            </div>
           </div>
         </div>
       )}

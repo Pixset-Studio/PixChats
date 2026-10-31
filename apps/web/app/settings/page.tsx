@@ -7,7 +7,6 @@ import {
   getCurrentProfile,
   hasActiveSession,
   updateProfile,
-  uploadAvatar,
   setTheme as persistTheme,
   updatePrivacySettings,
   getLinkedIdentities,
@@ -19,8 +18,11 @@ import {
 } from '@pixchats/core';
 import type { Profile, LinkedIdentity, PixsetStudioAccount, AppTheme } from '@pixchats/core';
 import { BottomNav } from '../../components/BottomNav';
+import { DesktopShell } from '../../components/DesktopShell';
 import { isBanned } from '../../lib/ban';
 import { buildAppUrl } from '../../lib/url';
+import { PIXSET_THEMES, applyTheme, getCurrentTheme } from '../../components/ThemeManager';
+import { fileToBase64Image } from '../../lib/imageUtils';
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -30,13 +32,7 @@ export default function SettingsPage() {
   const [displayName, setDisplayName] = useState('');
   const [bio, setBio] = useState('');
   const [username, setUsername] = useState('');
-  const [theme, setThemeState] = useState<AppTheme>(() => {
-    if (typeof window !== 'undefined') {
-      const saved = localStorage.getItem('pixchats:theme') as AppTheme;
-      if (saved) return saved;
-    }
-    return 'pixchats';
-  });
+  const [theme, setThemeState] = useState<AppTheme>(() => getCurrentTheme());
   const [whoCanMessage, setWhoCanMessage] = useState<'everyone' | 'friends_only' | 'nobody'>('everyone');
   const [showLastSeen, setShowLastSeen] = useState<'everyone' | 'friends_only' | 'nobody'>('everyone');
   const [whoCanAdd, setWhoCanAdd] = useState<'everyone' | 'friends_only' | 'nobody'>('everyone');
@@ -75,7 +71,8 @@ export default function SettingsPage() {
       setDisplayName(me.display_name);
       setUsername(me.username);
       setBio(me.bio ?? '');
-      setThemeState(me.theme);
+      // Не перезаписываем кастомную тему из устаревшего поля базы
+      setThemeState(getCurrentTheme());
       setWhoCanMessage(me.privacy_who_can_message);
       setShowLastSeen(me.privacy_show_last_seen);
       setWhoCanAdd(me.privacy_who_can_add_to_groups);
@@ -105,8 +102,10 @@ export default function SettingsPage() {
     setAvatarUploading(true);
     setError(null);
     try {
-      const url = await uploadAvatar(profile.id, e.target.files[0]);
-      setProfile({ ...profile, avatar_url: url });
+      // Сжимаем аватар и сохраняем напрямую в base64 без расхода хранилища Supabase
+      const base64Data = await fileToBase64Image(e.target.files[0], 256, 0.85);
+      await updateProfile(profile.id, { avatarUrl: base64Data });
+      setProfile({ ...profile, avatar_url: base64Data });
       setNotice('Аватар обновлён');
     } catch (err: any) {
       setError(err.message ?? 'Не удалось загрузить аватар');
@@ -117,12 +116,9 @@ export default function SettingsPage() {
 
   async function handleThemeChange(newTheme: AppTheme) {
     setThemeState(newTheme);
-    if (typeof window !== 'undefined') {
-      document.documentElement.setAttribute('data-theme', newTheme);
-      localStorage.setItem('pixchats:theme', newTheme);
-    }
+    applyTheme(newTheme);
     if (profile) {
-      await persistTheme(profile.id, newTheme);
+      persistTheme(profile.id, newTheme).catch(() => {});
     }
     setNotice('Тема обновлена');
     setTimeout(() => setNotice(null), 1500);
@@ -194,7 +190,7 @@ export default function SettingsPage() {
   if (!profile) return null;
 
   return (
-    <>
+    <DesktopShell>
     <main className="container-wide with-bottom-nav">
       <header className="app-header">
         <h1 style={{ fontFamily: 'var(--font-display)', fontSize: 20, margin: 0 }}>Настройки</h1>
@@ -276,63 +272,14 @@ export default function SettingsPage() {
           Выберите цветовую тему интерфейса. Включает фирменную тёмно-жёлтую тему PixChats и стили с официального сайта Pixset Studio:
         </p>
         <div className="theme-picker-grid">
-          {[
-            {
-              id: 'pixchats' as AppTheme,
-              name: 'PixChats',
-              desc: 'Фирменная тёмно-жёлтая тема',
-              accent: '#facc15',
-              bg: '#09090b',
-              surface: '#151518',
-            },
-            {
-              id: 'byte_blaster' as AppTheme,
-              name: 'Byte Blaster',
-              desc: 'Неоновый ретро-киберпанк (Pixset Studio)',
-              accent: '#00f3ff',
-              bg: '#0a0a14',
-              surface: '#121226',
-            },
-            {
-              id: 'matrix' as AppTheme,
-              name: 'Matrix',
-              desc: 'Изумрудный терминал хакера (Pixset Studio)',
-              accent: '#22c55e',
-              bg: '#060d09',
-              surface: '#0d1a12',
-            },
-            {
-              id: 'crimson' as AppTheme,
-              name: 'Crimson',
-              desc: 'Огненный коралл и антрацит (Pixset Studio)',
-              accent: '#f97316',
-              bg: '#120d0e',
-              surface: '#1e1416',
-            },
-            {
-              id: 'midnight' as AppTheme,
-              name: 'Midnight',
-              desc: 'Полуночный сапфир и индиго (Pixset Studio)',
-              accent: '#38bdf8',
-              bg: '#0b0f19',
-              surface: '#131b2e',
-            },
-            {
-              id: 'light' as AppTheme,
-              name: 'Светлая',
-              desc: 'Чистое контрастное светлое оформление',
-              accent: '#ca8a04',
-              bg: '#f8fafc',
-              surface: '#ffffff',
-            },
-          ].map((item) => {
-            const isSelected = theme === item.id || (theme === 'dark' && item.id === 'pixchats');
+          {PIXSET_THEMES.map((item) => {
+            const isSelected = theme === item.id || (theme === 'dark' && item.id === 'pixchats') || (theme === 'byte_blaster' && item.id === 'byteblaster');
             return (
               <button
                 key={item.id}
                 type="button"
                 className={`theme-card ${isSelected ? 'active' : ''}`}
-                onClick={() => handleThemeChange(item.id)}
+                onClick={() => handleThemeChange(item.id as AppTheme)}
               >
                 <div className="theme-preview-dots">
                   <span className="dot-primary" style={{ background: item.accent }} />
@@ -348,6 +295,49 @@ export default function SettingsPage() {
             );
           })}
         </div>
+      </div>
+
+      <div className="section-title">Push-уведомления</div>
+      <div className="card" style={{ marginBottom: 24, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
+        <div>
+          <div style={{ fontWeight: 600, fontSize: 14 }}>Системные уведомления браузера</div>
+          <div style={{ fontSize: 12.5, color: 'var(--text-muted)', marginTop: 4 }}>
+            Статус:{' '}
+            <strong style={{ color: 'var(--accent)' }}>
+              {typeof window !== 'undefined' && 'Notification' in window
+                ? Notification.permission === 'granted'
+                  ? '✓ Разрешены'
+                  : Notification.permission === 'denied'
+                    ? '✕ Заблокированы в настройках браузера'
+                    : 'Ожидает подтверждения'
+                : 'Не поддерживается'}
+            </strong>
+          </div>
+        </div>
+        <button
+          type="button"
+          className="btn btn-primary"
+          style={{ width: 'auto' }}
+          onClick={async () => {
+            if (typeof window === 'undefined' || !('Notification' in window)) return;
+            try {
+              const res = await Notification.requestPermission();
+              if (res === 'granted') {
+                setNotice('Push-уведомления успешно включены!');
+                new Notification('PixChats', {
+                  body: 'Системные Push-уведомления активны!',
+                  icon: `${process.env.NEXT_PUBLIC_BASE_PATH || ''}/logo/icon.png`,
+                });
+              } else {
+                setError('Доступ к уведомлениям не предоставлен браузером');
+              }
+            } catch {
+              setError('Не удалось запросить доступ к уведомлениям');
+            }
+          }}
+        >
+          🔔 Запросить доступ к уведомлениям
+        </button>
       </div>
 
       <div className="section-title">Учётная запись Pixset Studio</div>
@@ -519,6 +509,6 @@ export default function SettingsPage() {
       </div>
     </main>
     <BottomNav />
-    </>
+    </DesktopShell>
   );
 }
