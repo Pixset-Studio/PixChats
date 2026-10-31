@@ -58,6 +58,7 @@ export default function SettingsPage() {
   const [error, setError] = useState<string | null>(null);
   const [avatarUploading, setAvatarUploading] = useState(false);
   const [notifPrefs, setNotifPrefs] = useState<NotificationPreferences>(DEFAULT_NOTIFICATION_PREFS);
+  const [desktopAutoStart, setDesktopAutoStart] = useState(true);
 
   useEffect(() => {
     (async () => {
@@ -92,6 +93,18 @@ export default function SettingsPage() {
       setPixsetAccount(getSavedPixsetStudioAccount());
       setNotifPrefs(getNotificationPrefs());
       ensureNotificationPermissionEverywhere();
+
+      try {
+        if (typeof window !== 'undefined') {
+          if (window.pixchatsDesktop?.getAutoStartEnabled) {
+            const enabled = await window.pixchatsDesktop.getAutoStartEnabled();
+            setDesktopAutoStart(enabled);
+          } else {
+            const saved = localStorage.getItem('pixchats:desktop_autostart');
+            setDesktopAutoStart(saved === null ? true : saved === '1');
+          }
+        }
+      } catch {}
     })();
   }, [router]);
 
@@ -101,6 +114,22 @@ export default function SettingsPage() {
     if (value) {
       void requestPermissionNow();
     }
+  }
+
+  async function handleToggleDesktopAutoStart(enabled: boolean) {
+    setDesktopAutoStart(enabled);
+    try {
+      localStorage.setItem('pixchats:desktop_autostart', enabled ? '1' : '0');
+      if (typeof window !== 'undefined' && window.pixchatsDesktop?.setAutoStartEnabled) {
+        await window.pixchatsDesktop.setAutoStartEnabled(enabled);
+      }
+      setNotice(
+        enabled
+          ? 'Автозапуск и фоновый режим (.exe) включены'
+          : 'Автозапуск при старте ПК отключён'
+      );
+      setTimeout(() => setNotice(null), 1800);
+    } catch {}
   }
 
   async function handleSaveProfile(e: React.FormEvent) {
@@ -333,6 +362,11 @@ export default function SettingsPage() {
             desc: 'Новые входящие сообщения в личных диалогах',
           },
           {
+            key: 'incomingCalls' as const,
+            title: 'Входящие звонки',
+            desc: 'Звуковой вызов и всплывающее окно при входящем аудио- или видеозвонке',
+          },
+          {
             key: 'groupMessages' as const,
             title: 'Группы и каналы',
             desc: 'Новые сообщения в групповых чатах и каналах',
@@ -404,6 +438,42 @@ export default function SettingsPage() {
             </label>
           );
         })}
+
+        <label
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 16,
+            padding: '12px',
+            borderRadius: 10,
+            background: 'var(--surface-raised)',
+            border: `1px solid ${desktopAutoStart ? 'var(--accent)' : 'var(--border)'}`,
+            cursor: 'pointer',
+            marginTop: 4,
+          }}
+        >
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontWeight: 700, fontSize: 14, color: 'var(--text)' }}>
+              🖥️ Автозапуск при старте ПК и фоновый режим (.exe)
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+              В версии для Windows (.exe) программа автоматически запускается вместе с компьютером, работает в системном трее в фоне и непрерывно ждёт новых сообщений, звонков и уведомлений.
+            </div>
+          </div>
+          <input
+            type="checkbox"
+            checked={desktopAutoStart}
+            onChange={(e) => handleToggleDesktopAutoStart(e.target.checked)}
+            style={{
+              width: 20,
+              height: 20,
+              accentColor: 'var(--accent)',
+              cursor: 'pointer',
+              flexShrink: 0,
+            }}
+          />
+        </label>
       </div>
 
       <div className="section-title">Учётная запись Pixset Studio</div>

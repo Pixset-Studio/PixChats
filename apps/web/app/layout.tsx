@@ -2,6 +2,7 @@ import './globals.css';
 import { NotificationListener } from '../components/NotificationListener';
 import { UpdateNotifier } from '../components/UpdateNotifier';
 import { ThemeManager } from '../components/ThemeManager';
+import { CallManager } from '../components/CallManager';
 
 const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH || '';
 
@@ -48,6 +49,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <ThemeManager />
         {children}
         <NotificationListener />
+        <CallManager />
         <UpdateNotifier />
       </body>
     </html>

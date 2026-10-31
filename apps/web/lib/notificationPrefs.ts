@@ -1,6 +1,8 @@
 export interface NotificationPreferences {
   /** Главный переключатель всех уведомлений */
   enabled: boolean;
+  /** Входящие аудио- и видеозвонки */
+  incomingCalls: boolean;
   /** Новые личные сообщения (direct) */
   directMessages: boolean;
   /** Новые сообщения в группах и каналах */
@@ -21,6 +23,7 @@ const STORAGE_KEY = 'pixchats:notification_prefs_v1';
 
 export const DEFAULT_NOTIFICATION_PREFS: NotificationPreferences = {
   enabled: true,
+  incomingCalls: true,
   directMessages: true,
   groupMessages: true,
   mentions: true,

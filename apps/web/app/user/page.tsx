@@ -27,6 +27,7 @@ import { MuteControl } from '../../components/MuteControl';
 import { Loading } from '../../components/Loading';
 import { DesktopShell } from '../../components/DesktopShell';
 import { SharedChatAttachments } from '../../components/SharedChatAttachments';
+import { startPixChatsCall } from '../../components/CallManager';
 import {
   isChatArchived,
   toggleArchiveChat,
@@ -284,9 +285,41 @@ function UserProfileInner() {
         {notice && <p className="notice">{notice}</p>}
 
         {!isSelf && (
-          <div className="btn-row" style={{ maxWidth: 340, margin: '16px auto 0', flexDirection: 'row', flexWrap: 'wrap' }}>
+          <div className="btn-row" style={{ maxWidth: 420, margin: '16px auto 0', flexDirection: 'row', flexWrap: 'wrap' }}>
             <button className="btn btn-primary" onClick={handleMessage} disabled={isBlocked}>
               Написать
+            </button>
+            <button
+              className="btn"
+              onClick={async () => {
+                const cid = await ensureDirectChatId();
+                startPixChatsCall({
+                  targetUserId: user.id,
+                  targetName: user.display_name,
+                  targetAvatar: user.avatar_url,
+                  chatId: cid ?? undefined,
+                  mode: 'audio',
+                });
+              }}
+              disabled={isBlocked}
+            >
+              📞 Позвонить
+            </button>
+            <button
+              className="btn"
+              onClick={async () => {
+                const cid = await ensureDirectChatId();
+                startPixChatsCall({
+                  targetUserId: user.id,
+                  targetName: user.display_name,
+                  targetAvatar: user.avatar_url,
+                  chatId: cid ?? undefined,
+                  mode: 'video',
+                });
+              }}
+              disabled={isBlocked}
+            >
+              📹 Видеозвонок
             </button>
             {!isFriend && (
               <button className="btn" onClick={handleAddFriend} disabled={isBlocked}>

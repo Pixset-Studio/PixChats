@@ -1,5 +1,6 @@
 // PixChats Native Windows Integration Module (C# / .NET Win32)
-// Обеспечивает нативную регистрацию AppUserModelID в реестре Windows
+// Обеспечивает нативную регистрацию AppUserModelID, автозапуска при старте Windows
+// (HKCU\Software\Microsoft\Windows\CurrentVersion\Run) в фоновом режиме (--autostart-background)
 // и поддержку системных уведомлений Windows Action Center и протокола pixchats://.
 
 using System;
@@ -24,11 +25,28 @@ namespace PixsetStudio.PixChats
             {
                 SetCurrentProcessExplicitAppUserModelID(AppId);
                 RegisterAppUserModelIdInRegistry();
+                RegisterWindowsStartupBackground();
                 RegisterCustomProtocol();
             }
             catch (Exception ex)
             {
                 Console.Error.WriteLine("[PixChatsNativeWin] Init warning: " + ex.Message);
+            }
+        }
+
+        private static void RegisterWindowsStartupBackground()
+        {
+            string runKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
+            string exePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "PixChats.exe");
+            if (File.Exists(exePath))
+            {
+                using (RegistryKey key = Registry.CurrentUser.CreateSubKey(runKeyPath))
+                {
+                    if (key != null)
+                    {
+                        key.SetValue(AppName, "\"" + exePath + "\" --autostart-background", RegistryValueKind.String);
+                    }
+                }
             }
         }
 

@@ -11,7 +11,14 @@ export interface NativeDesktopBridge {
     url?: string;
     silent?: boolean;
   }) => Promise<boolean> | boolean;
+  notifyIncomingCall?: (payload: {
+    callerName: string;
+    mode: 'audio' | 'video';
+    chatId?: string;
+  }) => Promise<boolean> | boolean;
   requestNotificationPermission?: () => Promise<'granted' | 'denied'>;
+  getAutoStartEnabled?: () => Promise<boolean>;
+  setAutoStartEnabled?: (enabled: boolean) => Promise<boolean>;
   setBadgeCount?: (count: number) => void;
   installUpdate?: (downloadUrl: string, fileName?: string) => Promise<boolean>;
   onNavigate?: (callback: (url: string) => void) => () => void;
@@ -88,13 +95,6 @@ export function detectRuntimePlatform(): RuntimePlatform {
   return 'web';
 }
 
-/**
- * Автоматически запрашивает разрешение на уведомления сразу везде:
- * - В Android APK: через нативный Kotlin-мост (PixChatsAndroid.requestNotificationPermission)
- *   и через плагин Capacitor LocalNotifications
- * - В Windows EXE: через нативный процесс Electron / Windows Toast API
- * - В Web: через браузерный Notification.requestPermission() (сразу и при первом касании/клике)
- */
 let autoRequestInitialized = false;
 
 export async function requestPermissionNow(): Promise<'granted' | 'denied' | 'default'> {
@@ -102,7 +102,6 @@ export async function requestPermissionNow(): Promise<'granted' | 'denied' | 'de
 
   const platform = detectRuntimePlatform();
 
-  // 1. Нативное приложение Windows (.exe) — уведомления разрешены на уровне ОС
   if (platform === 'desktop-exe') {
     try {
       if (window.pixchatsDesktop?.requestNotificationPermission) {
@@ -114,7 +113,6 @@ export async function requestPermissionNow(): Promise<'granted' | 'denied' | 'de
     return 'granted';
   }
 
-  // 2. Нативное приложение Android (.apk) — запрашиваем системное разрешение POST_NOTIFICATIONS
   if (platform === 'android-apk') {
     let granted = false;
 
@@ -145,7 +143,6 @@ export async function requestPermissionNow(): Promise<'granted' | 'denied' | 'de
       // ignore
     }
 
-    // Дополнительно пробуем Web Notification API, если он доступен
     if ('Notification' in window && Notification.permission === 'default') {
       try {
         const res = await Notification.requestPermission();
@@ -158,7 +155,6 @@ export async function requestPermissionNow(): Promise<'granted' | 'denied' | 'de
     return granted ? 'granted' : 'default';
   }
 
-  // 3. Веб-версия
   if ('Notification' in window) {
     if (Notification.permission === 'granted' || Notification.permission === 'denied') {
       return Notification.permission;
@@ -177,11 +173,8 @@ export function ensureNotificationPermissionEverywhere(): void {
   if (typeof window === 'undefined' || autoRequestInitialized) return;
   autoRequestInitialized = true;
 
-  // Запрашиваем сразу при старте приложения
   void requestPermissionNow();
 
-  // Также подписываемся на первые взаимодействия пользователя, чтобы гарантировать
-  // показ системного диалога разрешений на всех браузерах и мобильных устройствах
   const triggerOnInteraction = async () => {
     const status = await requestPermissionNow();
     if (status === 'granted' || status === 'denied') {
@@ -223,17 +216,13 @@ export async function sendNativeOrWebNotification(options: {
 
   // 2. Нативное приложение Android (.apk)
   if (platform === 'android-apk') {
-    // 2a. Через нативный Kotlin JavascriptInterface
     if (window.PixChatsAndroid?.showNotification) {
       try {
         window.PixChatsAndroid.showNotification(title, body, url);
         return;
-      } catch {
-        // fallback к Capacitor LocalNotifications
-      }
+      } catch {}
     }
 
-    // 2b. Через Capacitor LocalNotifications
     const localNotifs = window.Capacitor?.Plugins?.LocalNotifications;
     if (localNotifs?.schedule) {
       try {
@@ -248,9 +237,7 @@ export async function sendNativeOrWebNotification(options: {
           ],
         });
         return;
-      } catch {
-        // fallback ниже
-      }
+      } catch {}
     }
   }
 
@@ -277,7 +264,6 @@ export async function sendNativeOrWebNotification(options: {
         }
         return;
       } catch {
-        // На мобильных браузерах new Notification() может требовать ServiceWorkerRegistration
         if ('serviceWorker' in navigator) {
           try {
             const reg = await navigator.serviceWorker.getRegistration();
@@ -289,9 +275,7 @@ export async function sendNativeOrWebNotification(options: {
                 data: { url },
               });
             }
-          } catch {
-            // ignore
-          }
+          } catch {}
         }
       }
     }

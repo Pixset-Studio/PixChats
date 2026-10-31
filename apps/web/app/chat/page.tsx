@@ -9,6 +9,7 @@ import { DesktopShell } from '../../components/DesktopShell';
 import { buildAppUrl } from '../../lib/url';
 import { VerifiedBadge } from '../../components/VerifiedBadge';
 import { NameWithBadges } from '../../components/NameBadges';
+import { startPixChatsCall } from '../../components/CallManager';
 import {
   getSupabaseClient,
   getCurrentProfile,
@@ -904,6 +905,43 @@ function ChatWindowInner() {
         )}
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          {chat.type === 'direct' && otherProfile && !isSavedChat && !blockedEitherWay && (
+            <>
+              <button
+                type="button"
+                className="e2ee-badge-btn"
+                onClick={() =>
+                  startPixChatsCall({
+                    targetUserId: otherProfile.id,
+                    targetName: otherProfile.display_name,
+                    targetAvatar: otherProfile.avatar_url,
+                    chatId: chat.id,
+                    mode: 'audio',
+                  })
+                }
+                title="Аудиозвонок"
+              >
+                <span>📞</span>
+              </button>
+              <button
+                type="button"
+                className="e2ee-badge-btn"
+                onClick={() =>
+                  startPixChatsCall({
+                    targetUserId: otherProfile.id,
+                    targetName: otherProfile.display_name,
+                    targetAvatar: otherProfile.avatar_url,
+                    chatId: chat.id,
+                    mode: 'video',
+                  })
+                }
+                title="Видеозвонок"
+              >
+                <span>📹</span>
+              </button>
+            </>
+          )}
+
           <button
             type="button"
             className="e2ee-badge-btn"

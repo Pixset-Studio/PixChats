@@ -1,9 +1,10 @@
-// PixChats Native Desktop Application (Windows .exe / Electron + Win32 IPC)
+// PixChats Native Desktop Application (Windows .exe / Electron + Win32 Background Daemon)
 //
 // Нативное десктопное приложение PixChats для Windows:
-// - Системные уведомления Windows 10/11 Action Center (через нативный модуль Notification и AppUserModelId)
-// - Работа в фоновом режиме в системном трее (System Tray) для приёма уведомлений при закрытом окне
-// - Автоматическое предоставление системных разрешений (микрофон, уведомления, буфер обмена)
+// - Автозапуск при старте компьютера (Windows Startup / Run Registry + LoginItemSettings) в фоновом режиме (--autostart-background)
+// - Непрерывная работа в фоне в системном трее (System Tray) с защитой от засыпания процесса (powerSaveBlocker)
+// - Мгновенный приём сообщений, звонков и любых других уведомлений в фоновом режиме 24/7
+// - Автоматическое разворачивание окна поверх экрана при входящем звонке
 // - Нативное скачивание и автоматический запуск .exe-обновлений из GitHub Releases
 
 const {
@@ -15,19 +16,19 @@ const {
   ipcMain,
   session,
   shell,
+  powerSaveBlocker,
 } = require('electron');
 const path = require('path');
 const http = require('http');
 const https = require('https');
 const fs = require('fs');
 const os = require('os');
-const { spawn } = require('child_process');
+const { spawn, execFile } = require('child_process');
 
 const APP_ID = 'studio.pixset.pixchats';
 const WEB_DIST = path.join(__dirname, 'web-dist');
 const PORT = 47821;
 
-// Регистрируем AppUserModelId для нативных уведомлений Windows 10/11
 if (process.platform === 'win32') {
   app.setAppUserModelId(APP_ID);
 }
@@ -35,6 +36,83 @@ if (process.platform === 'win32') {
 let mainWindow = null;
 let tray = null;
 let isQuitting = false;
+let hasShownTrayHint = false;
+let powerSaveId = null;
+
+function getConfigFilePath() {
+  try {
+    return path.join(app.getPath('userData'), 'pixchats-desktop-config.json');
+  } catch {
+    return path.join(os.tmpdir(), 'pixchats-desktop-config.json');
+  }
+}
+
+function readDesktopConfig() {
+  try {
+    const file = getConfigFilePath();
+    if (fs.existsSync(file)) {
+      return JSON.parse(fs.readFileSync(file, 'utf8'));
+    }
+  } catch {}
+  return { autoStart: true };
+}
+
+function writeDesktopConfig(patch) {
+  try {
+    const current = readDesktopConfig();
+    const next = { ...current, ...patch };
+    fs.writeFileSync(getConfigFilePath(), JSON.stringify(next, null, 2), 'utf8');
+    return next;
+  } catch {
+    return readDesktopConfig();
+  }
+}
+
+/**
+ * Включает или выключает автозапуск PixChats при старте Windows (с запуском в фоновом режиме).
+ */
+function configureAutoStartOnBoot(enable = true) {
+  writeDesktopConfig({ autoStart: Boolean(enable) });
+
+  try {
+    app.setLoginItemSettings({
+      openAtLogin: Boolean(enable),
+      openAsHidden: true,
+      path: process.execPath,
+      args: ['--autostart-background'],
+    });
+  } catch {}
+
+  // Дополнительно прописываем в реестр Windows HKCU\Software\Microsoft\Windows\CurrentVersion\Run
+  // чтобы автозапуск гарантированно работал на всех редакциях Windows 10/11
+  if (process.platform === 'win32' && app.isPackaged) {
+    const regKey = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
+    if (enable) {
+      const cmdValue = `"${process.execPath}" --autostart-background`;
+      execFile(
+        'reg.exe',
+        ['add', regKey, '/v', 'PixChats', '/t', 'REG_SZ', '/d', cmdValue, '/f'],
+        () => {}
+      );
+    } else {
+      execFile('reg.exe', ['delete', regKey, '/v', 'PixChats', '/f'], () => {});
+    }
+  }
+
+  rebuildTrayMenu();
+}
+
+function isStartedInBackground() {
+  const args = process.argv.map((a) => String(a).toLowerCase());
+  if (args.includes('--autostart-background') || args.includes('--hidden') || args.includes('--background')) {
+    return true;
+  }
+  try {
+    const loginSettings = app.getLoginItemSettings();
+    if (loginSettings && loginSettings.wasOpenedAsHidden) return true;
+  } catch {}
+  return false;
+}
 
 const MIME_TYPES = {
   '.html': 'text/html',
@@ -140,6 +218,16 @@ function downloadFileWithRedirects(url, destPath) {
   });
 }
 
+function showAndFocusMainWindow(targetUrl) {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+  if (targetUrl) {
+    mainWindow.webContents.send('pixchats:navigate', targetUrl);
+  }
+}
+
 function registerNativeIpcHandlers() {
   // 1. Нативные системные уведомления Windows (Toast Notifications)
   ipcMain.handle('pixchats:notify', (_event, payload) => {
@@ -156,19 +244,11 @@ function registerNativeIpcHandlers() {
       });
 
       notif.on('click', () => {
-        if (mainWindow) {
-          if (mainWindow.isMinimized()) mainWindow.restore();
-          mainWindow.show();
-          mainWindow.focus();
-          if (url) {
-            mainWindow.webContents.send('pixchats:navigate', url);
-          }
-        }
+        showAndFocusMainWindow(url);
       });
 
       notif.show();
 
-      // Мигание иконки на панели задач Windows, если окно не в фокусе
       if (mainWindow && !mainWindow.isFocused()) {
         mainWindow.flashFrame(true);
       }
@@ -178,12 +258,59 @@ function registerNativeIpcHandlers() {
     }
   });
 
-  // 2. Автоматическое подтверждение разрешения на уведомления
+  // 2. Входящий звонок из фонового режима — разворачивает окно поверх экрана + системное уведомление
+  ipcMain.handle('pixchats:incoming-call', (_event, payload) => {
+    try {
+      const { callerName, mode, chatId } = payload || {};
+      const iconPath = resolveAppIcon();
+
+      if (Notification.isSupported()) {
+        const callLabel = mode === 'video' ? '📹 Входящий видеозвонок' : '📞 Входящий аудиозвонок';
+        const notif = new Notification({
+          title: callLabel,
+          body: `${callerName || 'Собеседник'} звонит вам в PixChats`,
+          silent: false,
+          ...(iconPath ? { icon: iconPath } : {}),
+        });
+        notif.on('click', () => {
+          showAndFocusMainWindow(chatId ? `/chat/?id=${chatId}` : undefined);
+        });
+        notif.show();
+      }
+
+      if (mainWindow) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.focus();
+        mainWindow.flashFrame(true);
+        mainWindow.setAlwaysOnTop(true);
+        setTimeout(() => {
+          if (mainWindow) mainWindow.setAlwaysOnTop(false);
+        }, 3000);
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  });
+
+  // 3. Управление автозапуском с Windows
+  ipcMain.handle('pixchats:get-autostart', () => {
+    const cfg = readDesktopConfig();
+    return cfg.autoStart !== false;
+  });
+
+  ipcMain.handle('pixchats:set-autostart', (_event, enabled) => {
+    configureAutoStartOnBoot(Boolean(enabled));
+    return Boolean(enabled);
+  });
+
+  // 4. Автоматическое подтверждение разрешения на уведомления
   ipcMain.handle('pixchats:request-permission', () => {
     return 'granted';
   });
 
-  // 3. Нативное скачивание и установка .exe обновления из GitHub Releases
+  // 5. Нативное скачивание и установка .exe обновления из GitHub Releases
   ipcMain.handle('pixchats:install-update', async (_event, payload) => {
     try {
       const { downloadUrl, fileName } = payload || {};
@@ -193,7 +320,6 @@ function registerNativeIpcHandlers() {
 
       await downloadFileWithRedirects(downloadUrl, tempInstallerPath);
 
-      // Запускаем скачанный .exe-инсталлятор как отдельный процесс ОС и закрываем приложение для обновления
       const child = spawn(tempInstallerPath, [], {
         detached: true,
         stdio: 'ignore',
@@ -211,56 +337,67 @@ function registerNativeIpcHandlers() {
   });
 }
 
+function rebuildTrayMenu() {
+  if (!tray) return;
+  const cfg = readDesktopConfig();
+  const autoStartEnabled = cfg.autoStart !== false;
+
+  const contextMenu = Menu.buildFromTemplate([
+    {
+      label: 'Открыть PixChats',
+      click: () => showAndFocusMainWindow(),
+    },
+    {
+      label: 'Запускать при старте ПК (в фоне)',
+      type: 'checkbox',
+      checked: autoStartEnabled,
+      click: (menuItem) => {
+        configureAutoStartOnBoot(menuItem.checked);
+      },
+    },
+    { type: 'separator' },
+    {
+      label: 'Выйти полностью',
+      click: () => {
+        isQuitting = true;
+        app.quit();
+      },
+    },
+  ]);
+
+  tray.setContextMenu(contextMenu);
+}
+
 function createSystemTray() {
   const iconPath = resolveAppIcon();
   if (!iconPath) return;
 
   try {
     tray = new Tray(iconPath);
-    tray.setToolTip('PixChats — Мессенджер Pixset Studio');
+    tray.setToolTip('PixChats — работает в фоне (ожидание сообщений и звонков)');
+    rebuildTrayMenu();
 
-    const contextMenu = Menu.buildFromTemplate([
-      {
-        label: 'Открыть PixChats',
-        click: () => {
-          if (mainWindow) {
-            mainWindow.show();
-            mainWindow.focus();
-          }
-        },
-      },
-      { type: 'separator' },
-      {
-        label: 'Выйти из PixChats',
-        click: () => {
-          isQuitting = true;
-          app.quit();
-        },
-      },
-    ]);
-
-    tray.setContextMenu(contextMenu);
     tray.on('click', () => {
       if (!mainWindow) return;
       if (mainWindow.isVisible() && mainWindow.isFocused()) {
         mainWindow.hide();
       } else {
-        mainWindow.show();
-        mainWindow.focus();
+        showAndFocusMainWindow();
       }
     });
   } catch {
-    // ignore tray errors if OS environment lacks system tray
+    // ignore tray errors
   }
 }
 
-function createWindow() {
+function createWindow(startHidden = false) {
   const iconPath = resolveAppIcon();
   mainWindow = new BrowserWindow({
     width: 1240,
     height: 820,
     minWidth: 420,
     minHeight: 540,
+    show: !startHidden,
     title: 'PixChats',
     ...(iconPath ? { icon: iconPath } : {}),
     autoHideMenuBar: true,
@@ -269,7 +406,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      backgroundThrottling: false, // не замораживать WebSocket/Realtime в фоне для мгновенных уведомлений
+      backgroundThrottling: false, // не замораживать процесс в фоне — держим живое соединение для сообщений и звонков
     },
   });
 
@@ -279,11 +416,23 @@ function createWindow() {
     if (mainWindow) mainWindow.flashFrame(false);
   });
 
-  // При нажатии на крестик сворачиваем в системный трей Windows, чтобы уведомления продолжали приходить
+  // При нажатии на крестик приложение не закрывается, а остаётся работать в фоне в системном трее
   mainWindow.on('close', (event) => {
-    if (!isQuitting && tray) {
+    if (!isQuitting) {
       event.preventDefault();
       mainWindow.hide();
+
+      if (!hasShownTrayHint && Notification.isSupported()) {
+        hasShownTrayHint = true;
+        try {
+          new Notification({
+            title: 'PixChats работает в фоне',
+            body: 'Приложение свёрнуто в системный трей и продолжает принимать сообщения, звонки и уведомления.',
+            silent: true,
+            ...(iconPath ? { icon: iconPath } : {}),
+          }).show();
+        } catch {}
+      }
     }
   });
 
@@ -296,21 +445,25 @@ function createWindow() {
   });
 }
 
-// Защита от запуска нескольких копий приложения
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
   app.quit();
 } else {
   app.on('second-instance', () => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.show();
-      mainWindow.focus();
-    }
+    showAndFocusMainWindow();
   });
 
   app.whenReady().then(async () => {
-    // Автоматически разрешаем все системные права (уведомления, микрофон для ГС, медиа)
+    // Запрещаем ОС усыплять фоновый процесс PixChats, чтобы уведомления и звонки приходили мгновенно
+    try {
+      powerSaveId = powerSaveBlocker.start('prevent-app-suspension');
+    } catch {}
+
+    // Включаем автозапуск с Windows по умолчанию (если пользователь сам его не отключил)
+    const cfg = readDesktopConfig();
+    configureAutoStartOnBoot(cfg.autoStart !== false);
+
+    // Автоматически предоставляем все системные разрешения (микрофон, камера для звонков, экран, уведомления)
     if (session && session.defaultSession) {
       session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => {
         callback(true);
@@ -321,18 +474,32 @@ if (!gotSingleInstanceLock) {
     registerNativeIpcHandlers();
     await startServer();
     createSystemTray();
-    createWindow();
+
+    // Если приложение было запущено системой при старте компьютера (--autostart-background),
+    // оно тихо стартует в фоновом режиме в трее и ждёт новых сообщений/звонков.
+    const startHidden = isStartedInBackground();
+    createWindow(startHidden);
 
     app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) createWindow();
+      if (BrowserWindow.getAllWindows().length === 0) {
+        createWindow(false);
+      } else {
+        showAndFocusMainWindow();
+      }
     });
   });
 }
 
 app.on('before-quit', () => {
   isQuitting = true;
+  if (powerSaveId !== null && powerSaveBlocker.isStarted(powerSaveId)) {
+    powerSaveBlocker.stop(powerSaveId);
+  }
 });
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
+  // Не завершаем процесс при закрытии окон на Windows, пока приложение работает в фоне в трее
+  if (isQuitting && process.platform !== 'darwin') {
+    app.quit();
+  }
 });
