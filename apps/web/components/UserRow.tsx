@@ -12,7 +12,7 @@ export function UserRow({ profile, lastSeenLabel, action }: UserRowProps) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0' }}>
       <div
-        className="avatar"
+        className={`avatar ${!profile.avatar_url ? 'avatar-fallback' : ''}`}
         style={{
           width: 44,
           height: 44,

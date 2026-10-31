@@ -1,5 +1,6 @@
 import './globals.css';
 import { NotificationListener } from '../components/NotificationListener';
+import { UpdateNotifier } from '../components/UpdateNotifier';
 
 const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH || '';
 
@@ -34,7 +35,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             __html: `
               (function() {
                 try {
-                  var theme = localStorage.getItem('pixchats:theme') || 'dark';
+                  var theme = localStorage.getItem('pixchats:theme') || 'pixchats';
                   document.documentElement.setAttribute('data-theme', theme);
                 } catch (e) {}
               })();
@@ -45,6 +46,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         {children}
         <NotificationListener />
+        <UpdateNotifier />
       </body>
     </html>
   );

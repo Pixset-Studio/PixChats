@@ -41,7 +41,7 @@ export default function ProfilePage() {
       <main className="container-wide with-bottom-nav">
         <div className="profile-hero">
           <div
-            className="avatar"
+            className={`avatar ${!profile.avatar_url ? 'avatar-fallback' : ''}`}
             style={{
               backgroundImage: profile.avatar_url ? `url(${profile.avatar_url})` : undefined,
               backgroundSize: 'cover',

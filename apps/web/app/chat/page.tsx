@@ -116,10 +116,45 @@ function ChatWindowInner() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
 
+  const [typingUsers, setTypingUsers] = useState<Record<string, string>>({});
+  const lastBroadcastTypingRef = useRef<number>(0);
+
   const EMOJI_LIST = ['😀','😂','😍','😢','😡','👍','👎','🔥','🎉','❤️','🙏','😎','🤔','😭','👏','💀','✨','😴','🤝','😱'];
 
   function insertEmoji(emoji: string) {
     setDraft((prev) => prev + emoji);
+  }
+
+  function handleDraftChange(text: string) {
+    setDraft(text);
+    if (!chatId || !me) return;
+    const now = Date.now();
+    if (now - lastBroadcastTypingRef.current > 2500) {
+      lastBroadcastTypingRef.current = now;
+      try {
+        const supabase = getSupabaseClient();
+        const ch = supabase.channel(`typing:${chatId}`);
+        ch.send({
+          type: 'broadcast',
+          event: 'typing',
+          payload: { userId: me.id, name: me.display_name },
+        });
+      } catch {}
+    }
+  }
+
+  async function handleSendMedia(mediaUrl: string, caption?: string) {
+    setShowEmoji(false);
+    if (!chatId) return;
+    try {
+      await sendMessage(chatId, caption || 'Стикер', {
+        messageType: 'image',
+        mediaPath: mediaUrl,
+      });
+    } catch (err: any) {
+      setNotice('Не удалось отправить стикер/GIF');
+      setTimeout(() => setNotice(null), 2000);
+    }
   }
 
   async function startRecording() {
@@ -342,6 +377,32 @@ function ChatWindowInner() {
     return () => unsubscribe?.();
   }, [chatId, router]);
 
+  useEffect(() => {
+    if (!chatId || !me) return;
+    const supabase = getSupabaseClient();
+    const typingChannel = supabase.channel(`typing:${chatId}`);
+
+    typingChannel
+      .on('broadcast', { event: 'typing' }, ({ payload }) => {
+        if (payload && payload.userId && payload.userId !== me.id) {
+          const userName = payload.name || 'Пользователь';
+          setTypingUsers((prev) => ({ ...prev, [payload.userId]: userName }));
+          setTimeout(() => {
+            setTypingUsers((prev) => {
+              const copy = { ...prev };
+              delete copy[payload.userId];
+              return copy;
+            });
+          }, 3500);
+        }
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(typingChannel);
+    };
+  }, [chatId, me?.id]);
+
   async function handleToggleReaction(messageId: string, emoji: string) {
     if (!me) return;
     try {
@@ -504,7 +565,7 @@ function ChatWindowInner() {
             style={{ display: 'flex', alignItems: 'center', gap: 10, color: 'inherit', textDecoration: 'none' }}
           >
             <div
-              className="avatar"
+              className={`avatar ${blockedEitherWay || !otherProfile.avatar_url ? 'avatar-fallback' : ''}`}
               style={{
                 width: 40,
                 height: 40,
@@ -536,7 +597,7 @@ function ChatWindowInner() {
             style={{ display: 'flex', alignItems: 'center', gap: 10, color: 'inherit', textDecoration: 'none' }}
           >
             <div
-              className="avatar"
+              className={`avatar ${!chat.avatar_url ? 'avatar-fallback' : ''}`}
               style={{
                 width: 40,
                 height: 40,
@@ -600,7 +661,7 @@ function ChatWindowInner() {
                 {showSenderHeader ? (
                   <Link href={`/user/?id=${sender!.id}`} className="sender-avatar-link">
                     <div
-                      className="avatar"
+                      className={`avatar ${!sender!.avatar_url ? 'avatar-fallback' : ''}`}
                       style={{
                         width: 32,
                         height: 32,
@@ -875,76 +936,86 @@ function ChatWindowInner() {
               </div>
             </div>
           )}
-          <form onSubmit={handleSend} className="chat-composer">
-            <button
-              type="button"
-              className="btn"
-              style={{ width: 'auto', padding: '10px 14px' }}
-              onClick={() => fileInputRef.current?.click()}
-              disabled={uploading}
-              title="Прикрепить файл"
-            >
-              <PaperclipIcon size={18} />
-            </button>
-            <input ref={fileInputRef} type="file" style={{ display: 'none' }} onChange={handleFileSelected} />
+          {Object.keys(typingUsers).length > 0 && (
+            <div className="chat-typing-indicator">
+              <span className="typing-dots">
+                <span className="dot" />
+                <span className="dot" />
+                <span className="dot" />
+              </span>
+              <span>{Object.values(typingUsers).join(', ')} печатает...</span>
+            </div>
+          )}
 
-            <div style={{ position: 'relative', flex: 1 }}>
+          <div style={{ position: 'relative' }}>
+            {showEmoji && (
+              <div className="composer-emoji-popover">
+                <EmojiPicker
+                  onSelect={(emoji) => insertEmoji(emoji)}
+                  onSelectMedia={handleSendMedia}
+                  onClose={() => setShowEmoji(false)}
+                  title="Эмодзи, стикеры и GIF"
+                  enableMedia
+                />
+              </div>
+            )}
+
+            <form onSubmit={handleSend} className="chat-composer-unified-bar">
+              <button
+                type="button"
+                className="composer-inner-btn"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploading}
+                title="Прикрепить файл"
+              >
+                <PaperclipIcon size={18} />
+              </button>
+              <input ref={fileInputRef} type="file" style={{ display: 'none' }} onChange={handleFileSelected} />
+
               <textarea
-                className="input composer-textarea"
+                className="composer-unified-textarea"
                 value={draft}
-                onChange={(e) => setDraft(e.target.value)}
+                onChange={(e) => handleDraftChange(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
                     handleSend(e as any);
                   }
                 }}
-                placeholder={pendingFile ? 'Подпись к файлу (необязательно)…' : 'Сообщение… (Shift+Enter — новая строка)'}
+                placeholder={pendingFile ? 'Подпись к файлу…' : 'Сообщение…'}
                 rows={1}
               />
-              {showEmoji && (
-                <div className="composer-emoji-popover">
-                  <EmojiPicker
-                    onSelect={(emoji) => insertEmoji(emoji)}
-                    onClose={() => setShowEmoji(false)}
-                    title="Все эмодзи"
-                  />
-                </div>
-              )}
-            </div>
 
-            <button
-              type="button"
-              className="btn"
-              style={{ width: 'auto', padding: '10px 14px' }}
-              onClick={() => setShowEmoji((v) => !v)}
-              title="Выбрать эмодзи"
-            >
-              <SmileIcon size={18} />
-            </button>
-
-            {draft.trim() || editingMessage || pendingFile ? (
-              <button
-                type="submit"
-                className="btn btn-primary"
-                style={{ width: 'auto', padding: '10px 18px', display: 'inline-flex', alignItems: 'center', gap: 6 }}
-              >
-                <SendIcon size={16} />
-                <span>{editingMessage ? 'Сохранить' : 'Отправить'}</span>
-              </button>
-            ) : (
               <button
                 type="button"
-                className={`btn ${isRecording ? 'recording' : ''}`}
-                style={{ width: 'auto', padding: '10px 14px' }}
-                onClick={isRecording ? stopRecording : startRecording}
-                disabled={uploading}
-                title={isRecording ? 'Остановить запись' : 'Голосовое сообщение'}
+                className={`composer-inner-btn ${showEmoji ? 'active' : ''}`}
+                onClick={() => setShowEmoji((v) => !v)}
+                title="Эмодзи, стикеры и GIF"
               >
-                {isRecording ? <StopIcon size={18} /> : <MicIcon size={18} />}
+                <SmileIcon size={18} />
               </button>
-            )}
-          </form>
+
+              {draft.trim() || editingMessage || pendingFile ? (
+                <button
+                  type="submit"
+                  className="composer-send-btn"
+                  title={editingMessage ? 'Сохранить' : 'Отправить'}
+                >
+                  <SendIcon size={16} />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className={`composer-inner-btn ${isRecording ? 'recording' : ''}`}
+                  onClick={isRecording ? stopRecording : startRecording}
+                  disabled={uploading}
+                  title={isRecording ? 'Остановить запись' : 'Голосовое сообщение'}
+                >
+                  {isRecording ? <StopIcon size={18} /> : <MicIcon size={18} />}
+                </button>
+              )}
+            </form>
+          </div>
         </>
       ) : (
         <div className="subscriber-notice" style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'center' }}>

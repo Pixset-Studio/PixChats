@@ -17,7 +17,7 @@ import {
   unmuteChat,
   deleteChat,
 } from '@pixchats/core';
-import type { Chat, Profile, MuteState } from '@pixchats/core';
+import type { Chat, Profile, MuteState, Message } from '@pixchats/core';
 import { VerifiedBadge } from '../../components/VerifiedBadge';
 import { buildAppUrl } from '../../lib/url';
 import { isBanned } from '../../lib/ban';
@@ -45,6 +45,9 @@ function ChatInfoInner() {
   const [myRole, setMyRole] = useState<string | null>(null);
   const [muteState, setMuteState] = useState<MuteState | null>(null);
   const [editing, setEditing] = useState(false);
+
+  const [mediaItems, setMediaItems] = useState<Message[]>([]);
+  const [mediaTab, setMediaTab] = useState<'media' | 'files' | 'voice'>('media');
 
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -88,6 +91,19 @@ function ChatInfoInner() {
 
       const mutes = await getMuteStates([chatId], profile.id);
       setMuteState(mutes[chatId] ?? { muted: false, mutedForever: false, mutedUntil: null });
+
+      // Загружаем вложения чата (медиа, файлы, голосовые)
+      try {
+        const { data: mediaRows } = await supabase
+          .from('messages')
+          .select('*')
+          .eq('chat_id', chatId)
+          .not('media_path', 'is', null)
+          .eq('is_deleted', false)
+          .order('sent_at', { ascending: false })
+          .limit(100);
+        setMediaItems(mediaRows ?? []);
+      } catch {}
     })();
   }, [chatId, router]);
 
@@ -174,6 +190,10 @@ function ChatInfoInner() {
 
   if (!chat || !me) return <Loading />;
 
+  const photosAndVideos = mediaItems.filter((m) => m.message_type === 'image' || m.message_type === 'video');
+  const filesList = mediaItems.filter((m) => m.message_type === 'file');
+  const voiceNotes = mediaItems.filter((m) => m.message_type === 'voice' || m.message_type === 'audio');
+
   return (
     <main className="container-wide">
       <Link
@@ -186,7 +206,7 @@ function ChatInfoInner() {
 
       <div className="profile-hero">
         <div
-          className="avatar"
+          className={`avatar ${!chat.avatar_url ? 'avatar-fallback' : ''}`}
           style={{
             backgroundImage: chat.avatar_url ? `url(${chat.avatar_url})` : undefined,
             backgroundSize: 'cover',
@@ -277,13 +297,107 @@ function ChatInfoInner() {
             </button>
           </div>
         </div>
-      ) : (
-        chat.description && (
-          <div className="card" style={{ maxWidth: 420, margin: '0 auto' }}>
-            <p style={{ margin: 0, fontSize: 14, color: 'var(--text-muted)' }}>{chat.description}</p>
-          </div>
-        )
+      ) : null}
+
+      {chat.description && (
+        <div className="card" style={{ maxWidth: 420, margin: '0 auto 16px' }}>
+          <p style={{ margin: 0, fontSize: 14, color: 'var(--text-muted)' }}>{chat.description}</p>
+        </div>
       )}
+
+      <div className="card media-gallery-section" style={{ maxWidth: 420, margin: '0 auto 24px' }}>
+        <div className="section-title" style={{ marginTop: 0, marginBottom: 12 }}>Вложения чата</div>
+        <div className="media-tabs">
+          <button
+            type="button"
+            className={`media-tab ${mediaTab === 'media' ? 'active' : ''}`}
+            onClick={() => setMediaTab('media')}
+          >
+            Медиа ({photosAndVideos.length})
+          </button>
+          <button
+            type="button"
+            className={`media-tab ${mediaTab === 'files' ? 'active' : ''}`}
+            onClick={() => setMediaTab('files')}
+          >
+            Файлы ({filesList.length})
+          </button>
+          <button
+            type="button"
+            className={`media-tab ${mediaTab === 'voice' ? 'active' : ''}`}
+            onClick={() => setMediaTab('voice')}
+          >
+            Голосовые ({voiceNotes.length})
+          </button>
+        </div>
+
+        {mediaTab === 'media' && (
+          photosAndVideos.length === 0 ? (
+            <p style={{ color: 'var(--text-muted)', fontSize: 13, textAlign: 'center', margin: '16px 0' }}>Нет фото и видео</p>
+          ) : (
+            <div className="media-grid">
+              {photosAndVideos.map((m) => (
+                <div key={m.id} className="media-grid-item">
+                  {m.message_type === 'image' ? (
+                    <a href={m.media_path!} target="_blank" rel="noopener noreferrer">
+                      <img src={m.media_path!} alt={m.text || 'Фото'} loading="lazy" />
+                    </a>
+                  ) : (
+                    <video src={m.media_path!} controls preload="metadata" />
+                  )}
+                </div>
+              ))}
+            </div>
+          )
+        )}
+
+        {mediaTab === 'files' && (
+          filesList.length === 0 ? (
+            <p style={{ color: 'var(--text-muted)', fontSize: 13, textAlign: 'center', margin: '16px 0' }}>Нет файлов</p>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
+              {filesList.map((m) => (
+                <a
+                  key={m.id}
+                  href={m.media_path!}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="file-list-item"
+                  download
+                >
+                  <span style={{ fontSize: 18 }}>📎</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {m.text || 'Документ'}
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                      {new Date(m.sent_at).toLocaleDateString('ru-RU')}
+                    </div>
+                  </div>
+                  <span style={{ fontSize: 12, color: 'var(--accent)' }}>Скачать</span>
+                </a>
+              ))}
+            </div>
+          )
+        )}
+
+        {mediaTab === 'voice' && (
+          voiceNotes.length === 0 ? (
+            <p style={{ color: 'var(--text-muted)', fontSize: 13, textAlign: 'center', margin: '16px 0' }}>Нет голосовых сообщений</p>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
+              {voiceNotes.map((m) => (
+                <div key={m.id} className="voice-list-item">
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>
+                    🎤 Голосовое от {new Date(m.sent_at).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                  </div>
+                  <audio src={m.media_path!} controls style={{ width: '100%', height: 36 }} />
+                </div>
+              ))}
+            </div>
+          )
+        )}
+      </div>
     </main>
   );
 }

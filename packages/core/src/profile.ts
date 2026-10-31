@@ -61,7 +61,9 @@ export async function uploadAvatar(userId: string, file: File): Promise<string> 
   return avatarUrl;
 }
 
-export async function setTheme(userId: string, theme: 'dark' | 'light'): Promise<void> {
+export type AppTheme = 'pixchats' | 'byte_blaster' | 'matrix' | 'crimson' | 'midnight' | 'dark' | 'light';
+
+export async function setTheme(userId: string, theme: AppTheme): Promise<void> {
   // Сначала применяем тему визуально (с плавным переходом цветов), потом сохраняем в профиль —
   // так переключение мгновенное и не зависит от скорости сети.
   if (typeof window !== 'undefined') {
@@ -73,8 +75,13 @@ export async function setTheme(userId: string, theme: 'dark' | 'light'): Promise
   }
 
   const supabase = getSupabaseClient();
-  const { error } = await supabase.from('profiles').update({ theme }).eq('id', userId);
-  if (error) throw error;
+  try {
+    // В базе данных колонка theme может иметь check (dark, light) — если новая тема, сохраняем dark как совместимость
+    const dbTheme = (theme === 'light') ? 'light' : 'dark';
+    await supabase.from('profiles').update({ theme: dbTheme }).eq('id', userId);
+  } catch (err) {
+    console.warn('Could not persist theme to profiles table:', err);
+  }
 }
 
 export interface PrivacySettings {

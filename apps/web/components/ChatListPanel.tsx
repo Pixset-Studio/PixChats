@@ -66,12 +66,44 @@ export function ChatListPanel() {
   const [loading, setLoading] = useState(!cache);
   // Каскадное появление строк — только при самой первой загрузке, а не при каждом переходе между чатами
   const [animateList] = useState(!cache);
-  // Какой чат сейчас открыт (подсветка на ПК-раскладке)
-  const [activeChatId] = useState<string | null>(() =>
-    typeof window !== 'undefined' && window.location.pathname.includes('/chat/')
-      ? new URLSearchParams(window.location.search).get('id')
-      : null
+  // Какой чат сейчас открыт (подсветка на ПК-раскладке) — динамически реагирует на смену чата
+  const [activeChatId, setActiveChatId] = useState<string | null>(() =>
+    typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('id') : null
   );
+
+  useEffect(() => {
+    const syncActiveChat = () => {
+      if (typeof window !== 'undefined') {
+        setActiveChatId(new URLSearchParams(window.location.search).get('id'));
+      }
+    };
+    syncActiveChat();
+    window.addEventListener('popstate', syncActiveChat);
+    return () => window.removeEventListener('popstate', syncActiveChat);
+  }, []);
+
+  // Закреплённые чаты
+  const [pinnedChatIds, setPinnedChatIds] = useState<string[]>(() => {
+    if (typeof window === 'undefined') return [];
+    try {
+      return JSON.parse(localStorage.getItem('pixchats:pinned_chats') || '[]');
+    } catch {
+      return [];
+    }
+  });
+
+  function togglePin(e: React.MouseEvent, chatId: string) {
+    e.preventDefault();
+    e.stopPropagation();
+    setPinnedChatIds((prev) => {
+      const next = prev.includes(chatId) ? prev.filter((id) => id !== chatId) : [chatId, ...prev];
+      try {
+        localStorage.setItem('pixchats:pinned_chats', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  }
+
   // Чаты, в которые только что пришло сообщение — на секунду подсвечиваем строку
   const [flashIds, setFlashIds] = useState<Set<string>>(new Set());
 
@@ -256,6 +288,10 @@ export function ChatListPanel() {
 
   const filtered = chats.filter((c) => folder === 'all' || c.type === folder);
   const sorted = [...filtered].sort((a, b) => {
+    const aPin = pinnedChatIds.includes(a.id);
+    const bPin = pinnedChatIds.includes(b.id);
+    if (aPin && !bPin) return -1;
+    if (!aPin && bPin) return 1;
     const ta = previews[a.id]?.sent_at ?? a.created_at;
     const tb = previews[b.id]?.sent_at ?? b.created_at;
     return new Date(tb).getTime() - new Date(ta).getTime();
@@ -350,10 +386,11 @@ export function ChatListPanel() {
                   <Link
                     key={`local-${chat.id}`}
                     href={`/chat/?id=${chat.id}`}
+                    onClick={() => setActiveChatId(chat.id)}
                     className={`chat-item-preview${activeChatId === chat.id ? ' active' : ''}`}
                   >
                     <div
-                      className="avatar"
+                      className={`avatar ${!avatarUrl ? 'avatar-fallback' : ''}`}
                       style={{
                         backgroundImage: avatarUrl ? `url(${avatarUrl})` : undefined,
                         backgroundSize: 'cover',
@@ -466,15 +503,18 @@ export function ChatListPanel() {
             const avatarUrl = partner ? partner.avatar_url : chat.avatar_url;
             const isVerified = partner ? partner.is_verified : chat.is_verified;
 
+            const isPinned = pinnedChatIds.includes(chat.id);
+
             return (
               <Link
                 key={chat.id}
                 href={`/chat/?id=${chat.id}`}
-                className={`chat-item-preview${activeChatId === chat.id ? ' active' : ''}${flashIds.has(chat.id) ? ' flash' : ''}`}
+                onClick={() => setActiveChatId(chat.id)}
+                className={`chat-item-preview${activeChatId === chat.id ? ' active' : ''}${flashIds.has(chat.id) ? ' flash' : ''}${isPinned ? ' is-pinned' : ''}`}
                 style={{ '--i': index } as React.CSSProperties}
               >
                 <div
-                  className="avatar"
+                  className={`avatar ${!avatarUrl ? 'avatar-fallback' : ''}`}
                   style={{
                     backgroundImage: avatarUrl ? `url(${avatarUrl})` : undefined,
                     backgroundSize: 'cover',
@@ -485,12 +525,23 @@ export function ChatListPanel() {
                 </div>
                 <div className="chat-item-body">
                   <div className="chat-item-top-row">
-                    <span className="chat-item-name">
-                      {displayName}
+                    <span className="chat-item-name" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                      {isPinned && <span className="pinned-badge" title="Закреплённый чат">📌</span>}
+                      <span>{displayName}</span>
                       {isVerified && <VerifiedBadge size={14} />}
                     </span>
                     <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
-                      {preview && <span className="chat-item-time">{formatTime(preview.sent_at)}</span>}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        {preview && <span className="chat-item-time">{formatTime(preview.sent_at)}</span>}
+                        <button
+                          type="button"
+                          className="pin-toggle-btn"
+                          onClick={(e) => togglePin(e, chat.id)}
+                          title={isPinned ? 'Открепить' : 'Закрепить'}
+                        >
+                          {isPinned ? '📌' : '📍'}
+                        </button>
+                      </div>
                       {unreadCounts[chat.id] > 0 && (
                         <span
                           key={unreadCounts[chat.id]}

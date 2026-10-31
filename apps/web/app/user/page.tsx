@@ -158,7 +158,7 @@ function UserProfileInner() {
 
       <div className="profile-hero">
         <div
-          className="avatar"
+          className={`avatar ${!user.avatar_url ? 'avatar-fallback' : ''}`}
           style={{
             backgroundImage: user.avatar_url ? `url(${user.avatar_url})` : undefined,
             backgroundSize: 'cover',

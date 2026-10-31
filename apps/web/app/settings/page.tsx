@@ -17,7 +17,7 @@ import {
   signInWithPixsetStudioAccount,
   unlinkPixsetStudioAccount,
 } from '@pixchats/core';
-import type { Profile, LinkedIdentity, PixsetStudioAccount } from '@pixchats/core';
+import type { Profile, LinkedIdentity, PixsetStudioAccount, AppTheme } from '@pixchats/core';
 import { BottomNav } from '../../components/BottomNav';
 import { isBanned } from '../../lib/ban';
 import { buildAppUrl } from '../../lib/url';
@@ -30,7 +30,13 @@ export default function SettingsPage() {
   const [displayName, setDisplayName] = useState('');
   const [bio, setBio] = useState('');
   const [username, setUsername] = useState('');
-  const [theme, setThemeState] = useState<'dark' | 'light'>('dark');
+  const [theme, setThemeState] = useState<AppTheme>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('pixchats:theme') as AppTheme;
+      if (saved) return saved;
+    }
+    return 'pixchats';
+  });
   const [whoCanMessage, setWhoCanMessage] = useState<'everyone' | 'friends_only' | 'nobody'>('everyone');
   const [showLastSeen, setShowLastSeen] = useState<'everyone' | 'friends_only' | 'nobody'>('everyone');
   const [whoCanAdd, setWhoCanAdd] = useState<'everyone' | 'friends_only' | 'nobody'>('everyone');
@@ -109,10 +115,17 @@ export default function SettingsPage() {
     }
   }
 
-  async function handleThemeChange(newTheme: 'dark' | 'light') {
-    if (!profile) return;
+  async function handleThemeChange(newTheme: AppTheme) {
     setThemeState(newTheme);
-    await persistTheme(profile.id, newTheme);
+    if (typeof window !== 'undefined') {
+      document.documentElement.setAttribute('data-theme', newTheme);
+      localStorage.setItem('pixchats:theme', newTheme);
+    }
+    if (profile) {
+      await persistTheme(profile.id, newTheme);
+    }
+    setNotice('Тема обновлена');
+    setTimeout(() => setNotice(null), 1500);
   }
 
   async function handleLinkProvider(provider: 'google') {
@@ -257,23 +270,83 @@ export default function SettingsPage() {
         </form>
       </div>
 
-      <div className="section-title">Тема</div>
+      <div className="section-title">Тема оформления</div>
       <div className="card" style={{ marginBottom: 24 }}>
-        <div className="btn-row" style={{ flexDirection: 'row' }}>
-          <button
-            className="btn"
-            style={{ borderColor: theme === 'dark' ? 'var(--accent)' : undefined }}
-            onClick={() => handleThemeChange('dark')}
-          >
-            🌙 Тёмная
-          </button>
-          <button
-            className="btn"
-            style={{ borderColor: theme === 'light' ? 'var(--accent)' : undefined }}
-            onClick={() => handleThemeChange('light')}
-          >
-            ☀ Светлая
-          </button>
+        <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 0, marginBottom: 16 }}>
+          Выберите цветовую тему интерфейса. Включает фирменную тёмно-жёлтую тему PixChats и стили с официального сайта Pixset Studio:
+        </p>
+        <div className="theme-picker-grid">
+          {[
+            {
+              id: 'pixchats' as AppTheme,
+              name: 'PixChats',
+              desc: 'Фирменная тёмно-жёлтая тема',
+              accent: '#facc15',
+              bg: '#09090b',
+              surface: '#151518',
+            },
+            {
+              id: 'byte_blaster' as AppTheme,
+              name: 'Byte Blaster',
+              desc: 'Неоновый ретро-киберпанк (Pixset Studio)',
+              accent: '#00f3ff',
+              bg: '#0a0a14',
+              surface: '#121226',
+            },
+            {
+              id: 'matrix' as AppTheme,
+              name: 'Matrix',
+              desc: 'Изумрудный терминал хакера (Pixset Studio)',
+              accent: '#22c55e',
+              bg: '#060d09',
+              surface: '#0d1a12',
+            },
+            {
+              id: 'crimson' as AppTheme,
+              name: 'Crimson',
+              desc: 'Огненный коралл и антрацит (Pixset Studio)',
+              accent: '#f97316',
+              bg: '#120d0e',
+              surface: '#1e1416',
+            },
+            {
+              id: 'midnight' as AppTheme,
+              name: 'Midnight',
+              desc: 'Полуночный сапфир и индиго (Pixset Studio)',
+              accent: '#38bdf8',
+              bg: '#0b0f19',
+              surface: '#131b2e',
+            },
+            {
+              id: 'light' as AppTheme,
+              name: 'Светлая',
+              desc: 'Чистое контрастное светлое оформление',
+              accent: '#ca8a04',
+              bg: '#f8fafc',
+              surface: '#ffffff',
+            },
+          ].map((item) => {
+            const isSelected = theme === item.id || (theme === 'dark' && item.id === 'pixchats');
+            return (
+              <button
+                key={item.id}
+                type="button"
+                className={`theme-card ${isSelected ? 'active' : ''}`}
+                onClick={() => handleThemeChange(item.id)}
+              >
+                <div className="theme-preview-dots">
+                  <span className="dot-primary" style={{ background: item.accent }} />
+                  <span className="dot-bg" style={{ background: item.bg }} />
+                  <span className="dot-card" style={{ background: item.surface }} />
+                </div>
+                <div className="theme-card-name">
+                  {item.name}
+                  {isSelected && <span style={{ color: 'var(--accent)', marginLeft: 6 }}>✓</span>}
+                </div>
+                <div className="theme-card-desc">{item.desc}</div>
+              </button>
+            );
+          })}
         </div>
       </div>
 
