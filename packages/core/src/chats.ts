@@ -322,3 +322,78 @@ export async function joinPublicChat(chat: Chat): Promise<void> {
   });
   if (error) throw error;
 }
+
+/** Проверяет, является ли чат личным облаком «Избранное» (Сохранённые сообщения). */
+export function isSavedMessagesChat(chat: Chat | null | undefined, myUserId?: string): boolean {
+  if (!chat) return false;
+  if (chat.type === 'direct' && chat.title === 'Избранное') return true;
+  if (myUserId && chat.direct_pair_key === `${myUserId}:${myUserId}`) return true;
+  if (chat.direct_pair_key) {
+    const parts = chat.direct_pair_key.split(':');
+    if (parts.length === 2 && parts[0] && parts[0] === parts[1]) return true;
+  }
+  return false;
+}
+
+/** Возвращает (или создаёт) личный облачный чат «Избранное» (Сохранённые сообщения) с самим собой. */
+export async function getOrCreateSavedMessagesChat(userId?: string): Promise<Chat> {
+  const supabase = getSupabaseClient();
+  let uid = userId;
+  if (!uid) {
+    const { data: sessionData } = await supabase.auth.getSession();
+    uid = sessionData.session?.user.id;
+  }
+  if (!uid) throw new Error('Нужно войти в аккаунт');
+
+  const pairKey = `${uid}:${uid}`;
+  const { data: existing } = await supabase
+    .from('chats')
+    .select('*')
+    .eq('direct_pair_key', pairKey)
+    .maybeSingle();
+
+  if (existing) {
+    // Убедимся, что пользователь числится в chat_members
+    await supabase
+      .from('chat_members')
+      .upsert(
+        { chat_id: existing.id, user_id: uid, member_role: 'owner' },
+        { onConflict: 'chat_id,user_id' }
+      )
+      .then(() => {});
+    return existing as Chat;
+  }
+
+  const { data: created, error } = await supabase
+    .from('chats')
+    .insert({
+      type: 'direct',
+      title: 'Избранное',
+      description: 'Личное облачное хранилище заметок, пересланных сообщений и файлов',
+      created_by: uid,
+      direct_pair_key: pairKey,
+    })
+    .select()
+    .single();
+
+  if (error) {
+    if ((error as any).code === '23505') {
+      const { data: retry } = await supabase
+        .from('chats')
+        .select('*')
+        .eq('direct_pair_key', pairKey)
+        .single();
+      if (retry) return retry as Chat;
+    }
+    throw error;
+  }
+
+  await supabase.from('chat_members').insert({
+    chat_id: created.id,
+    user_id: uid,
+    member_role: 'owner',
+  });
+
+  return created as Chat;
+}
+

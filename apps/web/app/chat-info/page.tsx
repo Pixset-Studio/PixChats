@@ -9,7 +9,6 @@ import {
   getChatMemberCount,
   getMyChatRole,
   updateChatInfo,
-  uploadChatAvatar,
   joinPublicChat,
   leaveChat,
   getMuteStates,
@@ -17,7 +16,7 @@ import {
   unmuteChat,
   deleteChat,
 } from '@pixchats/core';
-import type { Chat, Profile, MuteState, Message } from '@pixchats/core';
+import type { Chat, Profile, MuteState } from '@pixchats/core';
 import { VerifiedBadge } from '../../components/VerifiedBadge';
 import { buildAppUrl } from '../../lib/url';
 import { isBanned } from '../../lib/ban';
@@ -26,6 +25,14 @@ import { Loading } from '../../components/Loading';
 import { BackIcon } from '../../components/Icons';
 import { DesktopShell } from '../../components/DesktopShell';
 import { fileToBase64Image } from '../../lib/imageUtils';
+import { SharedChatAttachments } from '../../components/SharedChatAttachments';
+import {
+  isChatArchived,
+  toggleArchiveChat,
+  getCustomFolders,
+  toggleChatInCustomFolder,
+  type CustomChatFolder,
+} from '../../lib/chatFolders';
 
 const TYPE_LABEL: Record<Chat['type'], string> = {
   direct: 'Личный чат',
@@ -48,9 +55,9 @@ function ChatInfoInner() {
   const [muteState, setMuteState] = useState<MuteState | null>(null);
   const [editing, setEditing] = useState(false);
 
-  const [mediaItems, setMediaItems] = useState<Message[]>([]);
-  const [mediaTab, setMediaTab] = useState<'media' | 'files' | 'voice'>('media');
   const [isPinned, setIsPinned] = useState(false);
+  const [isArchived, setIsArchived] = useState(false);
+  const [customFolders, setCustomFolders] = useState<CustomChatFolder[]>([]);
 
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -60,10 +67,12 @@ function ChatInfoInner() {
   const [uploading, setUploading] = useState(false);
 
   useEffect(() => {
+    setCustomFolders(getCustomFolders());
     if (!chatId) return;
     try {
       const list: string[] = JSON.parse(localStorage.getItem('pixchats:pinned_chats') || '[]');
       setIsPinned(list.includes(chatId));
+      setIsArchived(isChatArchived(chatId));
     } catch {}
   }, [chatId]);
 
@@ -78,6 +87,20 @@ function ChatInfoInner() {
       setNotice(next.includes(chatId) ? 'Чат закреплён 📌' : 'Чат откреплён');
       setTimeout(() => setNotice(null), 1500);
     } catch {}
+  }
+
+  function handleToggleArchive() {
+    if (!chatId) return;
+    const nowArchived = toggleArchiveChat(chatId);
+    setIsArchived(nowArchived);
+    setNotice(nowArchived ? 'Чат перемещён в Архив 📦' : 'Чат возвращён из Архива');
+    setTimeout(() => setNotice(null), 1500);
+  }
+
+  function handleToggleFolder(folderId: string) {
+    if (!chatId) return;
+    toggleChatInCustomFolder(folderId, chatId);
+    setCustomFolders(getCustomFolders());
   }
 
   useEffect(() => {
@@ -115,19 +138,6 @@ function ChatInfoInner() {
 
       const mutes = await getMuteStates([chatId], profile.id);
       setMuteState(mutes[chatId] ?? { muted: false, mutedForever: false, mutedUntil: null });
-
-      // Загружаем вложения чата (медиа, файлы, голосовые)
-      try {
-        const { data: mediaRows } = await supabase
-          .from('messages')
-          .select('*')
-          .eq('chat_id', chatId)
-          .not('media_path', 'is', null)
-          .eq('is_deleted', false)
-          .order('sent_at', { ascending: false })
-          .limit(100);
-        setMediaItems(mediaRows ?? []);
-      } catch {}
     })();
   }, [chatId, router]);
 
@@ -176,21 +186,6 @@ function ChatInfoInner() {
     }
   }
 
-  async function handleJoin() {
-    if (!chat) return;
-    await joinPublicChat(chat);
-    setMyRole(chat.type === 'channel' ? 'subscriber' : 'member');
-    setMemberCount((c) => c + 1);
-  }
-
-  async function handleLeave() {
-    if (!chat || !me) return;
-    await leaveChat(chat.id, me.id);
-    setMyRole(null);
-    setMemberCount((c) => Math.max(0, c - 1));
-    router.push('/chats');
-  }
-
   async function handleDeleteChat() {
     if (!chat) return;
     const label = chat.type === 'channel' ? 'канал' : 'группу';
@@ -214,10 +209,6 @@ function ChatInfoInner() {
   }
 
   if (!chat || !me) return <Loading />;
-
-  const photosAndVideos = mediaItems.filter((m) => m.message_type === 'image' || m.message_type === 'video');
-  const filesList = mediaItems.filter((m) => m.message_type === 'file');
-  const voiceNotes = mediaItems.filter((m) => m.message_type === 'voice' || m.message_type === 'audio');
 
   return (
     <main className="container-wide">
@@ -249,9 +240,12 @@ function ChatInfoInner() {
           {chat.username ? ` · @${chat.username}` : ''}
         </div>
 
-        <div className="btn-row" style={{ maxWidth: 340, margin: '12px auto 0', flexDirection: 'row', flexWrap: 'wrap' }}>
+        <div className="btn-row" style={{ maxWidth: 380, margin: '12px auto 0', flexDirection: 'row', flexWrap: 'wrap' }}>
           <button className="btn" onClick={handleTogglePin}>
             {isPinned ? '📌 Открепить чат' : '📍 Закрепить чат'}
+          </button>
+          <button className="btn" onClick={handleToggleArchive}>
+            {isArchived ? '📦 Из архива' : '📦 В архив'}
           </button>
           {canEdit && !editing && (
             <button className="btn" onClick={() => setEditing(true)}>
@@ -270,6 +264,31 @@ function ChatInfoInner() {
             </button>
           )}
         </div>
+
+        {customFolders.length > 0 && (
+          <div style={{ maxWidth: 380, margin: '12px auto 0', display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'center' }}>
+            {customFolders.map((f) => {
+              const inFolder = f.chatIds.includes(chat.id);
+              return (
+                <button
+                  key={f.id}
+                  type="button"
+                  className="btn"
+                  style={{
+                    width: 'auto',
+                    padding: '5px 10px',
+                    fontSize: 12,
+                    borderColor: inFolder ? 'var(--accent)' : undefined,
+                    color: inFolder ? 'var(--accent)' : undefined,
+                  }}
+                  onClick={() => handleToggleFolder(f.id)}
+                >
+                  📁 {f.name} {inFolder ? '✓' : '+'}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {chat.visibility === 'public' && chat.username && (
@@ -285,7 +304,7 @@ function ChatInfoInner() {
       {error && <p className="error">{error}</p>}
 
       {editing ? (
-        <div className="card" style={{ maxWidth: 420, margin: '0 auto' }}>
+        <div className="card" style={{ maxWidth: 420, margin: '0 auto 16px' }}>
           <div style={{ textAlign: 'center', marginBottom: 16 }}>
             <button className="btn" style={{ width: 'auto' }} onClick={() => fileInputRef.current?.click()} disabled={uploading}>
               {uploading ? 'Загружаем…' : '📷 Сменить аватар'}
@@ -333,99 +352,7 @@ function ChatInfoInner() {
         </div>
       )}
 
-      <div className="card media-gallery-section" style={{ maxWidth: 420, margin: '0 auto 24px' }}>
-        <div className="section-title" style={{ marginTop: 0, marginBottom: 12 }}>Вложения чата</div>
-        <div className="media-tabs">
-          <button
-            type="button"
-            className={`media-tab ${mediaTab === 'media' ? 'active' : ''}`}
-            onClick={() => setMediaTab('media')}
-          >
-            Медиа ({photosAndVideos.length})
-          </button>
-          <button
-            type="button"
-            className={`media-tab ${mediaTab === 'files' ? 'active' : ''}`}
-            onClick={() => setMediaTab('files')}
-          >
-            Файлы ({filesList.length})
-          </button>
-          <button
-            type="button"
-            className={`media-tab ${mediaTab === 'voice' ? 'active' : ''}`}
-            onClick={() => setMediaTab('voice')}
-          >
-            Голосовые ({voiceNotes.length})
-          </button>
-        </div>
-
-        {mediaTab === 'media' && (
-          photosAndVideos.length === 0 ? (
-            <p style={{ color: 'var(--text-muted)', fontSize: 13, textAlign: 'center', margin: '16px 0' }}>Нет фото и видео</p>
-          ) : (
-            <div className="media-grid">
-              {photosAndVideos.map((m) => (
-                <div key={m.id} className="media-grid-item">
-                  {m.message_type === 'image' ? (
-                    <a href={m.media_path!} target="_blank" rel="noopener noreferrer">
-                      <img src={m.media_path!} alt={m.text || 'Фото'} loading="lazy" />
-                    </a>
-                  ) : (
-                    <video src={m.media_path!} controls preload="metadata" />
-                  )}
-                </div>
-              ))}
-            </div>
-          )
-        )}
-
-        {mediaTab === 'files' && (
-          filesList.length === 0 ? (
-            <p style={{ color: 'var(--text-muted)', fontSize: 13, textAlign: 'center', margin: '16px 0' }}>Нет файлов</p>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
-              {filesList.map((m) => (
-                <a
-                  key={m.id}
-                  href={m.media_path!}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="file-list-item"
-                  download
-                >
-                  <span style={{ fontSize: 18 }}>📎</span>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {m.text || 'Документ'}
-                    </div>
-                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                      {new Date(m.sent_at).toLocaleDateString('ru-RU')}
-                    </div>
-                  </div>
-                  <span style={{ fontSize: 12, color: 'var(--accent)' }}>Скачать</span>
-                </a>
-              ))}
-            </div>
-          )
-        )}
-
-        {mediaTab === 'voice' && (
-          voiceNotes.length === 0 ? (
-            <p style={{ color: 'var(--text-muted)', fontSize: 13, textAlign: 'center', margin: '16px 0' }}>Нет голосовых сообщений</p>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
-              {voiceNotes.map((m) => (
-                <div key={m.id} className="voice-list-item">
-                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>
-                    🎤 Голосовое от {new Date(m.sent_at).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
-                  </div>
-                  <audio src={m.media_path!} controls style={{ width: '100%', height: 36 }} />
-                </div>
-              ))}
-            </div>
-          )
-        )}
-      </div>
+      <SharedChatAttachments chatId={chat.id} />
     </main>
   );
 }

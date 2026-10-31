@@ -16,6 +16,8 @@ import {
   getMuteStates,
   muteChat,
   unmuteChat,
+  getLinkedPixsetNickname,
+  getPixsetPublicProfileUrl,
 } from '@pixchats/core';
 import type { Profile, MuteState } from '@pixchats/core';
 import { NameWithBadges } from '../../components/NameBadges';
@@ -24,6 +26,14 @@ import { isBanned } from '../../lib/ban';
 import { MuteControl } from '../../components/MuteControl';
 import { Loading } from '../../components/Loading';
 import { DesktopShell } from '../../components/DesktopShell';
+import { SharedChatAttachments } from '../../components/SharedChatAttachments';
+import {
+  isChatArchived,
+  toggleArchiveChat,
+  getCustomFolders,
+  toggleChatInCustomFolder,
+  type CustomChatFolder,
+} from '../../lib/chatFolders';
 
 function UserProfileInner() {
   const searchParams = useSearchParams();
@@ -41,27 +51,34 @@ function UserProfileInner() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [isPinned, setIsPinned] = useState(false);
+  const [isArchived, setIsArchived] = useState(false);
+  const [customFolders, setCustomFolders] = useState<CustomChatFolder[]>([]);
 
   useEffect(() => {
+    setCustomFolders(getCustomFolders());
     if (!existingChatId) return;
     try {
       const list: string[] = JSON.parse(localStorage.getItem('pixchats:pinned_chats') || '[]');
       setIsPinned(list.includes(existingChatId));
+      setIsArchived(isChatArchived(existingChatId));
     } catch {}
   }, [existingChatId]);
 
-  async function handleTogglePin() {
-    let targetChatId = existingChatId;
-    if (!targetChatId && user) {
-      try {
-        const newChat = await createDirectChat(user.id);
-        targetChatId = newChat.id;
-        setExistingChatId(newChat.id);
-      } catch (err: any) {
-        setError(err.message ?? 'Не удалось найти чат');
-        return;
-      }
+  async function ensureDirectChatId(): Promise<string | null> {
+    if (existingChatId) return existingChatId;
+    if (!user) return null;
+    try {
+      const newChat = await createDirectChat(user.id);
+      setExistingChatId(newChat.id);
+      return newChat.id;
+    } catch (err: any) {
+      setError(err.message ?? 'Не удалось найти чат');
+      return null;
     }
+  }
+
+  async function handleTogglePin() {
+    const targetChatId = await ensureDirectChatId();
     if (!targetChatId) return;
 
     try {
@@ -75,6 +92,22 @@ function UserProfileInner() {
       setNotice(next.includes(targetChatId) ? 'Чат закреплён 📌' : 'Чат откреплён');
       setTimeout(() => setNotice(null), 1500);
     } catch {}
+  }
+
+  async function handleToggleArchive() {
+    const targetChatId = await ensureDirectChatId();
+    if (!targetChatId) return;
+    const nowArchived = toggleArchiveChat(targetChatId);
+    setIsArchived(nowArchived);
+    setNotice(nowArchived ? 'Чат перемещён в Архив 📦' : 'Чат возвращён из Архива');
+    setTimeout(() => setNotice(null), 1500);
+  }
+
+  async function handleToggleFolder(folderId: string) {
+    const targetChatId = await ensureDirectChatId();
+    if (!targetChatId) return;
+    toggleChatInCustomFolder(folderId, targetChatId);
+    setCustomFolders(getCustomFolders());
   }
 
   useEffect(() => {
@@ -186,6 +219,8 @@ function UserProfileInner() {
   if (!user || !me) return <Loading />;
 
   const isSelf = user.id === me.id;
+  // Кнопка публичного профиля Pixset Studio показывается ТОЛЬКО если к аккаунту привязана система Pixset Studio
+  const linkedPixsetNick = getLinkedPixsetNickname(user, isSelf);
 
   return (
     <main className="container-wide">
@@ -223,11 +258,33 @@ function UserProfileInner() {
           <p style={{ maxWidth: 420, margin: '12px auto 0', color: 'var(--text-muted)', fontSize: 14 }}>{user.bio}</p>
         )}
 
+        {linkedPixsetNick && (
+          <div style={{ marginTop: 14, display: 'flex', justifyContent: 'center' }}>
+            <a
+              href={getPixsetPublicProfileUrl(linkedPixsetNick)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn btn-primary"
+              style={{
+                width: 'auto',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 8,
+                textDecoration: 'none',
+                padding: '9px 16px',
+              }}
+            >
+              <span>⚡</span>
+              <span>Посмотреть публичный профиль на сайте Pixset Studio</span>
+            </a>
+          </div>
+        )}
+
         {error && <p className="error">{error}</p>}
         {notice && <p className="notice">{notice}</p>}
 
         {!isSelf && (
-          <div className="btn-row" style={{ maxWidth: 280, margin: '16px auto 0', flexDirection: 'row' }}>
+          <div className="btn-row" style={{ maxWidth: 340, margin: '16px auto 0', flexDirection: 'row', flexWrap: 'wrap' }}>
             <button className="btn btn-primary" onClick={handleMessage} disabled={isBlocked}>
               Написать
             </button>
@@ -243,14 +300,44 @@ function UserProfileInner() {
         )}
 
         {!isSelf && (
-          <div className="btn-row" style={{ maxWidth: 320, margin: '8px auto 0', flexDirection: 'row', flexWrap: 'wrap' }}>
+          <div className="btn-row" style={{ maxWidth: 380, margin: '8px auto 0', flexDirection: 'row', flexWrap: 'wrap' }}>
             <button className="btn" onClick={handleTogglePin}>
               {isPinned ? '📌 Открепить чат' : '📍 Закрепить чат'}
+            </button>
+            <button className="btn" onClick={handleToggleArchive}>
+              {isArchived ? '📦 Из архива' : '📦 В архив'}
             </button>
             {existingChatId && <MuteControl muteState={muteState} onMute={handleMute} onUnmute={handleUnmute} />}
           </div>
         )}
+
+        {!isSelf && customFolders.length > 0 && (
+          <div style={{ maxWidth: 380, margin: '12px auto 0', display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'center' }}>
+            {customFolders.map((f) => {
+              const inFolder = Boolean(existingChatId && f.chatIds.includes(existingChatId));
+              return (
+                <button
+                  key={f.id}
+                  type="button"
+                  className="btn"
+                  style={{
+                    width: 'auto',
+                    padding: '5px 10px',
+                    fontSize: 12,
+                    borderColor: inFolder ? 'var(--accent)' : undefined,
+                    color: inFolder ? 'var(--accent)' : undefined,
+                  }}
+                  onClick={() => handleToggleFolder(f.id)}
+                >
+                  📁 {f.name} {inFolder ? '✓' : '+'}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
+
+      {existingChatId && <SharedChatAttachments chatId={existingChatId} />}
     </main>
   );
 }

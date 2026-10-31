@@ -1,4 +1,5 @@
 import { getSupabaseClient } from './supabaseClient';
+import type { Profile } from './types';
 
 export const PIXSET_STUDIO_SUPABASE_URL = 'https://zyjhvuhovimorpokiwty.supabase.co';
 export const PIXSET_STUDIO_SUPABASE_KEY = 'sb_publishable_1bj04J3qsO1EqsKPQeSbmg_cBDEtreK';
@@ -28,7 +29,6 @@ export async function authenticateWithPixsetStudio(loginId: string, password: st
   let userEmail: string | undefined = undefined;
 
   if (id.includes('@')) {
-    // Вход по почте через Auth API Pixset Studio
     const res = await fetch(`${PIXSET_STUDIO_SUPABASE_URL}/auth/v1/token?grant_type=password`, {
       method: 'POST',
       headers: {
@@ -45,7 +45,6 @@ export async function authenticateWithPixsetStudio(loginId: string, password: st
     userId = data.user?.id;
     userEmail = data.user?.email;
   } else {
-    // Вход по никнейму через серверную функцию login-nick студии
     const res = await fetch(`${PIXSET_STUDIO_SUPABASE_URL}/functions/v1/login-nick`, {
       method: 'POST',
       headers: {
@@ -71,7 +70,6 @@ export async function authenticateWithPixsetStudio(loginId: string, password: st
     throw new Error('Не удалось получить сессию Pixset Studio');
   }
 
-  // Запрашиваем профиль игрока/пользователя из базы данных Pixset Studio
   let nickname = id.includes('@') ? id.split('@')[0] : id;
   let avatarUrl: string | null = null;
   let isAdmin = false;
@@ -116,13 +114,13 @@ export async function authenticateWithPixsetStudio(loginId: string, password: st
 }
 
 /**
- * Полный вход в PixChats с учётной записью Pixset Studio.
- * Синхронизирует профиль, никнейм, аватар и бейдж сотрудника Pixset Studio.
+ * Полный вход или привязка учётной записи Pixset Studio в PixChats.
+ * Сохраняет метку привязки `pixset:<nickname>` в `profiles.public_identity_key`,
+ * чтобы в профиле пользователя отображалась кнопка перехода на публичный профиль Pixset Studio.
  */
 export async function signInWithPixsetStudioAccount(loginId: string, password: string): Promise<PixsetStudioAccount> {
   const pixsetAccount = await authenticateWithPixsetStudio(loginId, password);
 
-  // Сохраняем привязанный аккаунт студии в localStorage
   if (typeof window !== 'undefined') {
     localStorage.setItem(
       'pixchats:pixset_account',
@@ -137,19 +135,32 @@ export async function signInWithPixsetStudioAccount(loginId: string, password: s
     );
   }
 
-  // Авторизуем в Supabase PixChats (если он доступен)
+  const identityMarker = `pixset:${pixsetAccount.nickname}`;
+
   try {
     const supabase = getSupabaseClient();
+    const { data: currentSession } = await supabase.auth.getSession();
+
+    // Если пользователь уже авторизован в PixChats (привязка из настроек) — сразу записываем маркер в его профиль
+    if (currentSession?.session?.user) {
+      const patch: Record<string, any> = {
+        public_identity_key: identityMarker,
+      };
+      if (pixsetAccount.is_admin) {
+        patch.is_pixset_employee = true;
+      }
+      await supabase.from('profiles').update(patch).eq('id', currentSession.session.user.id);
+      return pixsetAccount;
+    }
+
     const internalEmail = pixsetAccount.email || `pixset_${pixsetAccount.nickname.toLowerCase()}@pixset.studio`;
 
-    // Сначала пробуем войти
     const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
       email: internalEmail,
       password,
     });
 
     if (signInError || !signInData.user) {
-      // Если пользователя ещё нет в PixChats — регистрируем его
       const normalizedUsername = pixsetAccount.nickname
         .replace(/[^a-zA-Z0-9_]/g, '_')
         .toLowerCase()
@@ -175,13 +186,18 @@ export async function signInWithPixsetStudioAccount(loginId: string, password: s
           display_name: pixsetAccount.nickname,
           avatar_url: pixsetAccount.avatar_url,
           is_pixset_employee: !!pixsetAccount.is_admin,
+          public_identity_key: identityMarker,
           bio: pixsetAccount.bio || `Учётная запись Pixset Studio (@${pixsetAccount.nickname})`,
         });
       }
     } else if (signInData.user) {
+      const patch: Record<string, any> = {
+        public_identity_key: identityMarker,
+      };
       if (pixsetAccount.is_admin) {
-        await supabase.from('profiles').update({ is_pixset_employee: true }).eq('id', signInData.user.id);
+        patch.is_pixset_employee = true;
       }
+      await supabase.from('profiles').update(patch).eq('id', signInData.user.id);
     }
   } catch (err) {
     console.warn('[PixChats] Supabase integration note:', err);
@@ -190,7 +206,7 @@ export async function signInWithPixsetStudioAccount(loginId: string, password: s
   return pixsetAccount;
 }
 
-/** Проверяет, привязан ли аккаунт Pixset Studio */
+/** Проверяет, привязан ли аккаунт Pixset Studio локально */
 export function getSavedPixsetStudioAccount(): PixsetStudioAccount | null {
   if (typeof window === 'undefined') return null;
   try {
@@ -201,9 +217,68 @@ export function getSavedPixsetStudioAccount(): PixsetStudioAccount | null {
   }
 }
 
-/** Отвязывает аккаунт Pixset Studio */
+/** Отвязывает аккаунт Pixset Studio (и очищает метку в профиле БД) */
 export function unlinkPixsetStudioAccount(): void {
   if (typeof window !== 'undefined') {
     localStorage.removeItem('pixchats:pixset_account');
   }
+  try {
+    const supabase = getSupabaseClient();
+    supabase.auth.getSession().then(({ data }) => {
+      const uid = data.session?.user?.id;
+      if (uid) {
+        supabase.from('profiles').update({ public_identity_key: null }).eq('id', uid).then(() => {});
+      }
+    });
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Возвращает никнейм привязанного аккаунта Pixset Studio для данного профиля
+ * (или null, если к аккаунту система Pixset Studio НЕ привязана).
+ */
+export function getLinkedPixsetNickname(
+  profile: Profile | null | undefined,
+  isSelf = false
+): string | null {
+  if (!profile) return null;
+
+  // 1. Проверяем поле public_identity_key в БД ('pixset:<nickname>')
+  if (profile.public_identity_key && profile.public_identity_key.startsWith('pixset:')) {
+    const nick = profile.public_identity_key.slice('pixset:'.length).trim();
+    if (nick) return nick;
+  }
+
+  // 2. Если это наш собственный профиль и привязка уже есть в localStorage — синхронизируем её с БД
+  if (isSelf) {
+    const localAcc = getSavedPixsetStudioAccount();
+    if (localAcc?.nickname) {
+      try {
+        const supabase = getSupabaseClient();
+        supabase
+          .from('profiles')
+          .update({ public_identity_key: `pixset:${localAcc.nickname}` })
+          .eq('id', profile.id)
+          .then(() => {});
+      } catch {}
+      return localAcc.nickname;
+    }
+  }
+
+  // 3. Проверяем авто-подпись в bio, если аккаунт создавался через вход Pixset Studio ранее
+  if (profile.bio) {
+    const match = profile.bio.match(/Pixset Studio\s*\(@([a-zA-Z0-9_.-]+)\)/i);
+    if (match?.[1]) {
+      return match[1];
+    }
+  }
+
+  return null;
+}
+
+/** Формирует прямую ссылку на публичный профиль игрока на официальном сайте Pixset Studio. */
+export function getPixsetPublicProfileUrl(nickname: string): string {
+  return `https://pixset-studio.github.io/u/?n=${encodeURIComponent(nickname.trim())}`;
 }

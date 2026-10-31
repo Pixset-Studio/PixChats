@@ -12,6 +12,9 @@ import {
   joinPublicChat,
   getUnreadCounts,
   getMuteStates,
+  decryptMessageE2EE,
+  getOrCreateSavedMessagesChat,
+  isSavedMessagesChat,
 } from '@pixchats/core';
 import type { Chat, Profile, Message, SearchResult, MuteState } from '@pixchats/core';
 import { NameWithBadges } from './NameBadges';
@@ -19,6 +22,15 @@ import { VerifiedBadge } from './VerifiedBadge';
 import { ChatListSkeleton } from './Loading';
 import { getChatListCache, setChatListCache, clearChatListCache } from '../lib/chatListCache';
 import { SearchIcon, PlusIcon, ChatsIcon } from './Icons';
+import {
+  getArchivedChatIds,
+  getCustomFolders,
+  createCustomFolder,
+  deleteCustomFolder,
+  toggleArchiveChat,
+  type CustomChatFolder,
+} from '../lib/chatFolders';
+import { parsePollMessage, extractSelfDestructInfo } from './FormattedMessageText';
 
 const TYPE_LABEL: Record<Chat['type'], string> = {
   direct: 'Личный чат',
@@ -26,7 +38,7 @@ const TYPE_LABEL: Record<Chat['type'], string> = {
   channel: 'Канал',
 };
 
-type Folder = 'all' | 'direct' | 'group' | 'channel';
+type FolderFilter = 'all' | 'direct' | 'group' | 'channel' | 'archive' | string;
 
 function formatTime(iso: string): string {
   const date = new Date(iso);
@@ -48,8 +60,14 @@ function formatPreviewText(message: Message): string {
       return '🎤 Голосовое сообщение';
     case 'file':
       return `📎 ${message.text}`;
-    default:
-      return message.text;
+    default: {
+      const { expiresAt, cleanText } = extractSelfDestructInfo(message.text || '');
+      const poll = parsePollMessage(cleanText);
+      if (poll) {
+        return `📊 Опрос: ${poll.question}`;
+      }
+      return expiresAt ? `🔥 ${cleanText}` : cleanText;
+    }
   }
 }
 
@@ -62,14 +80,20 @@ export function ChatListPanel() {
   const [partners, setPartners] = useState<Record<string, Profile>>(cache?.partners ?? {});
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>(cache?.unreadCounts ?? {});
   const [muteStates, setMuteStates] = useState<Record<string, MuteState>>(cache?.muteStates ?? {});
-  const [folder, setFolder] = useState<Folder>('all');
+  const [folder, setFolder] = useState<FolderFilter>('all');
   const [loading, setLoading] = useState(!cache);
-  // Каскадное появление строк — только при самой первой загрузке, а не при каждом переходе между чатами
   const [animateList] = useState(!cache);
-  // Какой чат сейчас открыт (подсветка на ПК-раскладке) — динамически реагирует на смену чата
+
   const [activeChatId, setActiveChatId] = useState<string | null>(() =>
     typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('id') : null
   );
+
+  // Архив и кастомные папки (Пункт 8)
+  const [archivedChatIds, setArchivedChatIds] = useState<string[]>([]);
+  const [customFolders, setCustomFolders] = useState<CustomChatFolder[]>([]);
+  const [showNewFolderModal, setShowNewFolderModal] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [selectedForNewFolder, setSelectedForNewFolder] = useState<string[]>([]);
 
   useEffect(() => {
     const syncActiveChat = () => {
@@ -82,7 +106,21 @@ export function ChatListPanel() {
     return () => window.removeEventListener('popstate', syncActiveChat);
   }, []);
 
-  // Закреплённые чаты (управляются из профиля собеседника / инфо о чате)
+  useEffect(() => {
+    const syncFolders = () => {
+      setArchivedChatIds(getArchivedChatIds());
+      setCustomFolders(getCustomFolders());
+    };
+    syncFolders();
+    window.addEventListener('pixchats:folders_changed', syncFolders);
+    window.addEventListener('storage', syncFolders);
+    return () => {
+      window.removeEventListener('pixchats:folders_changed', syncFolders);
+      window.removeEventListener('storage', syncFolders);
+    };
+  }, []);
+
+  // Закреплённые чаты
   const [pinnedChatIds, setPinnedChatIds] = useState<string[]>(() => {
     if (typeof window === 'undefined') return [];
     try {
@@ -106,7 +144,6 @@ export function ChatListPanel() {
     };
   }, []);
 
-  // Чаты, в которые только что пришло сообщение — на секунду подсвечиваем строку
   const [flashIds, setFlashIds] = useState<Set<string>>(new Set());
 
   const [query, setQuery] = useState('');
@@ -142,7 +179,6 @@ export function ChatListPanel() {
     (async () => {
       const me = await getCurrentProfile();
       if (!me) return;
-      // Кэш от другого аккаунта (выход/вход в одной вкладке) — не показываем чужое
       if (getChatListCache() && getChatListCache()!.profile.id !== me.id) {
         clearChatListCache();
         setChats([]);
@@ -157,18 +193,17 @@ export function ChatListPanel() {
     })();
   }, []);
 
-  // Живые обновления: новое сообщение — обновляем превью/непрочитанные и пересортировываем;
-  // прочитанное в открытом чате (в соседней панели на ПК) — сбрасываем счётчик тут же;
-  // добавили в новый чат — перезагружаем список целиком.
   useEffect(() => {
     if (!profile) return;
     const supabase = getSupabaseClient();
 
     const messagesChannel = supabase
       .channel('chat-list-messages')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (payload: any) => {
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, async (payload: any) => {
         const row = payload.new;
         if (!row) return;
+
+        const decryptedText = await decryptMessageE2EE(row.chat_id, row.ciphertext);
 
         setPreviews((prev) => ({
           ...prev,
@@ -176,13 +211,7 @@ export function ChatListPanel() {
             id: row.id,
             chat_id: row.chat_id,
             sender_id: row.sender_id,
-            text: (() => {
-              try {
-                return decodeURIComponent(escape(atob(row.ciphertext)));
-              } catch {
-                return '';
-              }
-            })(),
+            text: decryptedText,
             message_type: row.message_type,
             media_path: row.media_path,
             caption: row.caption,
@@ -249,7 +278,6 @@ export function ChatListPanel() {
     };
   }, [profile]);
 
-  // Любые изменения (в т.ч. живые) сразу пишем в кэш — следующий переход между страницами покажет актуальный список мгновенно
   useEffect(() => {
     if (profile && !loading) {
       setChatListCache({ profile, chats, previews, partners, unreadCounts, muteStates });
@@ -286,12 +314,52 @@ export function ChatListPanel() {
     router.push(`/chat/?id=${chat.id}`);
   }
 
+  async function handleOpenSavedMessages() {
+    if (!profile) return;
+    try {
+      const saved = await getOrCreateSavedMessagesChat(profile.id);
+      if (!chats.some((c) => c.id === saved.id)) {
+        setChats((prev) => [saved, ...prev]);
+      }
+      setActiveChatId(saved.id);
+      router.push(`/chat/?id=${saved.id}`);
+    } catch {}
+  }
+
+  function handleCreateFolder(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newFolderName.trim()) return;
+    const created = createCustomFolder(newFolderName.trim(), selectedForNewFolder);
+    setCustomFolders(getCustomFolders());
+    setFolder(created.id);
+    setNewFolderName('');
+    setSelectedForNewFolder([]);
+    setShowNewFolderModal(false);
+  }
+
   if (loading || !profile) return <ChatListSkeleton />;
 
-  const filtered = chats.filter((c) => folder === 'all' || c.type === folder);
+  const archivedCount = chats.filter((c) => archivedChatIds.includes(c.id)).length;
+
+  const filtered = chats.filter((c) => {
+    const isArch = archivedChatIds.includes(c.id);
+    if (folder === 'archive') return isArch;
+    // Кастомная папка
+    const custom = customFolders.find((cf) => cf.id === folder);
+    if (custom) {
+      return custom.chatIds.includes(c.id);
+    }
+    // Стандартные папки скрывают заархивированные чаты
+    if (isArch) return false;
+    if (folder === 'all') return true;
+    return c.type === folder;
+  });
+
   const sorted = [...filtered].sort((a, b) => {
-    const aPin = pinnedChatIds.includes(a.id);
-    const bPin = pinnedChatIds.includes(b.id);
+    const aSaved = isSavedMessagesChat(a, profile.id);
+    const bSaved = isSavedMessagesChat(b, profile.id);
+    const aPin = pinnedChatIds.includes(a.id) || aSaved;
+    const bPin = pinnedChatIds.includes(b.id) || bSaved;
     if (aPin && !bPin) return -1;
     if (!aPin && bPin) return 1;
     const ta = previews[a.id]?.sent_at ?? a.created_at;
@@ -302,8 +370,9 @@ export function ChatListPanel() {
   const q = query.trim().toLowerCase();
   const matchedLocalChats = q
     ? chats.filter((c) => {
-        const partner = c.type === 'direct' ? partners[c.id] : null;
-        const titleMatch = c.title?.toLowerCase().includes(q);
+        const isSaved = isSavedMessagesChat(c, profile.id);
+        const partner = c.type === 'direct' && !isSaved ? partners[c.id] : null;
+        const titleMatch = (isSaved ? 'избранное заметки' : c.title?.toLowerCase() ?? '').includes(q);
         const usernameMatch = c.username?.toLowerCase().includes(q);
         const partnerNameMatch = partner?.display_name.toLowerCase().includes(q);
         const partnerUserMatch = partner?.username.toLowerCase().includes(q);
@@ -316,7 +385,7 @@ export function ChatListPanel() {
 
   return (
     <div>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+      <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
         <div style={{ position: 'relative', flex: 1 }}>
           <SearchIcon
             size={16}
@@ -330,10 +399,19 @@ export function ChatListPanel() {
             placeholder="Поиск по чатам, сообщениям или @username…"
           />
         </div>
+        <button
+          type="button"
+          className="btn"
+          style={{ width: 'auto', padding: '0 12px', display: 'inline-flex', alignItems: 'center', gap: 5 }}
+          onClick={handleOpenSavedMessages}
+          title="Открыть «Избранное» (Сохранённые сообщения и заметки)"
+        >
+          <span>⭐</span>
+        </button>
         <Link
           href="/chats/new"
           className="btn btn-primary"
-          style={{ width: 'auto', padding: '0 16px', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+          style={{ width: 'auto', padding: '0 14px', display: 'inline-flex', alignItems: 'center', gap: 6 }}
         >
           <PlusIcon size={16} />
           <span>Создать</span>
@@ -341,7 +419,7 @@ export function ChatListPanel() {
       </div>
 
       {!isSearchMode && (
-        <div className="folder-tabs">
+        <div className="folder-tabs" style={{ flexWrap: 'wrap', gap: 6 }}>
           <button className={`folder-tab ${folder === 'all' ? 'active' : ''}`} onClick={() => setFolder('all')}>
             Все
           </button>
@@ -354,6 +432,130 @@ export function ChatListPanel() {
           <button className={`folder-tab ${folder === 'channel' ? 'active' : ''}`} onClick={() => setFolder('channel')}>
             Каналы
           </button>
+
+          {customFolders.map((cf) => (
+            <span key={cf.id} style={{ display: 'inline-flex', alignItems: 'center' }}>
+              <button
+                type="button"
+                className={`folder-tab ${folder === cf.id ? 'active' : ''}`}
+                onClick={() => setFolder(cf.id)}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}
+              >
+                <span>📁 {cf.name}</span>
+                <span
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    deleteCustomFolder(cf.id);
+                    if (folder === cf.id) setFolder('all');
+                  }}
+                  title="Удалить папку"
+                  style={{ opacity: 0.65, fontSize: 11, marginLeft: 2 }}
+                >
+                  ✕
+                </span>
+              </button>
+            </span>
+          ))}
+
+          {archivedCount > 0 && (
+            <button
+              type="button"
+              className={`folder-tab ${folder === 'archive' ? 'active' : ''}`}
+              onClick={() => setFolder('archive')}
+            >
+              📦 Архив ({archivedCount})
+            </button>
+          )}
+
+          <button
+            type="button"
+            className="folder-tab"
+            onClick={() => setShowNewFolderModal(true)}
+            title="Создать свою папку чатов"
+          >
+            + Папка
+          </button>
+        </div>
+      )}
+
+      {showNewFolderModal && (
+        <div className="modal-overlay" onClick={() => setShowNewFolderModal(false)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 400 }}>
+            <h3 style={{ marginTop: 0 }}>Создать папку чатов</h3>
+            <form onSubmit={handleCreateFolder}>
+              <div className="field">
+                <label>Название папки</label>
+                <input
+                  className="input"
+                  value={newFolderName}
+                  onChange={(e) => setNewFolderName(e.target.value)}
+                  placeholder="Например: Работа, Игры, Важное"
+                  required
+                />
+              </div>
+
+              {chats.length > 0 && (
+                <div className="field">
+                  <label>Выберите чаты для папки</label>
+                  <div
+                    style={{
+                      maxHeight: 180,
+                      overflowY: 'auto',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 6,
+                      padding: 6,
+                      border: '1px solid var(--border)',
+                      borderRadius: 8,
+                    }}
+                  >
+                    {chats.map((c) => {
+                      const isSaved = isSavedMessagesChat(c, profile.id);
+                      const partner = c.type === 'direct' && !isSaved ? partners[c.id] : null;
+                      const label = isSaved
+                        ? '⭐ Избранное'
+                        : partner
+                          ? partner.display_name
+                          : c.title ?? TYPE_LABEL[c.type];
+                      const checked = selectedForNewFolder.includes(c.id);
+                      return (
+                        <label
+                          key={c.id}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 8,
+                            fontSize: 13,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(e) => {
+                              setSelectedForNewFolder((prev) =>
+                                e.target.checked ? [...prev, c.id] : prev.filter((id) => id !== c.id)
+                              );
+                            }}
+                          />
+                          <span>{label}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
+                <button type="button" className="btn" style={{ width: 'auto' }} onClick={() => setShowNewFolderModal(false)}>
+                  Отмена
+                </button>
+                <button type="submit" className="btn btn-primary" style={{ width: 'auto' }}>
+                  Создать
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
 
@@ -378,11 +580,16 @@ export function ChatListPanel() {
                 <span>В ваших чатах ({matchedLocalChats.length})</span>
               </div>
               {matchedLocalChats.map((chat) => {
+                const isSaved = isSavedMessagesChat(chat, profile.id);
                 const preview = previews[chat.id];
-                const partner = chat.type === 'direct' ? partners[chat.id] : null;
-                const displayName = partner ? partner.display_name : chat.title ?? TYPE_LABEL[chat.type];
-                const avatarUrl = partner ? partner.avatar_url : chat.avatar_url;
-                const isVerified = partner ? partner.is_verified : chat.is_verified;
+                const partner = chat.type === 'direct' && !isSaved ? partners[chat.id] : null;
+                const displayName = isSaved
+                  ? 'Избранное'
+                  : partner
+                    ? partner.display_name
+                    : chat.title ?? TYPE_LABEL[chat.type];
+                const avatarUrl = isSaved ? null : partner ? partner.avatar_url : chat.avatar_url;
+                const isVerified = isSaved ? false : partner ? partner.is_verified : chat.is_verified;
 
                 return (
                   <Link
@@ -399,7 +606,7 @@ export function ChatListPanel() {
                         backgroundPosition: 'center',
                       }}
                     >
-                      {!avatarUrl && displayName.slice(0, 1).toUpperCase()}
+                      {isSaved ? '⭐' : !avatarUrl && displayName.slice(0, 1).toUpperCase()}
                     </div>
                     <div className="chat-item-body">
                       <div className="chat-item-top-row">
@@ -412,7 +619,9 @@ export function ChatListPanel() {
                       <div className="chat-item-preview-text">
                         {preview
                           ? formatPreviewText(preview)
-                          : `${TYPE_LABEL[chat.type]}${chat.username ? ` · @${chat.username}` : ''}`}
+                          : isSaved
+                            ? 'Сохранённые сообщения и заметки'
+                            : `${TYPE_LABEL[chat.type]}${chat.username ? ` · @${chat.username}` : ''}`}
                       </div>
                     </div>
                   </Link>
@@ -495,17 +704,24 @@ export function ChatListPanel() {
           ) : null}
         </div>
       ) : sorted.length === 0 ? (
-        <div className="empty-state">Пока пусто в этой папке.</div>
+        <div className="empty-state">
+          {folder === 'archive' ? 'В архиве пока нет чатов.' : 'Пока пусто в этой папке.'}
+        </div>
       ) : (
         <div className={animateList ? 'stagger-list' : undefined}>
           {sorted.map((chat, index) => {
+            const isSaved = isSavedMessagesChat(chat, profile.id);
             const preview = previews[chat.id];
-            const partner = chat.type === 'direct' ? partners[chat.id] : null;
-            const displayName = partner ? partner.display_name : chat.title ?? TYPE_LABEL[chat.type];
-            const avatarUrl = partner ? partner.avatar_url : chat.avatar_url;
-            const isVerified = partner ? partner.is_verified : chat.is_verified;
+            const partner = chat.type === 'direct' && !isSaved ? partners[chat.id] : null;
+            const displayName = isSaved
+              ? 'Избранное'
+              : partner
+                ? partner.display_name
+                : chat.title ?? TYPE_LABEL[chat.type];
+            const avatarUrl = isSaved ? null : partner ? partner.avatar_url : chat.avatar_url;
+            const isVerified = isSaved ? false : partner ? partner.is_verified : chat.is_verified;
 
-            const isPinned = pinnedChatIds.includes(chat.id);
+            const isPinned = pinnedChatIds.includes(chat.id) || isSaved;
 
             return (
               <Link
@@ -523,12 +739,12 @@ export function ChatListPanel() {
                     backgroundPosition: 'center',
                   }}
                 >
-                  {!avatarUrl && displayName.slice(0, 1).toUpperCase()}
+                  {isSaved ? '⭐' : !avatarUrl && displayName.slice(0, 1).toUpperCase()}
                 </div>
                 <div className="chat-item-body">
                   <div className="chat-item-top-row">
                     <span className="chat-item-name" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                      {isPinned && <span className="pinned-badge" title="Закреплённый чат">📌</span>}
+                      {isPinned && !isSaved && <span className="pinned-badge" title="Закреплённый чат">📌</span>}
                       <span>{displayName}</span>
                       {isVerified && <VerifiedBadge size={14} />}
                     </span>
@@ -544,10 +760,29 @@ export function ChatListPanel() {
                       )}
                     </span>
                   </div>
-                  <div className="chat-item-preview-text">
-                    {preview
-                      ? formatPreviewText(preview)
-                      : `${TYPE_LABEL[chat.type]}${chat.visibility ? ` · ${chat.visibility === 'public' ? 'публичный' : 'приватный'}` : ''}`}
+                  <div className="chat-item-preview-text" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {preview
+                        ? formatPreviewText(preview)
+                        : isSaved
+                          ? 'Личное облако заметок и файлов'
+                          : `${TYPE_LABEL[chat.type]}${chat.visibility ? ` · ${chat.visibility === 'public' ? 'публичный' : 'приватный'}` : ''}`}
+                    </span>
+                    {folder === 'archive' && (
+                      <button
+                        type="button"
+                        className="btn-ghost"
+                        style={{ width: 'auto', padding: '1px 6px', fontSize: 11, flexShrink: 0 }}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          toggleArchiveChat(chat.id);
+                        }}
+                        title="Вернуть из архива"
+                      >
+                        Вернуть
+                      </button>
+                    )}
                   </div>
                 </div>
               </Link>
