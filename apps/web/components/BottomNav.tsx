@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { ChatsIcon, FriendsIcon, SettingsIcon, ProfileIcon } from './Icons';
+import { useIsDesktop } from '../lib/useIsDesktop';
 
 const TABS = [
   { href: '/chats/', label: 'Чаты', icon: <ChatsIcon size={20} /> },
@@ -13,6 +14,10 @@ const TABS = [
 
 export function BottomNav() {
   const pathname = usePathname();
+  const isDesktop = useIsDesktop();
+
+  // На ПК уже есть верхняя горизонтальная панель навигации в DesktopShell
+  if (isDesktop) return null;
 
   return (
     <nav className="bottom-nav">
@@ -28,3 +33,4 @@ export function BottomNav() {
     </nav>
   );
 }
+

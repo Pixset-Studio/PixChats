@@ -16,7 +16,7 @@ export function IconRail() {
 
   return (
     <nav className="icon-rail" aria-label="Основная навигация">
-      <Link href="/chats/" className="icon-rail-logo-wrap" title="PixChats" style={{ textDecoration: 'none' }}>
+      <Link href="/chats/" className="icon-rail-logo-wrap" title="PixChats">
         <img
           src={`${process.env.NEXT_PUBLIC_BASE_PATH || ''}/logo/icon.png`}
           alt="PixChats Logo"
@@ -37,7 +37,7 @@ export function IconRail() {
               title={item.title}
               className={`icon-rail-item ${active ? 'active' : ''}`}
             >
-              {item.icon}
+              <span className="icon-rail-icon">{item.icon}</span>
               <span className="icon-rail-label">{item.title}</span>
             </Link>
           );
@@ -46,3 +46,4 @@ export function IconRail() {
     </nav>
   );
 }
+

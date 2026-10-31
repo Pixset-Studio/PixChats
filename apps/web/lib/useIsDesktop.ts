@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 
 /** true на широких экранах (ПК) — используется, чтобы не тянуть двойные данные на мобильном. */
-export function useIsDesktop(breakpoint = 900): boolean {
+export function useIsDesktop(breakpoint = 768): boolean {
   const [isDesktop, setIsDesktop] = useState(false);
 
   useEffect(() => {
@@ -14,3 +14,4 @@ export function useIsDesktop(breakpoint = 900): boolean {
 
   return isDesktop;
 }
+
