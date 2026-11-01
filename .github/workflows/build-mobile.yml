@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 15
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -30,6 +30,14 @@ jobs:
         with:
           packages: 'platform-tools'
 
+      - name: Вычислить единую версию сборки по номеру коммита
+        id: ver
+        shell: bash
+        run: |
+          COMMIT_COUNT=$(git rev-list --count HEAD)
+          echo "count=${COMMIT_COUNT}" >> $GITHUB_OUTPUT
+          echo "version=0.2.${COMMIT_COUNT}" >> $GITHUB_OUTPUT
+
       - name: Install dependencies (весь монорепозиторий)
         run: npm install
 
@@ -39,7 +47,7 @@ jobs:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL || 'https://kibhezfpafhitcvpkquu.supabase.co' }}
           NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtpYmhlemZwYWZoaXRjdnBrcXV1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQxOTI4NjUsImV4cCI6MjA5OTc2ODg2NX0.HO1uskn4k7AWmFNFpFXd2vdgO8BKYz_bb8lpj2znSoI' }}
           NEXT_PUBLIC_BASE_PATH: ''
-          NEXT_PUBLIC_APP_VERSION: 0.2.${{ github.run_number }}
+          NEXT_PUBLIC_APP_VERSION: ${{ steps.ver.outputs.version }}
           NEXT_PUBLIC_BUILD_SHA: ${{ github.sha }}
         run: npm run build
 
@@ -58,8 +66,8 @@ jobs:
       - name: Синхронизировать веб-код, постоянный ключ подписи и нативный Android-мост
         working-directory: apps/mobile
         env:
-          GITHUB_RUN_NUMBER: ${{ github.run_number }}
-          NEXT_PUBLIC_APP_VERSION: 0.2.${{ github.run_number }}
+          GITHUB_RUN_NUMBER: ${{ steps.ver.outputs.count }}
+          NEXT_PUBLIC_APP_VERSION: ${{ steps.ver.outputs.version }}
         run: |
           npx cap sync android
           node configure-android-native.js
@@ -92,7 +100,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 15
+          fetch-depth: 0
 
       - name: Скачать собранный .apk артефакт
         uses: actions/download-artifact@v4
@@ -105,7 +113,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           SHA: ${{ github.sha }}
-          RUN_NUM: ${{ github.run_number }}
         run: |
           mkdir -p release-assets
 
@@ -126,8 +133,9 @@ jobs:
           git push origin :refs/tags/lastest-version 2>/dev/null || true
           git push origin :refs/tags/latest 2>/dev/null || true
 
-          # 3. Формируем список «Что нового» из последних коммитов + ключевых обновлений релиза
-          VERSION_STR="0.2.${RUN_NUM}"
+          # 3. Формируем единую детерминированную версию по числу коммитов + список «Что нового»
+          COMMIT_COUNT=$(git rev-list --count HEAD)
+          VERSION_STR="0.2.${COMMIT_COUNT}"
           TAG_NAME="v${VERSION_STR}"
           RELEASE_TITLE="PixChats v${VERSION_STR}"
           BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -136,9 +144,9 @@ jobs:
           NOTES=$(cat <<EOF
           ### ✨ Что нового в PixChats v${VERSION_STR}:
           ${RECENT_COMMITS}
-          • Стабильная передача звука и видео в личных звонках, голосовых чатах групп и прямых эфирах каналов
-          • Обновление Android (.apk) устанавливается поверх текущей версии без удаления приложения (единый ключ подписи и авто-инкремент versionCode)
-          • Система автообновления с подробным списком изменений для Windows (.exe) и Android (.apk)
+          • Управление активными устройствами и сеансами в настройках («Устройства») с мгновенным завершением сессий
+          • Полное удаление сообщений («Удалить у меня» и «Удалить у всех») без заглушки «Сообщение удалено»
+          • Автоматическая фоновая самоустановка обновлений на ПК (.exe) и Android (.apk) поверх текущей версии
 
           ---
           📦 **Техническая информация сборки:**

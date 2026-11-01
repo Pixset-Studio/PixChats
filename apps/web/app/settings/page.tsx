@@ -49,6 +49,12 @@ import {
 import { get2FAConfig, save2FAConfig, type TwoFactorConfig } from '../../lib/twoFactorAuth';
 import { getAutoTranslatePref, setAutoTranslatePref } from '../../lib/translator';
 import { isScreenshotGuardEnabled, setScreenshotGuardEnabled } from '../../lib/screenshotGuard';
+import {
+  syncAndGetAccountDevices,
+  terminateDeviceSession,
+  terminateAllOtherDeviceSessions,
+  type DeviceSessionInfo,
+} from '../../lib/deviceSessions';
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -87,6 +93,10 @@ export default function SettingsPage() {
   const [twoFactorHintDraft, setTwoFactorHintDraft] = useState('');
   const [autoTranslate, setAutoTranslate] = useState(getAutoTranslatePref());
   const [screenshotGuard, setScreenshotGuard] = useState(isScreenshotGuardEnabled());
+  const [settingsTab, setSettingsTab] = useState<'general' | 'devices'>('general');
+  const [deviceSessions, setDeviceSessions] = useState<DeviceSessionInfo[]>([]);
+  const [devicesLoading, setDevicesLoading] = useState(false);
+  const [terminatingId, setTerminatingId] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -137,8 +147,82 @@ export default function SettingsPage() {
           }
         }
       } catch {}
+
+      try {
+        setDevicesLoading(true);
+        const { devices, revokedCurrent } = await syncAndGetAccountDevices(me.id);
+        if (revokedCurrent) {
+          router.push('/login');
+          return;
+        }
+        setDeviceSessions(devices);
+      } catch {} finally {
+        setDevicesLoading(false);
+      }
     })();
   }, [router]);
+
+  useEffect(() => {
+    if (!profile) return;
+    const onDevicesUpdated = () => {
+      void syncAndGetAccountDevices(profile.id).then(({ devices, revokedCurrent }) => {
+        if (revokedCurrent) {
+          router.push('/login');
+          return;
+        }
+        setDeviceSessions(devices);
+      });
+    };
+    window.addEventListener('pixchats:devices_updated', onDevicesUpdated);
+    return () => window.removeEventListener('pixchats:devices_updated', onDevicesUpdated);
+  }, [profile, router]);
+
+  async function handleRefreshDevices() {
+    if (!profile) return;
+    setDevicesLoading(true);
+    try {
+      const { devices, revokedCurrent } = await syncAndGetAccountDevices(profile.id);
+      if (revokedCurrent) {
+        router.push('/login');
+        return;
+      }
+      setDeviceSessions(devices);
+      setNotice('Список активных устройств обновлён');
+      setTimeout(() => setNotice(null), 1600);
+    } finally {
+      setDevicesLoading(false);
+    }
+  }
+
+  async function handleTerminateDevice(sessionId: string, deviceName: string) {
+    if (!profile) return;
+    setTerminatingId(sessionId);
+    try {
+      const next = await terminateDeviceSession(profile.id, sessionId);
+      setDeviceSessions(next);
+      setNotice(`Сеанс на устройстве «${deviceName}» завершён`);
+      setTimeout(() => setNotice(null), 2200);
+    } catch {
+      setError('Не удалось завершить сеанс устройства');
+    } finally {
+      setTerminatingId(null);
+    }
+  }
+
+  async function handleTerminateAllOtherDevices() {
+    if (!profile) return;
+    setTerminatingId('all-other');
+    try {
+      const next = await terminateAllOtherDeviceSessions(profile.id);
+      setDeviceSessions(next);
+      setNotice('Все другие сеансы кроме текущего успешно завершены');
+      setTimeout(() => setNotice(null), 2200);
+    } catch {
+      setError('Не удалось завершить другие сеансы');
+    } finally {
+      setTerminatingId(null);
+    }
+  }
 
   function handleToggleNotifPref(key: keyof NotificationPreferences, value: boolean) {
     const next = updateNotificationPref(key, value);
@@ -321,6 +405,276 @@ export default function SettingsPage() {
       {notice && <p className="notice">{notice}</p>}
       {error && <p className="error">{error}</p>}
 
+      {/* Переключатель вкладок Настроек: Основные / Устройства */}
+      <div
+        style={{
+          display: 'flex',
+          gap: 8,
+          marginBottom: 20,
+          padding: 4,
+          borderRadius: 12,
+          background: 'var(--surface)',
+          border: '1px solid var(--border)',
+        }}
+      >
+        <button
+          type="button"
+          className={`btn ${settingsTab === 'general' ? 'btn-primary' : 'btn-ghost'}`}
+          style={{ flex: 1, padding: '10px 14px', fontSize: 13.5, fontWeight: 700 }}
+          onClick={() => setSettingsTab('general')}
+        >
+          ⚙️ Основные настройки
+        </button>
+        <button
+          type="button"
+          className={`btn ${settingsTab === 'devices' ? 'btn-primary' : 'btn-ghost'}`}
+          style={{ flex: 1, padding: '10px 14px', fontSize: 13.5, fontWeight: 700 }}
+          onClick={() => {
+            setSettingsTab('devices');
+            void handleRefreshDevices();
+          }}
+        >
+          💻 Устройства ({Math.max(1, deviceSessions.length)})
+        </button>
+      </div>
+
+      {settingsTab === 'devices' ? (
+        <div>
+          <div className="section-title">Это устройство (Текущий сеанс)</div>
+          {(() => {
+            const currentDev = deviceSessions.find((d) => d.isCurrent) || deviceSessions[0];
+            const otherDevices = deviceSessions.filter((d) => !d.isCurrent);
+            const platformIcon =
+              currentDev?.platformType === 'desktop-exe'
+                ? '🖥️'
+                : currentDev?.platformType === 'android-apk'
+                  ? '📱'
+                  : '🌐';
+
+            return (
+              <>
+                {currentDev && (
+                  <div
+                    className="card"
+                    style={{
+                      marginBottom: 24,
+                      border: '1px solid rgba(255, 212, 0, 0.35)',
+                      background: 'linear-gradient(135deg, rgba(255, 212, 0, 0.06), var(--surface))',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14, flexWrap: 'wrap' }}>
+                      <div
+                        style={{
+                          width: 48,
+                          height: 48,
+                          borderRadius: 12,
+                          background: 'rgba(255, 212, 0, 0.14)',
+                          border: '1px solid var(--accent)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontSize: 24,
+                          flexShrink: 0,
+                        }}
+                      >
+                        {platformIcon}
+                      </div>
+                      <div style={{ flex: 1, minWidth: 200 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                          <span style={{ fontWeight: 700, fontSize: 16 }}>{currentDev.deviceName}</span>
+                          <span
+                            style={{
+                              fontSize: 11,
+                              fontWeight: 700,
+                              padding: '2px 8px',
+                              borderRadius: 999,
+                              background: 'rgba(34, 197, 94, 0.16)',
+                              color: '#22c55e',
+                              border: '1px solid rgba(34, 197, 94, 0.35)',
+                            }}
+                          >
+                            🟢 В сети • Текущее устройство
+                          </span>
+                        </div>
+                        <div style={{ fontSize: 13, color: 'var(--accent)', fontWeight: 600, marginTop: 4 }}>
+                          {currentDev.clientLabel}
+                        </div>
+                        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
+                          📍 Регион / часовой пояс: {currentDev.locationLabel} • Вход выполнен:{' '}
+                          {new Date(currentDev.createdAt).toLocaleString('ru-RU', {
+                            day: '2-digit',
+                            month: '2-digit',
+                            year: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div
+                      style={{
+                        marginTop: 16,
+                        paddingTop: 14,
+                        borderTop: '1px solid var(--border)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: 10,
+                        flexWrap: 'wrap',
+                      }}
+                    >
+                      <button
+                        type="button"
+                        className="btn btn-compact"
+                        onClick={handleRefreshDevices}
+                        disabled={devicesLoading}
+                      >
+                        {devicesLoading ? '⏳ Синхронизация…' : '🔄 Обновить список устройств'}
+                      </button>
+
+                      {otherDevices.length > 0 ? (
+                        <button
+                          type="button"
+                          className="btn btn-compact"
+                          style={{
+                            borderColor: 'var(--danger)',
+                            color: 'var(--danger)',
+                            fontWeight: 700,
+                          }}
+                          onClick={handleTerminateAllOtherDevices}
+                          disabled={terminatingId !== null}
+                        >
+                          {terminatingId === 'all-other'
+                            ? 'Завершаем…'
+                            : `🛑 Завершить все другие сеансы (${otherDevices.length})`}
+                        </button>
+                      ) : (
+                        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                          ✓ На других устройствах активных сеансов нет
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                <div className="section-title">
+                  Активные сеансы на других устройствах ({otherDevices.length})
+                </div>
+                <div className="card" style={{ marginBottom: 24 }}>
+                  {otherDevices.length === 0 ? (
+                    <div style={{ textAlign: 'center', padding: '18px 10px', color: 'var(--text-muted)', fontSize: 13.5 }}>
+                      🔒 Сейчас в вашем аккаунте авторизовано только это устройство. Если вы войдёте в аккаунт с телефона (.apk), ПК (.exe) или другого браузера, все сеансы появятся здесь.
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                      {otherDevices.map((dev) => {
+                        const icon =
+                          dev.platformType === 'desktop-exe'
+                            ? '🖥️'
+                            : dev.platformType === 'android-apk'
+                              ? '📱'
+                              : '🌐';
+                        const badgeText =
+                          dev.platformType === 'desktop-exe'
+                            ? 'Windows .exe'
+                            : dev.platformType === 'android-apk'
+                              ? 'Android .apk'
+                              : 'Web Браузер';
+
+                        return (
+                          <div
+                            key={dev.sessionId}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              gap: 12,
+                              padding: '12px 14px',
+                              borderRadius: 12,
+                              background: 'var(--bg-secondary)',
+                              border: '1px solid var(--border)',
+                              flexWrap: 'wrap',
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 200, flex: 1 }}>
+                              <div
+                                style={{
+                                  width: 42,
+                                  height: 42,
+                                  borderRadius: 10,
+                                  background: 'var(--surface-raised)',
+                                  border: '1px solid var(--border)',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  fontSize: 20,
+                                  flexShrink: 0,
+                                }}
+                              >
+                                {icon}
+                              </div>
+                              <div style={{ minWidth: 0, flex: 1 }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                                  <span style={{ fontWeight: 700, fontSize: 14.5 }}>{dev.deviceName}</span>
+                                  <span
+                                    style={{
+                                      fontSize: 10.5,
+                                      fontWeight: 700,
+                                      padding: '2px 7px',
+                                      borderRadius: 6,
+                                      background: 'rgba(255, 212, 0, 0.14)',
+                                      color: 'var(--accent)',
+                                    }}
+                                  >
+                                    {badgeText}
+                                  </span>
+                                  {dev.isOnline && (
+                                    <span style={{ fontSize: 11, color: '#22c55e', fontWeight: 600 }}>
+                                      ● В сети
+                                    </span>
+                                  )}
+                                </div>
+                                <div style={{ fontSize: 12.5, color: 'var(--text-muted)', marginTop: 2 }}>
+                                  {dev.clientLabel}
+                                </div>
+                                <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 2 }}>
+                                  📍 {dev.locationLabel} • Активность:{' '}
+                                  {new Date(dev.lastActiveAt).toLocaleString('ru-RU', {
+                                    day: '2-digit',
+                                    month: '2-digit',
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                  })}
+                                </div>
+                              </div>
+                            </div>
+
+                            <button
+                              type="button"
+                              className="btn btn-compact"
+                              style={{
+                                borderColor: 'var(--danger)',
+                                color: 'var(--danger)',
+                                fontWeight: 700,
+                              }}
+                              onClick={() => handleTerminateDevice(dev.sessionId, dev.deviceName)}
+                              disabled={terminatingId !== null}
+                            >
+                              {terminatingId === dev.sessionId ? 'Завершаем…' : 'Завершить сеанс'}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </>
+            );
+          })()}
+        </div>
+      ) : (
+      <>
       <div className="section-title">Профиль</div>
       <div className="card" style={{ marginBottom: 24 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 20 }}>
@@ -1057,6 +1411,8 @@ export default function SettingsPage() {
           </Link>
         </div>
       </div>
+      </>
+      )}
     </main>
     <BottomNav />
     </DesktopShell>

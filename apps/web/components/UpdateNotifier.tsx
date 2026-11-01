@@ -76,9 +76,15 @@ function extractMetaFromBody(body: string) {
   };
 }
 
+function normalizeVersionString(v: string): string {
+  const m = v.match(/([0-9]+\.[0-9]+\.[0-9]+)/);
+  return m ? m[1] : v.replace(/^[^0-9]*/i, '').trim();
+}
+
 export function UpdateNotifier() {
   const [release, setRelease] = useState<GitHubRelease | null>(null);
   const [showModal, setShowModal] = useState(false);
+  const [isUpToDateModal, setIsUpToDateModal] = useState(false);
   const [updating, setUpdating] = useState(false);
   const [progressPercent, setProgressPercent] = useState<number>(0);
   const [progressStatus, setProgressStatus] = useState<'idle' | 'downloading' | 'installing'>('idle');
@@ -98,8 +104,11 @@ export function UpdateNotifier() {
           ? apkAsset
           : exeAsset || apkAsset;
 
-    const releaseSignature = `${rel.id}:${targetAsset?.updated_at || rel.published_at || rel.tag_name}`;
+    const meta = extractMetaFromBody(rel.body || '');
+    const remoteVer = normalizeVersionString(meta.version || rel.tag_name || rel.name || CURRENT_VERSION);
+    const releaseSignature = `${remoteVer}:${meta.commitSha || rel.tag_name}`;
     localStorage.setItem('pixchats:installed_release_sig', releaseSignature);
+    localStorage.setItem('pixchats:installed_version', remoteVer);
     localStorage.setItem('pixchats:last_known_release_id', String(rel.id));
 
     const downloadUrl = targetAsset ? targetAsset.browser_download_url : rel.html_url;
@@ -186,71 +195,66 @@ export function UpdateNotifier() {
         const list: GitHubRelease[] = await res.json();
         if (!Array.isArray(list) || list.length === 0) return;
 
-        // Берём самый свежий опубликованный релиз с конкретной версией
         const latestRel = list[0];
         if (!latestRel) return;
 
-        const targetAsset =
-          currentPlat === 'desktop-exe'
-            ? latestRel.assets?.find((a) => a.name.toLowerCase().endsWith('.exe'))
-            : currentPlat === 'android-apk'
-              ? latestRel.assets?.find((a) => a.name.toLowerCase().endsWith('.apk'))
-              : latestRel.assets?.[0];
-
-        const releaseSignature = `${latestRel.id}:${targetAsset?.updated_at || latestRel.published_at || latestRel.tag_name}`;
-        const installedSig = localStorage.getItem('pixchats:installed_release_sig');
-        if (!isManual && installedSig === releaseSignature) {
-          return;
-        }
-
         const meta = extractMetaFromBody(latestRel.body || '');
         const mySha = CURRENT_BUILD_SHA.toLowerCase();
+        const remoteVer = normalizeVersionString(meta.version || latestRel.tag_name || latestRel.name || '');
+        const currentVer = normalizeVersionString(CURRENT_VERSION);
+        const installedVer = localStorage.getItem('pixchats:installed_version') || '';
 
-        // Если текущий бинарник (.exe / .apk) собран из того же самого коммита, что и релиз — запоминаем, что версия актуальна
-        if (mySha && meta.commitSha && (mySha.startsWith(meta.commitSha) || meta.commitSha.startsWith(mySha))) {
-          localStorage.setItem('pixchats:installed_release_sig', releaseSignature);
-          if (!isManual) return;
-        }
+        const releaseSignature = `${remoteVer}:${meta.commitSha || latestRel.tag_name}`;
+        const installedSig = localStorage.getItem('pixchats:installed_release_sig');
 
+        // Проверяем: совпадает ли коммит или версия с уже установленной
+        const isSameCommit =
+          Boolean(mySha && meta.commitSha) &&
+          (mySha.startsWith(meta.commitSha!) || meta.commitSha!.startsWith(mySha));
+        const isSameOrOlderVersion =
+          Boolean(remoteVer) &&
+          (!isNewerSemver(remoteVer, currentVer) ||
+            (Boolean(installedVer) && !isNewerSemver(remoteVer, installedVer)));
+
+        // Обновление требуется ТОЛЬКО если в релизе строго более новая семантическая версия
+        // ИЛИ если известен другой коммит при более новой версии
         let needsUpdate = false;
-
-        // 1. Если в релизе указан новый Commit SHA, отличный от текущего бинарника
-        if (mySha && meta.commitSha && !mySha.startsWith(meta.commitSha) && !meta.commitSha.startsWith(mySha)) {
-          needsUpdate = true;
-        }
-
-        // 2. Если версия в релизе или теге выше текущей
-        const remoteVer = meta.version || latestRel.tag_name || latestRel.name;
-        if (remoteVer && isNewerSemver(remoteVer, CURRENT_VERSION)) {
-          needsUpdate = true;
-        }
-
-        // 3. Сравнение времени публикации релиза со временем сборки приложения
-        const relTimeStr = targetAsset?.updated_at || meta.buildTime || latestRel.published_at || latestRel.created_at;
-        if (relTimeStr && CURRENT_BUILD_TIMESTAMP) {
-          const relMs = Date.parse(relTimeStr);
-          const buildMs = Date.parse(CURRENT_BUILD_TIMESTAMP);
-          if (!Number.isNaN(relMs) && !Number.isNaN(buildMs) && relMs > buildMs + 15 * 60 * 1000) {
+        if (!isSameCommit && !isSameOrOlderVersion) {
+          if (remoteVer && isNewerSemver(remoteVer, currentVer)) {
+            needsUpdate = true;
+          } else if (mySha && meta.commitSha && !isSameCommit && !remoteVer) {
             needsUpdate = true;
           }
         }
 
-        // 4. Если вышел новый релиз с другим ID или тегом
-        const lastKnownReleaseId = localStorage.getItem('pixchats:last_known_release_id');
-        if (!lastKnownReleaseId) {
-          localStorage.setItem('pixchats:last_known_release_id', String(latestRel.id));
-        } else if (lastKnownReleaseId !== String(latestRel.id)) {
-          needsUpdate = true;
+        if (installedSig === releaseSignature) {
+          needsUpdate = false;
         }
 
-        if (needsUpdate || isManual) {
-          setRelease(latestRel);
-          setShowModal(true);
-
-          // На ПК и телефоне сразу автоматически запускаем скачивание и самоустановку новой версии без лишних кликов!
-          if (needsUpdate && (currentPlat === 'desktop-exe' || currentPlat === 'android-apk')) {
-            void executeAutoInstall(latestRel, currentPlat);
+        // Если версия совпадает или не новее текущей — запоминаем её как актуальную, чтобы не предлагать скачать ту же самую версию
+        if (!needsUpdate) {
+          localStorage.setItem('pixchats:installed_release_sig', releaseSignature);
+          if (remoteVer) {
+            localStorage.setItem('pixchats:installed_version', remoteVer);
           }
+          localStorage.setItem('pixchats:last_known_release_id', String(latestRel.id));
+
+          if (isManual) {
+            setRelease(latestRel);
+            setIsUpToDateModal(true);
+            setShowModal(true);
+          }
+          return;
+        }
+
+        // Если действительно вышла более новая версия:
+        setIsUpToDateModal(false);
+        setRelease(latestRel);
+        setShowModal(true);
+
+        // На ПК и телефоне сразу автоматически запускаем скачивание и самоустановку новой версии
+        if (currentPlat === 'desktop-exe' || currentPlat === 'android-apk') {
+          void executeAutoInstall(latestRel, currentPlat);
         }
       } catch {
         // Оффлайн или лимит GitHub API — тихо игнорируем
@@ -273,11 +277,9 @@ export function UpdateNotifier() {
   if (!showModal || !release) return null;
 
   const meta = extractMetaFromBody(release.body || '');
-  const versionNumber =
-    meta.version ||
-    release.tag_name?.replace(/^v/i, '') ||
-    release.name?.replace(/^[^0-9]*/i, '') ||
-    CURRENT_VERSION;
+  const versionNumber = normalizeVersionString(
+    meta.version || release.tag_name || release.name || CURRENT_VERSION
+  );
   const displayVersion = `v${versionNumber}`;
   const releaseTitle =
     release.name && !release.name.toLowerCase().includes('lastest')
@@ -289,8 +291,8 @@ export function UpdateNotifier() {
       ? meta.changelogItems
       : [
           'Полностью автоматическое скачивание и самоустановка обновлений на ПК (.exe) и Android (.apk)',
-          'Стабильная передача звука и видео в личных звонках, голосовых чатах групп и прямых эфирах каналов',
-          'Обновление Android (.apk) устанавливается поверх текущей версии без удаления приложения',
+          'Управление активными устройствами и сессиями в настройках аккаунта',
+          'Полное бесследное удаление сообщений («Удалить у меня» и «Удалить у всех»)',
         ];
 
   const exeAsset = release.assets?.find((a) => a.name.toLowerCase().endsWith('.exe'));
@@ -303,28 +305,42 @@ export function UpdateNotifier() {
         : exeAsset || apkAsset;
 
   return (
-    <div className="update-modal-overlay">
+    <div className="update-modal-overlay" onClick={() => !updating && setShowModal(false)}>
       <div className="update-modal-card" onClick={(e) => e.stopPropagation()}>
         <div className="update-badge">
-          {updating ? `⚡ Автообновление · ${releaseTitle}` : `🚀 Новая версия · ${releaseTitle}`}
+          {isUpToDateModal
+            ? `✅ Актуальная версия · v${CURRENT_VERSION}`
+            : updating
+              ? `⚡ Автообновление · ${releaseTitle}`
+              : `🚀 Новая версия · ${releaseTitle}`}
         </div>
 
         <h3 style={{ margin: '0 0 6px', fontSize: 19, fontFamily: 'var(--font-display)' }}>
-          {updating
-            ? `Автоматическое обновление до ${releaseTitle}`
-            : `Доступно обновление ${releaseTitle}`}
+          {isUpToDateModal
+            ? `У вас установлена последняя версия PixChats`
+            : updating
+              ? `Автоматическое обновление до ${releaseTitle}`
+              : `Доступно обновление ${releaseTitle}`}
         </h3>
         <p style={{ margin: '0 0 12px', fontSize: 12.5, color: 'var(--text-muted)', lineHeight: 1.45 }}>
-          Текущая версия: <b>v{CURRENT_VERSION}</b> → Новая версия: <b style={{ color: 'var(--accent)' }}>{displayVersion}</b>.{' '}
-          {platform === 'desktop-exe'
-            ? 'Обновление скачивается и устанавливается автоматически в фоновом режиме, после чего приложение само перезапустится.'
-            : platform === 'android-apk'
-              ? 'Обновление скачивается и автоматически запускает установку поверх текущей версии без удаления данных.'
-              : ''}
+          {isUpToDateModal ? (
+            <>
+              Установлена актуальная сборка <b style={{ color: 'var(--accent)' }}>v{CURRENT_VERSION}</b>. Скачивать обновление не требуется.
+            </>
+          ) : (
+            <>
+              Текущая версия: <b>v{CURRENT_VERSION}</b> → Новая версия: <b style={{ color: 'var(--accent)' }}>{displayVersion}</b>.{' '}
+              {platform === 'desktop-exe'
+                ? 'Обновление скачивается и устанавливается автоматически в фоновом режиме, после чего приложение само перезапустится.'
+                : platform === 'android-apk'
+                  ? 'Обновление скачивается и автоматически запускает установку поверх текущей версии без удаления данных.'
+                  : ''}
+            </>
+          )}
         </p>
 
         {/* Индикатор автоматической загрузки и самоустановки */}
-        {updating && (
+        {updating && !isUpToDateModal && (
           <div
             style={{
               padding: '10px 12px',
@@ -416,7 +432,7 @@ export function UpdateNotifier() {
           </ul>
         </div>
 
-        {targetAsset && (
+        {!isUpToDateModal && targetAsset && (
           <div
             style={{
               padding: '8px 12px',
@@ -443,27 +459,40 @@ export function UpdateNotifier() {
         )}
 
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <button
-            type="button"
-            className="btn"
-            style={{ width: 'auto', padding: '11px 14px', fontSize: 13 }}
-            onClick={() => setShowModal(false)}
-          >
-            Свернуть в фон
-          </button>
-          <button
-            type="button"
-            className="btn btn-primary"
-            style={{ flex: 1, padding: '11px 18px', fontWeight: 700 }}
-            onClick={() => void executeAutoInstall(release, platform)}
-            disabled={updating}
-          >
-            {updating
-              ? progressStatus === 'installing'
-                ? '⚙️ Устанавливается автоматически…'
-                : `⏳ Скачивание (${progressPercent}%)…`
-              : `🔄 Установить ${displayVersion} сейчас`}
-          </button>
+          {isUpToDateModal ? (
+            <button
+              type="button"
+              className="btn btn-primary"
+              style={{ width: '100%', padding: '11px 18px', fontWeight: 700 }}
+              onClick={() => setShowModal(false)}
+            >
+              Отлично
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                className="btn"
+                style={{ width: 'auto', padding: '11px 14px', fontSize: 13 }}
+                onClick={() => setShowModal(false)}
+              >
+                Свернуть в фон
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                style={{ flex: 1, padding: '11px 18px', fontWeight: 700 }}
+                onClick={() => void executeAutoInstall(release, platform)}
+                disabled={updating}
+              >
+                {updating
+                  ? progressStatus === 'installing'
+                    ? '⚙️ Устанавливается автоматически…'
+                    : `⏳ Скачивание (${progressPercent}%)…`
+                  : `🔄 Установить ${displayVersion} сейчас`}
+              </button>
+            </>
+          )}
         </div>
       </div>
     </div>

@@ -60,6 +60,9 @@ function isMessageRead(chatId: string, message: Message, partnerReadMap: Record<
 }
 
 function formatPreviewText(message: Message): string {
+  if (message.is_deleted || message.text === 'Сообщение удалено') {
+    return '';
+  }
   if (message.caption === '__VIDEONOTE__' || message.text?.startsWith('__VIDEONOTE__')) {
     return '🎥 Видеосообщение (кружочек)';
   }
@@ -249,7 +252,7 @@ export function ChatListPanel() {
       .channel('chat-list-messages')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, async (payload: any) => {
         const row = payload.new;
-        if (!row) return;
+        if (!row || row.is_deleted) return;
 
         const decryptedText = await decryptMessageE2EE(row.chat_id, row.ciphertext);
 
@@ -292,7 +295,43 @@ export function ChatListPanel() {
           }
         }
       })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages' }, async (payload: any) => {
+        const row = payload.new;
+        if (!row?.chat_id) return;
+        const updatedPreviews = await getLastMessagesForChats([row.chat_id]);
+        setPreviews((prev) => {
+          const next = { ...prev };
+          if (updatedPreviews[row.chat_id]) {
+            next[row.chat_id] = updatedPreviews[row.chat_id];
+          } else {
+            delete next[row.chat_id];
+          }
+          return next;
+        });
+      })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'messages' }, async () => {
+        loadChats(profile);
+      })
       .subscribe();
+
+    const onLocalMessageDeleted = async (e: Event) => {
+      const detail = (e as CustomEvent<{ messageId?: string; chatId?: string }>).detail;
+      if (detail?.chatId) {
+        const updatedPreviews = await getLastMessagesForChats([detail.chatId]);
+        setPreviews((prev) => {
+          const next = { ...prev };
+          if (updatedPreviews[detail.chatId!]) {
+            next[detail.chatId!] = updatedPreviews[detail.chatId!];
+          } else {
+            delete next[detail.chatId!];
+          }
+          return next;
+        });
+      } else {
+        loadChats(profile);
+      }
+    };
+    window.addEventListener('pixchats:message_deleted', onLocalMessageDeleted);
 
     const readStateChannel = supabase
       .channel('chat-list-read-state')
@@ -346,6 +385,7 @@ export function ChatListPanel() {
       .subscribe();
 
     return () => {
+      window.removeEventListener('pixchats:message_deleted', onLocalMessageDeleted);
       supabase.removeChannel(messagesChannel);
       supabase.removeChannel(readStateChannel);
       supabase.removeChannel(membersChannel);

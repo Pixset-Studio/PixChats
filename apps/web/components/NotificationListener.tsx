@@ -9,6 +9,7 @@ import {
   ensureNotificationPermissionEverywhere,
   sendNativeOrWebNotification,
 } from '../lib/nativePlatform';
+import { startDeviceSessionMonitor } from '../lib/deviceSessions';
 
 const MEDIA_LABELS: Record<string, string> = {
   image: '📷 Фото',
@@ -116,11 +117,16 @@ export function NotificationListener() {
     window.addEventListener('pixchats:native_navigate', onAndroidNavigate);
 
     let channel: ReturnType<ReturnType<typeof getSupabaseClient>['channel']> | null = null;
+    let stopDeviceMonitor: (() => void) | null = null;
 
     (async () => {
       const me = await getCurrentProfile();
       if (!me) return;
       meRef.current = me;
+
+      stopDeviceMonitor = startDeviceSessionMonitor(me.id, () => {
+        router.push('/login/');
+      });
 
       const supabase = getSupabaseClient();
       channel = supabase
@@ -304,6 +310,7 @@ export function NotificationListener() {
 
     return () => {
       if (unsubscribeDesktopNav) unsubscribeDesktopNav();
+      if (stopDeviceMonitor) stopDeviceMonitor();
       window.removeEventListener('pixchats:native_navigate', onAndroidNavigate);
       if (channel) getSupabaseClient().removeChannel(channel);
     };

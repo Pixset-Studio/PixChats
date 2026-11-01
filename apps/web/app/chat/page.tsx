@@ -20,6 +20,8 @@ import {
   getChatMemberCount,
   editMessage,
   deleteMessage,
+  deleteMessageForMe,
+  isMessageDeletedForMe,
   pinMessage,
   unpinMessage,
   forwardMessage,
@@ -1061,7 +1063,22 @@ function ChatWindowInner() {
               });
             }
           },
-          (msg) => setMessages((prev) => prev.map((m) => (m.id === msg.id ? msg : m))),
+          (msg) => {
+            if (msg.is_deleted || msg.text === 'Сообщение удалено') {
+              setMessages((prev) => {
+                const next = prev.filter((m) => m.id !== msg.id);
+                saveOfflineMessages(chatId, next);
+                return next;
+              });
+              setPinnedMessage((prev) => (prev?.id === msg.id ? null : prev));
+              return;
+            }
+            setMessages((prev) => {
+              const next = prev.map((m) => (m.id === msg.id ? msg : m));
+              saveOfflineMessages(chatId, next);
+              return next;
+            });
+          },
           (reactionPayload) => {
             setReactions((prev) => {
               const msgReactions = { ...(prev[reactionPayload.messageId] ?? {}) };
@@ -1446,12 +1463,15 @@ function ChatWindowInner() {
     } catch {}
   }
 
-  // Фильтрация сообщений по выбранной теме (Топику), если включён режим с темами (Пункт 8)
+  // Фильтрация удалённых сообщений (без заглушек «Сообщение удалено») и фильтрация по выбранной теме (Топику)
   const visibleMessages = useMemo(() => {
+    const nonDeleted = messages.filter(
+      (m) => !m.is_deleted && m.text !== 'Сообщение удалено' && !isMessageDeletedForMe(m.id)
+    );
     if (channelGroupCfg.structureMode !== 'topics' || activeTopicId === 'all') {
-      return messages;
+      return nonDeleted;
     }
-    return messages.filter((m) => {
+    return nonDeleted.filter((m) => {
       const { cleanText } = extractSelfDestructInfo(m.text || '');
       const { topicId } = extractTopicFromText(cleanText);
       if (!topicId) {
@@ -1546,21 +1566,41 @@ function ChatWindowInner() {
     setOpenMenuId(null);
   }
 
-  async function handleDelete(message: Message) {
-    await deleteMessage(message.id);
-    setMessages((prev) => prev.map((m) => (m.id === message.id ? { ...m, is_deleted: true, text: 'Сообщение удалено' } : m)));
+  function handleDeleteForMe(message: Message) {
+    deleteMessageForMe(message.id, chatId);
+    setMessages((prev) => {
+      const next = prev.filter((m) => m.id !== message.id);
+      saveOfflineMessages(chatId, next);
+      return next;
+    });
+    if (pinnedMessage?.id === message.id) {
+      setPinnedMessage(null);
+    }
     setOpenMenuId(null);
   }
 
+  async function handleDeleteForAll(message: Message) {
+    setOpenMenuId(null);
+    setMessages((prev) => {
+      const next = prev.filter((m) => m.id !== message.id);
+      saveOfflineMessages(chatId, next);
+      return next;
+    });
+    if (pinnedMessage?.id === message.id) {
+      setPinnedMessage(null);
+    }
+    await deleteMessage(message.id, chatId);
+  }
+
   async function handleSelfDestructExpired(messageId: string) {
+    setMessages((prev) => {
+      const next = prev.filter((m) => m.id !== messageId);
+      saveOfflineMessages(chatId, next);
+      return next;
+    });
     try {
-      await deleteMessage(messageId);
+      await deleteMessage(messageId, chatId);
     } catch {}
-    setMessages((prev) =>
-      prev.map((m) =>
-        m.id === messageId ? { ...m, is_deleted: true, text: '🔥 Исчезающее сообщение удалено по таймеру' } : m
-      )
-    );
   }
 
   async function handleCopy(message: Message) {
@@ -2765,8 +2805,11 @@ function ChatWindowInner() {
                           <EditIcon size={15} /> Изменить
                         </button>
                       )}
-                      {(isMine || canModerate) && (
-                        <button className="danger" onClick={() => handleDelete(m)}>
+                      <button className="danger" onClick={() => handleDeleteForMe(m)}>
+                        <TrashIcon size={15} /> Удалить у меня
+                      </button>
+                      {(isMine || canModerate || chat.type === 'direct') && (
+                        <button className="danger" onClick={() => handleDeleteForAll(m)}>
                           <TrashIcon size={15} /> Удалить у всех
                         </button>
                       )}

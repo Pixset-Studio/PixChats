@@ -27,9 +27,39 @@ export interface Message {
 const SELECT_FIELDS =
   'id, chat_id, sender_id, ciphertext, message_type, media_path, caption, caption_position, sent_at, reply_to_id, edited_at, is_deleted, forwarded_from_chat_id';
 
+const DELETED_FOR_ME_STORAGE_KEY = 'pixchats:deleted_for_me';
+
+function getDeletedForMeSet(): Set<string> {
+  if (typeof window === 'undefined') return new Set();
+  try {
+    const raw = localStorage.getItem(DELETED_FOR_ME_STORAGE_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(arr) ? arr : []);
+  } catch {
+    return new Set();
+  }
+}
+
+export function isMessageDeletedForMe(messageId: string): boolean {
+  if (!messageId) return false;
+  return getDeletedForMeSet().has(messageId);
+}
+
+/** "Удалить у меня" — скрывает сообщение только на текущем аккаунте/устройстве без следов и заглушек. */
+export function deleteMessageForMe(messageId: string, chatId?: string): void {
+  if (typeof window === 'undefined' || !messageId) return;
+  try {
+    const set = getDeletedForMeSet();
+    set.add(messageId);
+    const trimmed = Array.from(set).slice(-2000);
+    localStorage.setItem(DELETED_FOR_ME_STORAGE_KEY, JSON.stringify(trimmed));
+    window.dispatchEvent(new CustomEvent('pixchats:message_deleted', { detail: { messageId, chatId, mode: 'me' } }));
+  } catch {}
+}
+
 async function mapRowAsync(row: any): Promise<Message> {
   const decryptedText = row.is_deleted
-    ? 'Сообщение удалено'
+    ? ''
     : await decryptMessageE2EE(row.chat_id, row.ciphertext);
   return {
     id: row.id,
@@ -43,7 +73,7 @@ async function mapRowAsync(row: any): Promise<Message> {
     sent_at: row.sent_at,
     reply_to_id: row.reply_to_id,
     edited_at: row.edited_at,
-    is_deleted: row.is_deleted,
+    is_deleted: Boolean(row.is_deleted),
     forwarded_from_chat_id: row.forwarded_from_chat_id,
     is_e2ee: isEncryptedE2EEPayload(row.ciphertext),
   };
@@ -113,14 +143,17 @@ export async function getMessages(chatId: string, limit = 200): Promise<Message[
     .order('sent_at', { ascending: true })
     .limit(limit);
   if (error) throw error;
-  return Promise.all((data ?? []).map(mapRowAsync));
+  const visibleRows = (data ?? []).filter((row: any) => !row.is_deleted && !isMessageDeletedForMe(row.id));
+  return Promise.all(visibleRows.map(mapRowAsync));
 }
 
 export async function getMessageById(messageId: string): Promise<Message | null> {
+  if (isMessageDeletedForMe(messageId)) return null;
   const supabase = getSupabaseClient();
   const { data, error } = await supabase.from('messages').select(SELECT_FIELDS).eq('id', messageId).maybeSingle();
   if (error) throw error;
-  return data ? mapRowAsync(data) : null;
+  if (!data || data.is_deleted) return null;
+  return mapRowAsync(data);
 }
 
 /** Редактирование своего сообщения — шифрует новый текст через E2EE AES-256-GCM и отмечает edited_at. */
@@ -142,14 +175,54 @@ export async function editMessage(messageId: string, newText: string, chatId?: s
   if (error) throw error;
 }
 
-/** "Удалить у обоих" — soft-delete: текст стирается, но строка остаётся (не рвёт ответы/закреп). */
-export async function deleteMessage(messageId: string): Promise<void> {
+/** "Удалить у всех" — полное удаление сообщения без плашки «Сообщение удалено» у всех участников чата. */
+export async function deleteMessage(messageId: string, chatId?: string): Promise<void> {
   const supabase = getSupabaseClient();
-  const { error } = await supabase
-    .from('messages')
-    .update({ is_deleted: true, ciphertext: encodeLegacyBase64Text('') })
-    .eq('id', messageId);
-  if (error) throw error;
+  let targetChatId = chatId;
+  try {
+    if (!targetChatId) {
+      const { data } = await supabase.from('messages').select('chat_id').eq('id', messageId).maybeSingle();
+      targetChatId = data?.chat_id;
+    }
+  } catch {}
+
+  // Снимаем закреп и очищаем ссылки reply_to_id, чтобы не блокировать полное удаление
+  try {
+    if (targetChatId) {
+      await supabase.from('chats').update({ pinned_message_id: null }).eq('id', targetChatId).eq('pinned_message_id', messageId);
+    }
+    await supabase.from('messages').update({ reply_to_id: null }).eq('reply_to_id', messageId);
+  } catch {}
+
+  // Помечаем is_deleted = true (на случай ограничений RLS на физический DELETE) и удаляем физически из БД
+  try {
+    await supabase
+      .from('messages')
+      .update({ is_deleted: true, ciphertext: encodeLegacyBase64Text('') })
+      .eq('id', messageId);
+  } catch {}
+
+  try {
+    await supabase.from('messages').delete().eq('id', messageId);
+  } catch {}
+
+  // Мгновенно рассылаем событие удаления всем открытым клиентам чата
+  if (targetChatId) {
+    try {
+      const channel = supabase.channel(`messages:${targetChatId}`);
+      channel.send({
+        type: 'broadcast',
+        event: 'delete-message',
+        payload: { messageId, chatId: targetChatId },
+      });
+    } catch {}
+  }
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(
+      new CustomEvent('pixchats:message_deleted', { detail: { messageId, chatId: targetChatId, mode: 'all' } })
+    );
+  }
 }
 
 export async function pinMessage(chatId: string, messageId: string): Promise<void> {
@@ -179,7 +252,7 @@ export async function forwardMessage(message: Message, targetChatId: string): Pr
     .limit(1);
 }
 
-/** Последнее сообщение по каждому чату из списка — для превью в списке чатов. */
+/** Последнее сообщение по каждому чату из списка — для превью в списке чатов (без удалённых сообщений). */
 export async function getLastMessagesForChats(chatIds: string[]): Promise<Record<string, Message>> {
   if (chatIds.length === 0) return {};
   const supabase = getSupabaseClient();
@@ -194,6 +267,7 @@ export async function getLastMessagesForChats(chatIds: string[]): Promise<Record
   const latestRows: any[] = [];
   const seenChats = new Set<string>();
   for (const row of data ?? []) {
+    if (row.is_deleted || isMessageDeletedForMe(row.id)) continue;
     if (!seenChats.has(row.chat_id)) {
       seenChats.add(row.chat_id);
       latestRows.push(row);
@@ -305,7 +379,7 @@ export async function toggleMessageReaction(
   return { messageId, emoji, userId, action };
 }
 
-/** Подписка на новые/изменённые сообщения и реакции в чате через Supabase Realtime. */
+/** Подписка на новые/изменённые/удалённые сообщения и реакции в чате через Supabase Realtime. */
 export function subscribeToMessages(
   chatId: string,
   onInsert: (message: Message) => void,
@@ -319,6 +393,7 @@ export function subscribeToMessages(
       'postgres_changes',
       { event: 'INSERT', schema: 'public', table: 'messages', filter: `chat_id=eq.${chatId}` },
       async (payload) => {
+        if (payload.new?.is_deleted || isMessageDeletedForMe(payload.new?.id)) return;
         const msg = await mapRowAsync(payload.new);
         onInsert(msg);
       }
@@ -333,6 +408,22 @@ export function subscribeToMessages(
         }
       }
     )
+    .on(
+      'postgres_changes',
+      { event: 'DELETE', schema: 'public', table: 'messages' },
+      (payload: any) => {
+        const deletedId = payload.old?.id;
+        if (deletedId && onUpdate) {
+          onUpdate({ id: deletedId, chat_id: chatId, is_deleted: true, text: '' } as Message);
+        }
+      }
+    )
+    .on('broadcast', { event: 'delete-message' }, (payload: any) => {
+      const deletedId = payload?.payload?.messageId;
+      if (deletedId && onUpdate) {
+        onUpdate({ id: deletedId, chat_id: chatId, is_deleted: true, text: '' } as Message);
+      }
+    })
     .on('broadcast', { event: 'reaction' }, (payload) => {
       if (payload.payload) onReaction?.(payload.payload as ReactionPayload);
     })
