@@ -124,6 +124,45 @@ export async function verifyLoginCode(email: string, code: string) {
   return data;
 }
 
+/** Запрос сброса пароля (отправка ссылки или 6-значного OTP-кода восстановления на email). */
+export async function requestPasswordReset(email: string, redirectTo?: string): Promise<void> {
+  const supabase = getSupabaseClient();
+  const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+    redirectTo: redirectTo || (typeof window !== 'undefined' ? `${window.location.origin}/reset-password` : undefined),
+  });
+  if (error) throw error;
+}
+
+/** Подтверждение OTP-кода восстановления из письма и установка нового пароля. */
+export async function verifyRecoveryCodeAndSetNewPassword(
+  email: string,
+  code: string,
+  newPassword: string
+): Promise<void> {
+  const supabase = getSupabaseClient();
+  const { data, error: otpError } = await supabase.auth.verifyOtp({
+    email: email.trim(),
+    token: code.trim(),
+    type: 'recovery',
+  });
+  if (otpError) throw otpError;
+  if (!data.session && !data.user) {
+    throw new Error('Не удалось верифицировать сессию сброса пароля');
+  }
+
+  const { error: updateError } = await supabase.auth.updateUser({
+    password: newPassword,
+  });
+  if (updateError) throw updateError;
+}
+
+/** Смена пароля для уже авторизованного пользователя или сессии сброса. */
+export async function updateUserPassword(newPassword: string): Promise<void> {
+  const supabase = getSupabaseClient();
+  const { error } = await supabase.auth.updateUser({ password: newPassword });
+  if (error) throw error;
+}
+
 /** Google — нативный провайдер Supabase, включается тумблером в Dashboard. */
 export async function signInWithGoogle(redirectTo?: string) {
   const supabase = getSupabaseClient();

@@ -1894,6 +1894,22 @@ export default function SettingsPage() {
             </button>
           </form>
         )}
+
+        <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+          <div>
+            <span style={{ fontWeight: 600, fontSize: 13.5 }}>Пароль от аккаунта</span>
+            <p style={{ margin: '2px 0 0', fontSize: 12, color: 'var(--text-muted)' }}>
+              Забыли пароль или хотите изменить его на новый?
+            </p>
+          </div>
+          <Link
+            href="/reset-password"
+            className="btn"
+            style={{ width: 'auto', padding: '6px 14px', fontSize: 12.5, borderColor: 'var(--accent)', color: 'var(--accent)' }}
+          >
+            Сбросить / изменить пароль →
+          </Link>
+        </div>
       </div>
 
       <div className="section-title">Приватность</div>

@@ -189,7 +189,15 @@ export default function LoginPage() {
                 <input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
               </div>
               <div className="field">
-                <label>Пароль</label>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                  <label style={{ margin: 0 }}>Пароль</label>
+                  <Link
+                    href="/reset-password"
+                    style={{ fontSize: 12, color: 'var(--accent)', textDecoration: 'none' }}
+                  >
+                    Забыли пароль?
+                  </Link>
+                </div>
                 <input
                   className="input"
                   type="password"
@@ -389,6 +397,9 @@ export default function LoginPage() {
 
         <p className="muted-link">
           Нет аккаунта? <Link href="/register">Зарегистрироваться</Link>
+        </p>
+        <p className="muted-link" style={{ marginTop: 6 }}>
+          Забыли пароль? <Link href="/reset-password">Восстановить доступ</Link>
         </p>
       </div>
     </main>
