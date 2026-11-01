@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
   getCurrentProfile,
+  getCachedCurrentProfile,
   hasActiveSession,
   signOut,
   getLinkedPixsetNickname,
@@ -20,22 +21,22 @@ import { clearChatListCache } from '../../lib/chatListCache';
 
 export default function ProfilePage() {
   const router = useRouter();
-  const [profile, setProfile] = useState<Profile | null>(null);
+  const [profile, setProfile] = useState<Profile | null>(() => getCachedCurrentProfile());
 
   useEffect(() => {
     (async () => {
       const active = await hasActiveSession();
       if (!active) {
-        router.push('/login');
+        router.push('/login/');
         return;
       }
       const me = await getCurrentProfile();
       if (!me) {
-        router.push('/complete-profile');
+        router.push('/complete-profile/');
         return;
       }
       if (isBanned(me)) {
-        router.push('/banned');
+        router.push('/banned/');
         return;
       }
       setProfile(me);
@@ -106,7 +107,7 @@ export default function ProfilePage() {
         </div>
 
         <div className="profile-actions-row">
-          <Link href="/settings" className="btn btn-primary btn-compact" style={{ textDecoration: 'none' }}>
+          <Link href="/settings/" className="btn btn-primary btn-compact" style={{ textDecoration: 'none' }}>
             ✏️ Изменить профиль
           </Link>
           <button
@@ -117,7 +118,7 @@ export default function ProfilePage() {
             ⭐ Избранное
           </button>
           {(profile.role === 'admin' || profile.role === 'developer' || profile.role === 'moderator') && (
-            <Link href="/admin" className="btn btn-compact" style={{ textDecoration: 'none' }}>
+            <Link href="/admin/" className="btn btn-compact" style={{ textDecoration: 'none' }}>
               ⚙ Панель управления
             </Link>
           )}

@@ -159,7 +159,42 @@ export async function signInWithYandex(redirectTo?: string) {
   if (error) throw error;
 }
 
+const PROFILE_CACHE_STORAGE_KEY = 'pixchats:cached_my_profile_v1';
+let memoryCachedProfile: Profile | null = null;
+let memoryProfileFetchedAt = 0;
+let lastSeenUpdatedAt = 0;
+let inflightProfilePromise: Promise<Profile | null> | null = null;
+
+export function getCachedCurrentProfile(): Profile | null {
+  if (memoryCachedProfile) return memoryCachedProfile;
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(PROFILE_CACHE_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Profile;
+    if (parsed && parsed.id && parsed.username) {
+      memoryCachedProfile = parsed;
+      return parsed;
+    }
+  } catch {}
+  return null;
+}
+
+export function setCachedCurrentProfile(profile: Profile | null): void {
+  memoryCachedProfile = profile;
+  memoryProfileFetchedAt = profile ? Date.now() : 0;
+  if (typeof window === 'undefined') return;
+  try {
+    if (profile) {
+      localStorage.setItem(PROFILE_CACHE_STORAGE_KEY, JSON.stringify(profile));
+    } else {
+      localStorage.removeItem(PROFILE_CACHE_STORAGE_KEY);
+    }
+  } catch {}
+}
+
 export async function signOut() {
+  setCachedCurrentProfile(null);
   const supabase = getSupabaseClient();
   const { error } = await supabase.auth.signOut();
   if (error) throw error;
@@ -187,30 +222,63 @@ export async function ensureKeyBundle(profile: Profile): Promise<void> {
   if (error) throw error;
 }
 
-export async function getCurrentProfile(): Promise<Profile | null> {
-  const supabase = getSupabaseClient();
-  const { data: sessionData } = await supabase.auth.getSession();
-  const userId = sessionData.session?.user.id;
-  if (!userId) return null;
-
-  const { data, error } = await supabase.from('profiles').select('*').eq('id', userId).maybeSingle();
-  if (error) throw error;
-
-  // Раньше last_seen не обновлялся вообще нигде — отсюда баг "показывает первый
-  // вход в сеть". Обновляем при каждом получении своего профиля (по сути, при
-  // каждом открытии страницы) — не блокируя ответ, ошибки намеренно игнорируются.
-  if (data) {
-    supabase.from('profiles').update({ last_seen: new Date().toISOString() }).eq('id', userId).then(() => {});
+export async function getCurrentProfile(forceRefresh = false): Promise<Profile | null> {
+  const now = Date.now();
+  if (!forceRefresh && memoryCachedProfile && now - memoryProfileFetchedAt < 30_000) {
+    return memoryCachedProfile;
   }
 
-  return data as Profile | null;
+  if (!forceRefresh && inflightProfilePromise) {
+    return inflightProfilePromise;
+  }
+
+  inflightProfilePromise = (async () => {
+    try {
+      const supabase = getSupabaseClient();
+      const { data: sessionData } = await supabase.auth.getSession();
+      const userId = sessionData.session?.user.id;
+      if (!userId) {
+        setCachedCurrentProfile(null);
+        return null;
+      }
+
+      if (!forceRefresh && memoryCachedProfile && memoryCachedProfile.id === userId && Date.now() - memoryProfileFetchedAt < 30_000) {
+        return memoryCachedProfile;
+      }
+
+      const { data, error } = await supabase.from('profiles').select('*').eq('id', userId).maybeSingle();
+      if (error) throw error;
+
+      const profile = (data as Profile | null) ?? null;
+      setCachedCurrentProfile(profile);
+
+      // Обновляем last_seen не чаще чем раз в 60 секунд, чтобы не спамить БД и Realtime на каждый клик
+      if (profile && Date.now() - lastSeenUpdatedAt > 60_000) {
+        lastSeenUpdatedAt = Date.now();
+        supabase.from('profiles').update({ last_seen: new Date().toISOString() }).eq('id', userId).then(() => {});
+      }
+
+      return profile;
+    } finally {
+      inflightProfilePromise = null;
+    }
+  })();
+
+  return inflightProfilePromise;
 }
 
 /** true, если есть активная сессия (вошёл), независимо от того, создан ли уже profiles-профиль. */
 export async function hasActiveSession(): Promise<boolean> {
+  if (memoryCachedProfile && Date.now() - memoryProfileFetchedAt < 30_000) {
+    return true;
+  }
   const supabase = getSupabaseClient();
   const { data } = await supabase.auth.getSession();
-  return !!data.session;
+  if (!data.session) {
+    setCachedCurrentProfile(null);
+    return false;
+  }
+  return true;
 }
 
 export interface CompleteOAuthProfileParams {

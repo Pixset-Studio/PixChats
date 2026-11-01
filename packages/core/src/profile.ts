@@ -1,5 +1,5 @@
 import { getSupabaseClient } from './supabaseClient';
-import { checkUsernameAvailable } from './auth';
+import { checkUsernameAvailable, getCachedCurrentProfile, setCachedCurrentProfile } from './auth';
 import type { Profile } from './types';
 
 export interface UpdateProfileParams {
@@ -42,6 +42,11 @@ export async function updateProfile(userId: string, params: UpdateProfileParams)
 
   const { error } = await supabase.from('profiles').update(patch).eq('id', userId);
   if (error) throw error;
+
+  const cached = getCachedCurrentProfile();
+  if (cached && cached.id === userId) {
+    setCachedCurrentProfile({ ...cached, ...patch });
+  }
 }
 
 /** Конвертирует файл в сжатый Base64 Data URL (без загрузки в Supabase Storage) и сохраняет в profiles.avatar_url. */
@@ -81,6 +86,11 @@ export async function uploadAvatar(userId: string, file: File): Promise<string> 
   const { error: updateError } = await supabase.from('profiles').update({ avatar_url: avatarUrl }).eq('id', userId);
   if (updateError) throw updateError;
 
+  const cached = getCachedCurrentProfile();
+  if (cached && cached.id === userId) {
+    setCachedCurrentProfile({ ...cached, avatar_url: avatarUrl });
+  }
+
   return avatarUrl;
 }
 
@@ -117,4 +127,9 @@ export async function updatePrivacySettings(userId: string, settings: PrivacySet
   const supabase = getSupabaseClient();
   const { error } = await supabase.from('profiles').update(settings).eq('id', userId);
   if (error) throw error;
+
+  const cached = getCachedCurrentProfile();
+  if (cached && cached.id === userId) {
+    setCachedCurrentProfile({ ...cached, ...settings });
+  }
 }

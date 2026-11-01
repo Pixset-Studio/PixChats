@@ -6,12 +6,14 @@ import { useRouter } from 'next/navigation';
 import {
   getSupabaseClient,
   getCurrentProfile,
+  getCachedCurrentProfile,
   getLastMessagesForChats,
   getDirectChatPartners,
   globalSearch,
   joinPublicChat,
   getUnreadCounts,
   getMuteStates,
+  markChatAsRead,
   decryptMessageE2EE,
   getOrCreateSavedMessagesChat,
   isSavedMessagesChat,
@@ -22,7 +24,7 @@ import { VerifiedBadge } from './VerifiedBadge';
 import { AvatarWithStatus } from './AvatarWithStatus';
 import { ReadStatusTicks } from './ReadStatusTicks';
 import { ChatListSkeleton } from './Loading';
-import { getChatListCache, setChatListCache, clearChatListCache } from '../lib/chatListCache';
+import { getChatListCache, setChatListCache, clearChatListCache, clearUnreadInChatListCache } from '../lib/chatListCache';
 import { SearchIcon, PlusIcon, ChatsIcon } from './Icons';
 import {
   getArchivedChatIds,
@@ -100,7 +102,7 @@ export function ChatListPanel() {
   const router = useRouter();
   const isDesktop = useIsDesktop();
   const cache = getChatListCache();
-  const [profile, setProfile] = useState<Profile | null>(cache?.profile ?? null);
+  const [profile, setProfile] = useState<Profile | null>(() => cache?.profile ?? getCachedCurrentProfile() ?? null);
   const [chats, setChats] = useState<Chat[]>(cache?.chats ?? []);
   const [previews, setPreviews] = useState<Record<string, Message>>(cache?.previews ?? {});
   const [partners, setPartners] = useState<Record<string, Profile>>(cache?.partners ?? {});
@@ -129,12 +131,39 @@ export function ChatListPanel() {
   useEffect(() => {
     const syncActiveChat = () => {
       if (typeof window !== 'undefined') {
-        setActiveChatId(new URLSearchParams(window.location.search).get('id'));
+        const isChatRoute = /\/chat(\/|$)/.test(window.location.pathname);
+        const currentId = isChatRoute ? new URLSearchParams(window.location.search).get('id') : null;
+        setActiveChatId(currentId);
+        if (currentId) {
+          setUnreadCounts((prev) => (prev[currentId] ? { ...prev, [currentId]: 0 } : prev));
+          clearUnreadInChatListCache(currentId);
+        }
+      }
+    };
+    const onSelectChat = (e: Event) => {
+      const detail = (e as CustomEvent<{ chatId?: string }>).detail;
+      if (detail?.chatId) {
+        setActiveChatId(detail.chatId);
+        setUnreadCounts((prev) => (prev[detail.chatId!] ? { ...prev, [detail.chatId!]: 0 } : prev));
+        clearUnreadInChatListCache(detail.chatId);
+      }
+    };
+    const onChatRead = (e: Event) => {
+      const detail = (e as CustomEvent<{ chatId?: string }>).detail;
+      if (detail?.chatId) {
+        setUnreadCounts((prev) => (prev[detail.chatId!] ? { ...prev, [detail.chatId!]: 0 } : prev));
+        clearUnreadInChatListCache(detail.chatId);
       }
     };
     syncActiveChat();
     window.addEventListener('popstate', syncActiveChat);
-    return () => window.removeEventListener('popstate', syncActiveChat);
+    window.addEventListener('pixchats:select_chat', onSelectChat);
+    window.addEventListener('pixchats:chat_read', onChatRead);
+    return () => {
+      window.removeEventListener('popstate', syncActiveChat);
+      window.removeEventListener('pixchats:select_chat', onSelectChat);
+      window.removeEventListener('pixchats:chat_read', onChatRead);
+    };
   }, []);
 
   useEffect(() => {
@@ -290,13 +319,20 @@ export function ChatListPanel() {
             });
           }, 1400);
 
-          const isCurrentlyOpenChat =
-            typeof window !== 'undefined' &&
-            window.location.pathname.includes('/chat/') &&
-            window.location.search.includes(String(row.chat_id));
+          const currentOpenChatId =
+            typeof window !== 'undefined' && /\/chat(\/|$)/.test(window.location.pathname)
+              ? new URLSearchParams(window.location.search).get('id')
+              : null;
+          const isCurrentlyOpenChat = Boolean(
+            currentOpenChatId && String(currentOpenChatId) === String(row.chat_id)
+          );
 
           if (!isCurrentlyOpenChat) {
             setUnreadCounts((prev) => ({ ...prev, [row.chat_id]: (prev[row.chat_id] ?? 0) + 1 }));
+          } else {
+            setUnreadCounts((prev) => (prev[row.chat_id] ? { ...prev, [row.chat_id]: 0 } : prev));
+            clearUnreadInChatListCache(row.chat_id);
+            void markChatAsRead(profile.id, row.chat_id, row.sent_at);
           }
         }
       })
@@ -421,6 +457,26 @@ export function ChatListPanel() {
     return () => clearTimeout(timeout);
   }, [query, profile]);
 
+  function handleSelectChatClick(e: React.MouseEvent<HTMLAnchorElement> | null, targetChatId: string) {
+    setActiveChatId(targetChatId);
+    setUnreadCounts((prev) => (prev[targetChatId] ? { ...prev, [targetChatId]: 0 } : prev));
+    clearUnreadInChatListCache(targetChatId);
+    if (profile) {
+      void markChatAsRead(profile.id, targetChatId, previews[targetChatId]?.sent_at);
+    }
+
+    // Если мы уже находимся на странице /chat/, переключаем диалог мгновенно (0 мс) без перезагрузки роута
+    if (typeof window !== 'undefined' && /\/chat(\/|$)/.test(window.location.pathname)) {
+      if (e && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
+        const nextUrl = `${basePath}/chat/?id=${encodeURIComponent(targetChatId)}`;
+        window.history.pushState(null, '', nextUrl);
+        window.dispatchEvent(new CustomEvent('pixchats:select_chat', { detail: { chatId: targetChatId } }));
+      }
+    }
+  }
+
   async function handleOpenUser(userId: string) {
     router.push(`/user/?id=${userId}`);
   }
@@ -431,7 +487,14 @@ export function ChatListPanel() {
     } catch {
       // уже участник
     }
-    router.push(`/chat/?id=${chat.id}`);
+    handleSelectChatClick(null, chat.id);
+    if (typeof window !== 'undefined' && /\/chat(\/|$)/.test(window.location.pathname)) {
+      const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
+      window.history.pushState(null, '', `${basePath}/chat/?id=${encodeURIComponent(chat.id)}`);
+      window.dispatchEvent(new CustomEvent('pixchats:select_chat', { detail: { chatId: chat.id } }));
+    } else {
+      router.push(`/chat/?id=${chat.id}`);
+    }
   }
 
   async function handleOpenSavedMessages() {
@@ -441,8 +504,14 @@ export function ChatListPanel() {
       if (!chats.some((c) => c.id === saved.id)) {
         setChats((prev) => [saved, ...prev]);
       }
-      setActiveChatId(saved.id);
-      router.push(`/chat/?id=${saved.id}`);
+      handleSelectChatClick(null, saved.id);
+      if (typeof window !== 'undefined' && /\/chat(\/|$)/.test(window.location.pathname)) {
+        const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
+        window.history.pushState(null, '', `${basePath}/chat/?id=${encodeURIComponent(saved.id)}`);
+        window.dispatchEvent(new CustomEvent('pixchats:select_chat', { detail: { chatId: saved.id } }));
+      } else {
+        router.push(`/chat/?id=${saved.id}`);
+      }
     } catch {}
   }
 
@@ -583,7 +652,7 @@ export function ChatListPanel() {
           <span>⭐</span>
         </button>
         <Link
-          href="/chats/new"
+          href="/chats/new/"
           className="btn btn-primary"
           style={{ width: 'auto', padding: '0 14px', display: 'inline-flex', alignItems: 'center', gap: 6 }}
         >
@@ -769,7 +838,7 @@ export function ChatListPanel() {
                   <Link
                     key={`local-${chat.id}`}
                     href={`/chat/?id=${chat.id}`}
-                    onClick={() => setActiveChatId(chat.id)}
+                    onClick={(e) => handleSelectChatClick(e, chat.id)}
                     className={`chat-item-preview${activeChatId === chat.id ? ' active' : ''}`}
                   >
                     <AvatarWithStatus
@@ -912,7 +981,7 @@ export function ChatListPanel() {
               <Link
                 key={chat.id}
                 href={`/chat/?id=${chat.id}`}
-                onClick={() => setActiveChatId(chat.id)}
+                onClick={(e) => handleSelectChatClick(e, chat.id)}
                 className={`chat-item-preview${activeChatId === chat.id ? ' active' : ''}${flashIds.has(chat.id) ? ' flash' : ''}${isPinned ? ' is-pinned' : ''}`}
                 style={{ '--i': index } as React.CSSProperties}
               >

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   getCurrentProfile,
+  getCachedCurrentProfile,
   hasActiveSession,
   acceptFriendRequest,
   removeFriendship,
@@ -23,7 +24,7 @@ import { SearchIcon } from '../../components/Icons';
 
 export default function FriendsPage() {
   const router = useRouter();
-  const [me, setMe] = useState<Profile | null>(null);
+  const [me, setMe] = useState<Profile | null>(() => getCachedCurrentProfile());
   const [friends, setFriends] = useState<FriendWithProfile[]>([]);
   const [incoming, setIncoming] = useState<FriendWithProfile[]>([]);
   const [outgoing, setOutgoing] = useState<FriendWithProfile[]>([]);
@@ -57,16 +58,16 @@ export default function FriendsPage() {
     (async () => {
       const active = await hasActiveSession();
       if (!active) {
-        router.push('/login');
+        router.push('/login/');
         return;
       }
       const profile = await getCurrentProfile();
       if (!profile) {
-        router.push('/complete-profile');
+        router.push('/complete-profile/');
         return;
       }
       if (isBanned(profile)) {
-        router.push('/banned');
+        router.push('/banned/');
         return;
       }
       setMe(profile);

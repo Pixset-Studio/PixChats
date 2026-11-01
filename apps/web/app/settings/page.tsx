@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import {
   getCurrentProfile,
+  getCachedCurrentProfile,
   hasActiveSession,
   updateProfile,
   setTheme as persistTheme,
@@ -61,15 +62,22 @@ export default function SettingsPage() {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const wallpaperInputRef = useRef<HTMLInputElement>(null);
-  const [profile, setProfile] = useState<Profile | null>(null);
+  const initialCachedMe = getCachedCurrentProfile();
+  const [profile, setProfile] = useState<Profile | null>(initialCachedMe);
 
-  const [displayName, setDisplayName] = useState('');
-  const [bio, setBio] = useState('');
-  const [username, setUsername] = useState('');
+  const [displayName, setDisplayName] = useState(initialCachedMe?.display_name ?? '');
+  const [bio, setBio] = useState(initialCachedMe?.bio ?? '');
+  const [username, setUsername] = useState(initialCachedMe?.username ?? '');
   const [theme, setThemeState] = useState<AppTheme>(() => getCurrentTheme());
-  const [whoCanMessage, setWhoCanMessage] = useState<'everyone' | 'friends_only' | 'nobody'>('everyone');
-  const [showLastSeen, setShowLastSeen] = useState<'everyone' | 'friends_only' | 'nobody'>('everyone');
-  const [whoCanAdd, setWhoCanAdd] = useState<'everyone' | 'friends_only' | 'nobody'>('everyone');
+  const [whoCanMessage, setWhoCanMessage] = useState<'everyone' | 'friends_only' | 'nobody'>(
+    initialCachedMe?.privacy_who_can_message ?? 'everyone'
+  );
+  const [showLastSeen, setShowLastSeen] = useState<'everyone' | 'friends_only' | 'nobody'>(
+    initialCachedMe?.privacy_show_last_seen ?? 'everyone'
+  );
+  const [whoCanAdd, setWhoCanAdd] = useState<'everyone' | 'friends_only' | 'nobody'>(
+    initialCachedMe?.privacy_who_can_add_to_groups ?? 'everyone'
+  );
   const [linkedProviders, setLinkedProviders] = useState<string[]>([]);
   const [linkEmail, setLinkEmail] = useState('');
   const [linkPassword, setLinkPassword] = useState('');

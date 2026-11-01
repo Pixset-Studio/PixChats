@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { getCurrentProfile, hasActiveSession, ensureKeyBundle } from '@pixchats/core';
+import { getCurrentProfile, getCachedCurrentProfile, hasActiveSession, ensureKeyBundle } from '@pixchats/core';
 import type { Profile } from '@pixchats/core';
 import { BottomNav } from '../../components/BottomNav';
 import { DesktopShell } from '../../components/DesktopShell';
@@ -10,6 +10,7 @@ import { ChatListPanel } from '../../components/ChatListPanel';
 import { useIsDesktop } from '../../lib/useIsDesktop';
 import { isBanned } from '../../lib/ban';
 import { Loading } from '../../components/Loading';
+import { getChatListCache } from '../../lib/chatListCache';
 
 import { useConnectionStatus } from '../../lib/useConnectionStatus';
 import { detectRuntimePlatform } from '../../lib/nativePlatform';
@@ -21,8 +22,9 @@ export default function ChatsPage() {
   const router = useRouter();
   const isDesktop = useIsDesktop();
   const connStatus = useConnectionStatus();
-  const [profile, setProfile] = useState<Profile | null>(null);
-  const [loading, setLoading] = useState(true);
+  const initialProfile = getCachedCurrentProfile() ?? getChatListCache()?.profile ?? null;
+  const [profile, setProfile] = useState<Profile | null>(initialProfile);
+  const [loading, setLoading] = useState(!initialProfile);
   const [isWebBrowser, setIsWebBrowser] = useState(false);
 
   useEffect(() => {
@@ -30,19 +32,20 @@ export default function ChatsPage() {
     (async () => {
       const active = await hasActiveSession();
       if (!active) {
-        router.push('/login');
+        router.push('/login/');
         return;
       }
       const me = await getCurrentProfile();
       if (!me) {
-        router.push('/complete-profile');
+        router.push('/complete-profile/');
         return;
       }
       if (isBanned(me)) {
-        router.push('/banned');
+        router.push('/banned/');
         return;
       }
       setProfile(me);
+      setLoading(false);
       await ensureKeyBundle(me);
       if (typeof window !== 'undefined') {
         const currentSaved = localStorage.getItem('pixchats:theme');
@@ -54,9 +57,19 @@ export default function ChatsPage() {
           document.documentElement.setAttribute('data-theme', currentSaved);
         }
       }
-      setLoading(false);
     })();
   }, [router]);
+
+  // На ПК список чатов уже показан слева в PersistentAppShell — здесь просто заглушка справа без мигания.
+  if (isDesktop) {
+    return (
+      <DesktopShell>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)' }}>
+          Выберите чат слева, чтобы начать общение
+        </div>
+      </DesktopShell>
+    );
+  }
 
   if (loading || !profile) return <Loading />;
 

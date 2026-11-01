@@ -13,6 +13,7 @@ import { startPixChatsCall, startPixChatsGroupCall } from '../../components/Call
 import {
   getSupabaseClient,
   getCurrentProfile,
+  getCachedCurrentProfile,
   getMessages,
   getMessageById,
   sendMessage,
@@ -40,6 +41,7 @@ import {
   updateChatInfo,
 } from '@pixchats/core';
 import type { Message, Chat, Profile, ChatSafetyFingerprint } from '@pixchats/core';
+import { clearUnreadInChatListCache } from '../../lib/chatListCache';
 import { Loading } from '../../components/Loading';
 import { EmojiPicker } from '../../components/EmojiPicker';
 import { playGlobalAudioTrack } from '../../lib/audioPlayerStore';
@@ -136,11 +138,37 @@ const TTL_OPTIONS = [
 
 function ChatWindowInner() {
   const searchParams = useSearchParams();
-  const chatId = searchParams.get('id') ?? '';
+  const paramChatId = searchParams.get('id') ?? '';
   const highlightMsgId = searchParams.get('msg');
   const router = useRouter();
 
-  const [me, setMe] = useState<Profile | null>(null);
+  const [overrideChatId, setOverrideChatId] = useState<string | null>(null);
+  const chatId = overrideChatId ?? paramChatId;
+
+  useEffect(() => {
+    setOverrideChatId(null);
+  }, [paramChatId]);
+
+  useEffect(() => {
+    const onSelectChat = (e: Event) => {
+      const detail = (e as CustomEvent<{ chatId?: string }>).detail;
+      if (detail?.chatId) {
+        setOverrideChatId(detail.chatId);
+      }
+    };
+    const onPopState = () => {
+      const idFromUrl = new URLSearchParams(window.location.search).get('id');
+      setOverrideChatId(idFromUrl || null);
+    };
+    window.addEventListener('pixchats:select_chat', onSelectChat);
+    window.addEventListener('popstate', onPopState);
+    return () => {
+      window.removeEventListener('pixchats:select_chat', onSelectChat);
+      window.removeEventListener('popstate', onPopState);
+    };
+  }, []);
+
+  const [me, setMe] = useState<Profile | null>(() => getCachedCurrentProfile());
   const [chat, setChat] = useState<Chat | null>(null);
   const [chatNotFound, setChatNotFound] = useState(false);
   const [otherProfile, setOtherProfile] = useState<Profile | null>(null);
@@ -897,10 +925,16 @@ function ChatWindowInner() {
 
   useEffect(() => {
     if (!chatId) {
-      router.push('/chats');
+      router.push('/chats/');
       return;
     }
     let unsubscribe: (() => void) | undefined;
+
+    clearUnreadInChatListCache(chatId);
+    const cachedMe = getCachedCurrentProfile();
+    if (cachedMe) {
+      void markChatAsRead(cachedMe.id, chatId).catch(() => {});
+    }
 
     setPinnedMessage(null);
     setOtherProfile(null);
@@ -910,7 +944,7 @@ function ChatWindowInner() {
     setMyRole(null);
     setCanWrite(true);
     setCanModerate(false);
-    setMessages([]);
+    setMessages(getOfflineMessages(chatId));
     setChatNotFound(false);
     setPartnerLastReadAt(null);
     setActiveTopicId('all');
@@ -919,11 +953,11 @@ function ChatWindowInner() {
     (async () => {
       const profile = await getCurrentProfile();
       if (!profile) {
-        router.push('/login');
+        router.push('/login/');
         return;
       }
       if (isBanned(profile)) {
-        router.push('/banned');
+        router.push('/banned/');
         return;
       }
       setMe(profile);
@@ -1005,7 +1039,10 @@ function ChatWindowInner() {
 
       initialIdsRef.current = new Set(loadedMessages.map((m) => m.id));
       setMessages(loadedMessages);
-      await markChatAsRead(profile.id, chatId).catch(() => {});
+      const latestLoadedSentAt =
+        loadedMessages.length > 0 ? loadedMessages[loadedMessages.length - 1]?.sent_at : undefined;
+      clearUnreadInChatListCache(chatId);
+      await markChatAsRead(profile.id, chatId, latestLoadedSentAt).catch(() => {});
 
       try {
         setCustomPassInput(getChatCustomPassphrase(chatId));
@@ -1039,7 +1076,8 @@ function ChatWindowInner() {
               saveOfflineMessages(chatId, next);
               return next;
             });
-            await markChatAsRead(profile.id, chatId);
+            clearUnreadInChatListCache(chatId);
+            await markChatAsRead(profile.id, chatId, msg.sent_at);
             // Мгновенно оповещаем собеседника о прочтении (✓✓)
             try {
               typingChannelRef.current?.send({

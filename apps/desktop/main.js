@@ -115,10 +115,11 @@ function isStartedInBackground() {
 }
 
 const MIME_TYPES = {
-  '.html': 'text/html',
-  '.js': 'text/javascript',
-  '.css': 'text/css',
-  '.json': 'application/json',
+  '.html': 'text/html; charset=utf-8',
+  '.txt': 'text/x-component; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
@@ -131,24 +132,38 @@ const MIME_TYPES = {
 function startServer() {
   return new Promise((resolve) => {
     const server = http.createServer((req, res) => {
-      let urlPath = decodeURIComponent(req.url.split('?')[0]);
-      if (urlPath === '/') urlPath = '/index.html';
+      const rawUrl = req.url || '/';
+      const isRscRequest = req.headers['rsc'] === '1' || rawUrl.includes('_rsc=');
+      let urlPath = decodeURIComponent(rawUrl.split('?')[0]);
+      if (urlPath === '/') {
+        urlPath = isRscRequest ? '/index.txt' : '/index.html';
+      }
 
       let filePath = path.join(WEB_DIST, urlPath);
 
       if (!path.extname(filePath)) {
-        const withIndex = path.join(filePath, 'index.html');
-        if (fs.existsSync(withIndex)) {
-          filePath = withIndex;
-        } else if (fs.existsSync(filePath + '.html')) {
-          filePath = filePath + '.html';
+        if (isRscRequest) {
+          const withTxt = path.join(filePath, 'index.txt');
+          if (fs.existsSync(withTxt)) {
+            filePath = withTxt;
+          } else if (fs.existsSync(filePath + '.txt')) {
+            filePath = filePath + '.txt';
+          }
+        }
+        if (!path.extname(filePath)) {
+          const withIndex = path.join(filePath, 'index.html');
+          if (fs.existsSync(withIndex)) {
+            filePath = withIndex;
+          } else if (fs.existsSync(filePath + '.html')) {
+            filePath = filePath + '.html';
+          }
         }
       }
 
       fs.readFile(filePath, (err, data) => {
         if (err) {
           fs.readFile(path.join(WEB_DIST, '404.html'), (err2, data2) => {
-            res.writeHead(err2 ? 404 : 200, { 'Content-Type': 'text/html' });
+            res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
             res.end(err2 ? 'Not found' : data2);
           });
           return;

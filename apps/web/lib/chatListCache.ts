@@ -28,3 +28,17 @@ export function setChatListCache(value: ChatListCache): void {
 export function clearChatListCache(): void {
   cache = null;
 }
+
+/** Мгновенно обнуляет счётчик непрочитанных для указанного чата в кэше списка чатов. */
+export function clearUnreadInChatListCache(chatId: string): void {
+  if (!cache || !chatId) return;
+  if (cache.unreadCounts && cache.unreadCounts[chatId]) {
+    cache = {
+      ...cache,
+      unreadCounts: {
+        ...cache.unreadCounts,
+        [chatId]: 0,
+      },
+    };
+  }
+}
