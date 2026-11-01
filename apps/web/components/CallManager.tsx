@@ -52,6 +52,7 @@ interface ActiveCallSession {
   direction: 'outgoing' | 'incoming';
   status: 'ringing' | 'connecting' | 'connected';
   isGroup?: boolean;
+  callerIsDeveloper?: boolean;
 }
 
 const RTC_CONFIG: RTCConfiguration = {
@@ -263,22 +264,45 @@ export function CallManager() {
     stopIncomingCallNativeAlert();
   }
 
-  // Таймер длительности активного разговора
+  function isDeveloperUser(profile: Profile | null, extraStr?: string): boolean {
+    if (!profile && !extraStr) return false;
+    if ((profile as any)?.is_admin) return true;
+    const combined = `${profile?.username || ''} ${(profile as any)?.email || ''} ${profile?.display_name || ''} ${extraStr || ''}`.toLowerCase();
+    return (
+      combined.includes('pixset') ||
+      combined.includes('admin') ||
+      combined.includes('official') ||
+      combined.includes('dev')
+    );
+  }
+
+  // Таймер длительности активного разговора и 60-минутный лимит
   useEffect(() => {
     if (session?.status !== 'connected') {
       setDurationSec(0);
       durationRef.current = 0;
       return;
     }
+    const isDevCall = Boolean(session.callerIsDeveloper);
+
     const timer = setInterval(() => {
       setDurationSec((prev) => {
         const next = prev + 1;
         durationRef.current = next;
+
+        // 60-минутный лимит (3600 секунд) для обычных пользователей
+        if (!isDevCall && next >= 3600) {
+          clearInterval(timer);
+          void handleEndCall();
+          if (typeof window !== 'undefined') {
+            alert('⏱️ Разговор завершён: достигнут лимит 60 минут для обычного звонка. Звонки разработчиков Pixset Studio безлимитны!');
+          }
+        }
         return next;
       });
     }, 1000);
     return () => clearInterval(timer);
-  }, [session?.status]);
+  }, [session?.status, session?.callerIsDeveloper]);
 
   // Привязка локального и удалённого медиа-потоков к video/audio элементам
   useEffect(() => {
@@ -523,6 +547,7 @@ export function CallManager() {
       direction: 'outgoing',
       status: 'ringing',
       isGroup: false,
+      callerIsDeveloper: isDeveloperUser(me),
     };
 
     setSession(newSession);
@@ -549,6 +574,7 @@ export function CallManager() {
             callerAvatar: me.avatar_url,
             mode: params.mode,
             isGroup: false,
+            callerIsDeveloper: isDeveloperUser(me),
           },
         });
         setTimeout(() => {
@@ -574,6 +600,7 @@ export function CallManager() {
       direction: 'outgoing',
       status: 'connected',
       isGroup: true,
+      callerIsDeveloper: isDeveloperUser(me),
     };
 
     setSession(newSession);
@@ -610,6 +637,7 @@ export function CallManager() {
                 callerAvatar: params.chatAvatar || me.avatar_url,
                 mode,
                 isGroup: true,
+                callerIsDeveloper: isDeveloperUser(me),
               },
             });
             setTimeout(() => {
@@ -815,6 +843,7 @@ export function CallManager() {
             direction: 'incoming',
             status: 'ringing',
             isGroup: Boolean(payload.isGroup),
+            callerIsDeveloper: Boolean(payload.callerIsDeveloper),
           };
 
           setSession(incoming);
@@ -1059,12 +1088,20 @@ export function CallManager() {
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--accent)' }}>
-            {session.isGroup
-              ? `🔊 Голосовая комната группы (${groupParticipants.length || 1} уч.)`
-              : '🔒 Зашифрованный звонок PixChats (WebRTC)'}
+            {session.callerIsDeveloper
+              ? '👑 Безлимитный звонок разработчика Pixset Studio'
+              : session.isGroup
+                ? `🔊 Голосовая комната группы (${groupParticipants.length || 1} уч.)`
+                : '🔒 Зашифрованный звонок PixChats (WebRTC)'}
           </span>
           <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-            · {session.status === 'connected' ? formatDuration(durationSec) : session.status === 'ringing' ? 'Вызов…' : 'Соединение…'}
+            · {session.status === 'connected'
+                ? session.callerIsDeveloper
+                  ? `${formatDuration(durationSec)} (Безлимит)`
+                  : `${formatDuration(durationSec)} / 60:00`
+                : session.status === 'ringing'
+                  ? 'Вызов…'
+                  : 'Соединение…'}
           </span>
         </div>
 

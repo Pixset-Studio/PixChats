@@ -77,6 +77,7 @@ import {
   type ChannelGroupConfig,
 } from '../../lib/channelConfig';
 import { exportChatHistory } from '../../lib/chatExport';
+import { processZeroStorageFileAttachment } from '../../lib/fileStorage';
 
 interface ScheduledMessageItem {
   id: string;
@@ -545,10 +546,10 @@ function ChatWindowInner() {
     if (!pendingFile) return;
     setUploading(true);
     try {
-      const { url, name } = await uploadMessageFile(chatId, pendingFile);
-      await sendMessage(chatId, name, {
+      const processed = await processZeroStorageFileAttachment(pendingFile);
+      await sendMessage(chatId, processed.name, {
         messageType: detectMessageType(pendingFile),
-        mediaPath: url,
+        mediaPath: processed.url,
         caption: draft.trim() || undefined,
         captionPosition,
       });
