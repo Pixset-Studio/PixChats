@@ -20,6 +20,7 @@ import type { Chat, Profile, Message, SearchResult, MuteState } from '@pixchats/
 import { NameWithBadges } from './NameBadges';
 import { VerifiedBadge } from './VerifiedBadge';
 import { AvatarWithStatus } from './AvatarWithStatus';
+import { ReadStatusTicks } from './ReadStatusTicks';
 import { ChatListSkeleton } from './Loading';
 import { getChatListCache, setChatListCache, clearChatListCache } from '../lib/chatListCache';
 import { SearchIcon, PlusIcon, ChatsIcon } from './Icons';
@@ -50,6 +51,12 @@ function formatTime(iso: string): string {
   const isToday = date.toDateString() === now.toDateString();
   if (isToday) return date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
   return date.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' });
+}
+
+function isMessageRead(chatId: string, message: Message, partnerReadMap: Record<string, string>): boolean {
+  const partnerReadAt = partnerReadMap[chatId];
+  if (!partnerReadAt) return false;
+  return new Date(partnerReadAt).getTime() >= new Date(message.sent_at).getTime();
 }
 
 function formatPreviewText(message: Message): string {
@@ -91,6 +98,7 @@ export function ChatListPanel() {
   const [partners, setPartners] = useState<Record<string, Profile>>(cache?.partners ?? {});
   const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>(cache?.unreadCounts ?? {});
   const [muteStates, setMuteStates] = useState<Record<string, MuteState>>(cache?.muteStates ?? {});
+  const [partnerLastRead, setPartnerLastRead] = useState<Record<string, string>>({});
   const [folder, setFolder] = useState<FolderFilter>('all');
   const [loading, setLoading] = useState(!cache);
   const [animateList] = useState(!cache);
@@ -186,6 +194,25 @@ export function ChatListPanel() {
 
       setUnreadCounts(await getUnreadCounts(chatIds, me.id));
       setMuteStates(await getMuteStates(chatIds, me.id));
+
+      try {
+        const { data: readRows } = await supabase
+          .from('chat_read_state')
+          .select('chat_id, user_id, last_read_at')
+          .in('chat_id', chatIds)
+          .neq('user_id', me.id);
+        if (readRows && readRows.length > 0) {
+          const map: Record<string, string> = {};
+          for (const r of readRows) {
+            if (r.last_read_at) {
+              if (!map[r.chat_id] || new Date(r.last_read_at).getTime() > new Date(map[r.chat_id]).getTime()) {
+                map[r.chat_id] = r.last_read_at;
+              }
+            }
+          }
+          setPartnerLastRead(map);
+        }
+      } catch {}
     } else {
       setChats([]);
       setPreviews({});
@@ -271,10 +298,14 @@ export function ChatListPanel() {
       .channel('chat-list-read-state')
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'chat_read_state', filter: `user_id=eq.${profile.id}` },
+        { event: '*', schema: 'public', table: 'chat_read_state' },
         async (payload: any) => {
-          const chatId = payload.new?.chat_id ?? payload.old?.chat_id;
+          const row = payload.new || payload.old;
+          const chatId = row?.chat_id;
           if (!chatId) return;
+          if (row?.user_id && row.user_id !== profile.id && row.last_read_at) {
+            setPartnerLastRead((prev) => ({ ...prev, [chatId]: row.last_read_at }));
+          }
           const counts = await getUnreadCounts([chatId], profile.id);
           setUnreadCounts((prev) => ({ ...prev, [chatId]: counts[chatId] ?? 0 }));
         }
@@ -682,23 +713,15 @@ export function ChatListPanel() {
                           {displayName}
                           {isVerified && <VerifiedBadge size={14} />}
                         </span>
-                        {preview && (
-                          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                            {preview.sender_id === profile.id && (
-                              <span
-                                style={{
-                                  fontSize: 13,
-                                  fontWeight: 700,
-                                  color: (unreadCounts[chat.id] ?? 0) === 0 ? 'var(--accent)' : 'var(--text-muted)',
-                                  lineHeight: 1,
-                                }}
-                              >
-                                {(unreadCounts[chat.id] ?? 0) === 0 ? '✓✓' : '✓'}
-                              </span>
-                            )}
-                            <span className="chat-item-time">{formatTime(preview.sent_at)}</span>
-                          </div>
-                        )}
+                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
+                          {preview && <span className="chat-item-time">{formatTime(preview.sent_at)}</span>}
+                          {preview && preview.sender_id === profile.id && (
+                            <ReadStatusTicks
+                              status={isMessageRead(chat.id, preview, partnerLastRead) ? 'read' : 'sent'}
+                              size={13}
+                            />
+                          )}
+                        </div>
                       </div>
                       <div className="chat-item-preview-text">
                         {preview
@@ -834,32 +857,23 @@ export function ChatListPanel() {
                       {isVerified && <VerifiedBadge size={14} />}
                     </span>
                     <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
-                      {preview && (
-                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                          {preview.sender_id === profile.id && (
-                            <span
-                              style={{
-                                fontSize: 13,
-                                fontWeight: 700,
-                                color: (unreadCounts[chat.id] ?? 0) === 0 ? 'var(--accent)' : 'var(--text-muted)',
-                                lineHeight: 1,
-                              }}
-                              title={(unreadCounts[chat.id] ?? 0) === 0 ? 'Прочитано' : 'Отправлено'}
-                            >
-                              {(unreadCounts[chat.id] ?? 0) === 0 ? '✓✓' : '✓'}
-                            </span>
-                          )}
-                          <span className="chat-item-time">{formatTime(preview.sent_at)}</span>
-                        </div>
-                      )}
-                      {unreadCounts[chat.id] > 0 && (
-                        <span
-                          key={unreadCounts[chat.id]}
-                          className={`unread-badge ${muteStates[chat.id]?.muted ? 'muted' : ''}`}
-                        >
-                          {unreadCounts[chat.id] > 99 ? '99+' : unreadCounts[chat.id]}
-                        </span>
-                      )}
+                      {preview && <span className="chat-item-time">{formatTime(preview.sent_at)}</span>}
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 4, minHeight: 16 }}>
+                        {preview && preview.sender_id === profile.id && (
+                          <ReadStatusTicks
+                            status={isMessageRead(chat.id, preview, partnerLastRead) ? 'read' : 'sent'}
+                            size={13}
+                          />
+                        )}
+                        {unreadCounts[chat.id] > 0 && (
+                          <span
+                            key={unreadCounts[chat.id]}
+                            className={`unread-badge ${muteStates[chat.id]?.muted ? 'muted' : ''}`}
+                          >
+                            {unreadCounts[chat.id] > 99 ? '99+' : unreadCounts[chat.id]}
+                          </span>
+                        )}
+                      </div>
                     </span>
                   </div>
                   <div className="chat-item-preview-text" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>

@@ -2,9 +2,9 @@
 [data-theme='pixchats'],
 [data-theme='dark'] {
   --theme-id: 'pixchats';
-  --y: #f59e0b;
-  --y-warm: #d97706;
-  --y-soft: #fbbf24;
+  --y: #ffd400;
+  --y-warm: #ffcc00;
+  --y-soft: #ffe066;
   --ink: #2b2400;
   --bg: #09090b;
   --surface: #121215;
@@ -12,15 +12,15 @@
   --border: #2e281b;
   --text: #f4f4f5;
   --text-muted: #8a8578;
-  --accent: #f59e0b;
-  --accent-hover: #fbbf24;
+  --accent: #ffd400;
+  --accent-hover: #ffe066;
   --accent-contrast: #09090b;
   --bubble-mine-bg: #222013;
-  --bubble-mine-border: rgba(245, 158, 11, 0.4);
-  --bubble-mine-text: #fef08a;
-  --avatar-placeholder-bg: linear-gradient(135deg, #18181c 0%, #09090b 60%, rgba(245, 158, 11, 0.25) 100%);
-  --avatar-placeholder-border: #f59e0b;
-  --avatar-placeholder-color: #f59e0b;
+  --bubble-mine-border: rgba(255, 212, 0, 0.4);
+  --bubble-mine-text: #fff6cc;
+  --avatar-placeholder-bg: linear-gradient(135deg, #18181c 0%, #09090b 60%, rgba(255, 212, 0, 0.25) 100%);
+  --avatar-placeholder-border: #ffd400;
+  --avatar-placeholder-color: #ffd400;
   --verified: #38bdf8;
   --success: #22c55e;
   --danger: #ef4444;
@@ -371,6 +371,9 @@ select.input:focus {
   font-size: 14px;
   transition: transform 0.1s ease, border-color 0.15s ease, background 0.15s ease;
   width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  word-break: break-word;
 }
 .btn:hover {
   border-color: var(--accent);
@@ -451,8 +454,8 @@ select.input:focus {
   width: 40px;
   height: 40px;
   border-radius: 50%;
-  background: var(--avatar-placeholder-bg);
-  border: 1.5px solid var(--avatar-placeholder-border);
+  background: var(--surface-raised);
+  border: none;
   box-shadow: 0 0 10px rgba(0, 0, 0, 0.25);
   display: flex;
   align-items: center;
@@ -462,6 +465,12 @@ select.input:focus {
   color: var(--avatar-placeholder-color);
   flex-shrink: 0;
   user-select: none;
+}
+
+.avatar.avatar-fallback,
+.avatar-fallback {
+  background: var(--avatar-placeholder-bg);
+  border: 1.5px solid var(--avatar-placeholder-border);
 }
 
 .section-title {
@@ -2618,6 +2627,28 @@ html {
   100% {
     opacity: 0;
     transform: translateY(-55px) scale(1.3);
+  }
+}
+
+@media (max-width: 640px) {
+  .card {
+    padding: 16px !important;
+    border-radius: 12px;
+  }
+  .container-wide {
+    padding: 16px 12px !important;
+  }
+  .btn {
+    padding: 8px 12px;
+    font-size: 13px;
+    white-space: normal;
+  }
+  .btn-row {
+    flex-direction: column !important;
+  }
+  .app-header {
+    flex-wrap: wrap;
+    gap: 8px;
   }
 }
 

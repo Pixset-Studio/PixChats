@@ -84,6 +84,7 @@ import { isChatHidden, toggleHiddenChat } from '../../lib/appLock';
 import { ReactionParticles } from '../../components/ReactionParticles';
 import { translateText, detectLanguage, getAutoTranslatePref } from '../../lib/translator';
 import { AvatarWithStatus } from '../../components/AvatarWithStatus';
+import { ReadStatusTicks } from '../../components/ReadStatusTicks';
 import { saveOfflineMessages, getOfflineMessages } from '../../lib/offlineMessagesStore';
 import {
   parseSecretMediaCaption,
@@ -2138,12 +2139,11 @@ function ChatWindowInner() {
                       <span>{formatMessageTime(m.sent_at)}</span>
                       {/* Пункт 3: Статус прочтения (✓ доставлено / ✓✓ прочитано) */}
                       {isMine && !m.is_deleted && (
-                        <span
-                          className={`read-receipt-ticks ${isReadByPartner ? 'read' : 'sent'}`}
-                          title={isReadByPartner ? 'Прочитано' : 'Доставлено'}
-                        >
-                          {isReadByPartner ? '✓✓' : '✓'}
-                        </span>
+                        <ReadStatusTicks
+                          status={isReadByPartner ? 'read' : 'sent'}
+                          size={13}
+                          style={{ marginLeft: 4 }}
+                        />
                       )}
                     </div>
                   </div>
