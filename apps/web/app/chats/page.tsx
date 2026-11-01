@@ -11,9 +11,12 @@ import { useIsDesktop } from '../../lib/useIsDesktop';
 import { isBanned } from '../../lib/ban';
 import { Loading } from '../../components/Loading';
 
+import { useConnectionStatus } from '../../lib/useConnectionStatus';
+
 export default function ChatsPage() {
   const router = useRouter();
   const isDesktop = useIsDesktop();
+  const connStatus = useConnectionStatus();
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -66,9 +69,19 @@ export default function ChatsPage() {
     <>
       <main className="container-wide with-bottom-nav">
         <header className="app-header">
-          <span className="brand" style={{ fontSize: 18, display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-            <img src={`${process.env.NEXT_PUBLIC_BASE_PATH || ''}/logo/icon.png`} alt="" width={22} height={22} />
-            PixChats
+          <span className="brand" style={{ fontSize: 20, display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+            <img src={`${process.env.NEXT_PUBLIC_BASE_PATH || ''}/logo/icon.png`} alt="" width={36} height={36} style={{ objectFit: 'contain' }} />
+            <span>PixChats</span>
+            {connStatus === 'offline' && (
+              <span style={{ fontSize: 11, color: 'var(--danger)', fontWeight: 600, marginLeft: 4 }}>
+                Ожидание сети…
+              </span>
+            )}
+            {connStatus === 'connecting' && (
+              <span style={{ fontSize: 11, color: 'var(--accent)', fontWeight: 600, marginLeft: 4 }}>
+                Соединение…
+              </span>
+            )}
           </span>
         </header>
 

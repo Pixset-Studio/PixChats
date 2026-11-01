@@ -45,6 +45,8 @@ import {
   DEFAULT_APP_LOCK,
   type AppLockConfig,
 } from '../../lib/appLock';
+import { get2FAConfig, save2FAConfig, type TwoFactorConfig } from '../../lib/twoFactorAuth';
+import { getAutoTranslatePref, setAutoTranslatePref } from '../../lib/translator';
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -78,6 +80,10 @@ export default function SettingsPage() {
   const [appearance, setAppearance] = useState<ChatAppearanceSettings>(DEFAULT_CHAT_APPEARANCE);
   const [appLock, setAppLock] = useState<AppLockConfig>(DEFAULT_APP_LOCK);
   const [pinDraft, setPinDraft] = useState('');
+  const [twoFactor, setTwoFactor] = useState<TwoFactorConfig>(get2FAConfig());
+  const [twoFactorPassDraft, setTwoFactorPassDraft] = useState('');
+  const [twoFactorHintDraft, setTwoFactorHintDraft] = useState('');
+  const [autoTranslate, setAutoTranslate] = useState(getAutoTranslatePref());
 
   useEffect(() => {
     (async () => {
@@ -902,6 +908,105 @@ export default function SettingsPage() {
         <button className="btn btn-primary" style={{ width: 'auto' }} onClick={handleSavePrivacy}>
           Сохранить приватность
         </button>
+      </div>
+
+      <div className="section-title">🔐 Двухфакторная аутентификация (2FA / Облачный пароль)</div>
+      <div className="card" style={{ marginBottom: 24 }}>
+        <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 0 }}>
+          Защитите свой аккаунт дополнительным облачным паролем при входе с новых устройств.
+        </p>
+
+        <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, cursor: 'pointer' }}>
+          <span style={{ fontWeight: 600, fontSize: 14 }}>Включить облачный пароль (2FA)</span>
+          <input
+            type="checkbox"
+            checked={twoFactor.enabled}
+            onChange={(e) => {
+              const enabled = e.target.checked;
+              const next = { ...twoFactor, enabled };
+              setTwoFactor(next);
+              save2FAConfig(next);
+              setNotice(enabled ? 'Двухфакторная защита включена 🔐' : 'Двухфакторная защита отключена');
+              setTimeout(() => setNotice(null), 1500);
+            }}
+            style={{ width: 18, height: 18, accentColor: 'var(--accent)' }}
+          />
+        </label>
+
+        {twoFactor.enabled && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div className="field">
+              <label>Облачный пароль 2FA</label>
+              <input
+                type="password"
+                className="input"
+                value={twoFactorPassDraft}
+                onChange={(e) => setTwoFactorPassDraft(e.target.value)}
+                placeholder="Введите 2FA пароль…"
+              />
+            </div>
+            <div className="field">
+              <label>Подсказка к паролю</label>
+              <input
+                type="text"
+                className="input"
+                value={twoFactorHintDraft}
+                onChange={(e) => setTwoFactorHintDraft(e.target.value)}
+                placeholder="Подсказка (не обязательна)…"
+              />
+            </div>
+            <button
+              type="button"
+              className="btn btn-primary"
+              style={{ width: 'auto' }}
+              onClick={() => {
+                if (!twoFactorPassDraft.trim()) {
+                  setError('Пароль 2FA не может быть пустым');
+                  setTimeout(() => setError(null), 2000);
+                  return;
+                }
+                const next: TwoFactorConfig = {
+                  enabled: true,
+                  passwordHash: twoFactorPassDraft.trim(),
+                  hint: twoFactorHintDraft.trim(),
+                  recoveryCode: `REC-${Date.now().toString(36).toUpperCase()}`,
+                  updatedAt: new Date().toISOString(),
+                };
+                setTwoFactor(next);
+                save2FAConfig(next);
+                setTwoFactorPassDraft('');
+                setNotice('Облачный 2FA пароль успешно сохранён!');
+                setTimeout(() => setNotice(null), 1800);
+              }}
+            >
+              Сохранить облачный пароль
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div className="section-title">🌐 Автопереводчик сообщений</div>
+      <div className="card" style={{ marginBottom: 24 }}>
+        <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }}>
+          <div>
+            <div style={{ fontWeight: 600, fontSize: 14 }}>Автоматический перевод входящих сообщений</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              Показывать кнопку и плашку автоперевода для сообщений
+            </div>
+          </div>
+          <input
+            type="checkbox"
+            checked={autoTranslate}
+            onChange={(e) => {
+              const enabled = e.target.checked;
+              setAutoTranslate(enabled);
+              setAutoTranslatePref(enabled);
+              setNotice(enabled ? 'Автопереводчик включён 🌐' : 'Автопереводчик отключён');
+              setTimeout(() => setNotice(null), 1500);
+            }}
+            style={{ width: 18, height: 18, accentColor: 'var(--accent)' }}
+          />
+        </label>
       </div>
     </main>
     <BottomNav />

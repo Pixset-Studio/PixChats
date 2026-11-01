@@ -8,6 +8,7 @@ import {
   triggerIncomingCallNativeAlert,
   stopIncomingCallNativeAlert,
 } from '../lib/nativePlatform';
+import { AvatarWithStatus } from './AvatarWithStatus';
 
 export interface StartCallParams {
   targetUserId: string;
@@ -995,15 +996,15 @@ export function CallManager() {
       <div
         style={{
           position: 'fixed',
-          bottom: 24,
-          right: 24,
-          zIndex: 9999,
-          width: 280,
+          top: 16,
+          right: 16,
+          zIndex: 10000,
+          width: 300,
           background: 'var(--surface-raised)',
           border: '1.5px solid var(--accent)',
           borderRadius: 14,
-          padding: 12,
-          boxShadow: '0 12px 32px rgba(0, 0, 0, 0.65)',
+          padding: '10px 14px',
+          boxShadow: '0 12px 36px rgba(0, 0, 0, 0.75)',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
@@ -1011,21 +1012,13 @@ export function CallManager() {
         }}
       >
         <audio ref={remoteAudioRef} autoPlay playsInline />
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-          <div
-            className={`avatar ${!session.peerAvatar ? 'avatar-fallback' : ''}`}
-            style={{
-              width: 38,
-              height: 38,
-              fontSize: 15,
-              flexShrink: 0,
-              backgroundImage: session.peerAvatar ? `url(${session.peerAvatar})` : undefined,
-              backgroundSize: 'cover',
-              backgroundPosition: 'center',
-            }}
-          >
-            {!session.peerAvatar && session.peerName.replace('🔊 ', '').slice(0, 1).toUpperCase()}
-          </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, cursor: 'pointer' }} onClick={() => setMinimized(false)}>
+          <AvatarWithStatus
+            avatarUrl={session.peerAvatar}
+            name={session.peerName}
+            size={38}
+            statusType="incall"
+          />
           <div style={{ minWidth: 0 }}>
             <div style={{ fontWeight: 700, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {session.peerName}
@@ -1036,11 +1029,20 @@ export function CallManager() {
           </div>
         </div>
 
-        <div style={{ display: 'flex', gap: 6 }}>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
           <button
             type="button"
             className="btn"
-            style={{ width: 'auto', padding: '6px 9px', fontSize: 12 }}
+            style={{ width: 'auto', padding: '6px 8px', fontSize: 12, background: micMuted ? 'var(--danger)' : undefined }}
+            onClick={handleToggleMic}
+            title={micMuted ? 'Включить микрофон' : 'Выключить микрофон'}
+          >
+            {micMuted ? '🔇' : '🎤'}
+          </button>
+          <button
+            type="button"
+            className="btn"
+            style={{ width: 'auto', padding: '6px 8px', fontSize: 12 }}
             onClick={() => setMinimized(false)}
             title="Развернуть окно звонка"
           >
@@ -1049,7 +1051,7 @@ export function CallManager() {
           <button
             type="button"
             className="btn"
-            style={{ width: 'auto', padding: '6px 9px', fontSize: 12, background: '#dc2626', color: '#fff' }}
+            style={{ width: 'auto', padding: '6px 8px', fontSize: 12, background: '#dc2626', color: '#fff' }}
             onClick={handleEndCall}
             title="Завершить звонок"
           >

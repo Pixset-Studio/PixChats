@@ -19,6 +19,7 @@ import {
 import type { Chat, Profile, Message, SearchResult, MuteState } from '@pixchats/core';
 import { NameWithBadges } from './NameBadges';
 import { VerifiedBadge } from './VerifiedBadge';
+import { AvatarWithStatus } from './AvatarWithStatus';
 import { ChatListSkeleton } from './Loading';
 import { getChatListCache, setChatListCache, clearChatListCache } from '../lib/chatListCache';
 import { SearchIcon, PlusIcon, ChatsIcon } from './Icons';
@@ -664,16 +665,17 @@ export function ChatListPanel() {
                     onClick={() => setActiveChatId(chat.id)}
                     className={`chat-item-preview${activeChatId === chat.id ? ' active' : ''}`}
                   >
-                    <div
-                      className={`avatar ${!avatarUrl ? 'avatar-fallback' : ''}`}
-                      style={{
-                        backgroundImage: avatarUrl ? `url(${avatarUrl})` : undefined,
-                        backgroundSize: 'cover',
-                        backgroundPosition: 'center',
-                      }}
-                    >
-                      {isSaved ? '⭐' : !avatarUrl && displayName.slice(0, 1).toUpperCase()}
-                    </div>
+                    <AvatarWithStatus
+                      avatarUrl={avatarUrl}
+                      name={displayName}
+                      size={40}
+                      isSaved={isSaved}
+                      statusType={
+                        partner && (new Date().getTime() - new Date(partner.last_seen || 0).getTime() < 180000 || Boolean(liveActivities[chat.id]))
+                          ? 'online'
+                          : 'none'
+                      }
+                    />
                     <div className="chat-item-body">
                       <div className="chat-item-top-row">
                         <span className="chat-item-name">
@@ -797,16 +799,17 @@ export function ChatListPanel() {
                 className={`chat-item-preview${activeChatId === chat.id ? ' active' : ''}${flashIds.has(chat.id) ? ' flash' : ''}${isPinned ? ' is-pinned' : ''}`}
                 style={{ '--i': index } as React.CSSProperties}
               >
-                <div
-                  className={`avatar ${!avatarUrl ? 'avatar-fallback' : ''}`}
-                  style={{
-                    backgroundImage: avatarUrl ? `url(${avatarUrl})` : undefined,
-                    backgroundSize: 'cover',
-                    backgroundPosition: 'center',
-                  }}
-                >
-                  {isSaved ? '⭐' : !avatarUrl && displayName.slice(0, 1).toUpperCase()}
-                </div>
+                <AvatarWithStatus
+                  avatarUrl={avatarUrl}
+                  name={displayName}
+                  size={42}
+                  isSaved={isSaved}
+                  statusType={
+                    partner && (new Date().getTime() - new Date(partner.last_seen || 0).getTime() < 180000 || Boolean(liveActivities[chat.id]))
+                      ? 'online'
+                      : 'none'
+                  }
+                />
                 <div className="chat-item-body">
                   <div className="chat-item-top-row">
                     <span className="chat-item-name" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>

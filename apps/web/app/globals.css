@@ -2,25 +2,25 @@
 [data-theme='pixchats'],
 [data-theme='dark'] {
   --theme-id: 'pixchats';
-  --y: #ffd400;
-  --y-warm: #ffa300;
-  --y-soft: #ffe066;
+  --y: #f59e0b;
+  --y-warm: #d97706;
+  --y-soft: #fbbf24;
   --ink: #2b2400;
   --bg: #09090b;
   --surface: #121215;
   --surface-raised: #18181c;
-  --border: #262218;
+  --border: #2e281b;
   --text: #f4f4f5;
   --text-muted: #8a8578;
-  --accent: #ffd400;
-  --accent-hover: #ffe066;
-  --accent-contrast: #2b2400;
+  --accent: #f59e0b;
+  --accent-hover: #fbbf24;
+  --accent-contrast: #09090b;
   --bubble-mine-bg: #222013;
-  --bubble-mine-border: rgba(255, 212, 0, 0.35);
+  --bubble-mine-border: rgba(245, 158, 11, 0.4);
   --bubble-mine-text: #fef08a;
-  --avatar-placeholder-bg: linear-gradient(135deg, #18181c 0%, #09090b 60%, rgba(255, 212, 0, 0.25) 100%);
-  --avatar-placeholder-border: #ffd400;
-  --avatar-placeholder-color: #ffd400;
+  --avatar-placeholder-bg: linear-gradient(135deg, #18181c 0%, #09090b 60%, rgba(245, 158, 11, 0.25) 100%);
+  --avatar-placeholder-border: #f59e0b;
+  --avatar-placeholder-color: #f59e0b;
   --verified: #38bdf8;
   --success: #22c55e;
   --danger: #ef4444;
@@ -823,11 +823,14 @@ select.input:focus {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 8px 20px;
+  padding: 8px 16px;
+  margin: 6px 14px;
   background: var(--surface-raised);
-  border-bottom: 1px solid var(--border);
+  border: 1px solid var(--border);
+  border-radius: 10px;
   font-size: 13px;
-  color: var(--text-muted);
+  color: var(--text);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.2);
 }
 
 .frozen-banner {
@@ -2596,6 +2599,20 @@ html {
   to {
     opacity: 1;
     transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes particleBurst {
+  0% {
+    opacity: 1;
+    transform: translate(0, 0) scale(0.4);
+  }
+  40% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-55px) scale(1.3);
   }
 }
 

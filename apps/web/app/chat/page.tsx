@@ -78,6 +78,10 @@ import {
 } from '../../lib/channelConfig';
 import { exportChatHistory } from '../../lib/chatExport';
 import { processZeroStorageFileAttachment } from '../../lib/fileStorage';
+import { isChatHidden, toggleHiddenChat } from '../../lib/appLock';
+import { ReactionParticles } from '../../components/ReactionParticles';
+import { translateText, detectLanguage, getAutoTranslatePref } from '../../lib/translator';
+import { AvatarWithStatus } from '../../components/AvatarWithStatus';
 
 interface ScheduledMessageItem {
   id: string;
@@ -197,10 +201,11 @@ function ChatWindowInner() {
   const [pollOptions, setPollOptions] = useState<string[]>(['', '']);
   const [pollMulti, setPollMulti] = useState(false);
 
-  // Пункт 6: Поиск по сообщениям внутри открытого чата
+  // Поиск по сообщениям и Меню «Три точки» ⋮
   const [showChatSearch, setShowChatSearch] = useState(false);
   const [chatSearchQuery, setChatSearchQuery] = useState('');
   const [chatSearchIndex, setChatSearchIndex] = useState(0);
+  const [showHeaderMenu, setShowHeaderMenu] = useState(false);
 
   // Пункт 9: Таймер автоудаления (Self-Destructing) и отложенные сообщения (Scheduled)
   const [showTimerPopover, setShowTimerPopover] = useState(false);
@@ -217,6 +222,18 @@ function ChatWindowInner() {
   const [showE2EEModal, setShowE2EEModal] = useState(false);
   const [e2eeFingerprint, setE2eeFingerprint] = useState<ChatSafetyFingerprint | null>(null);
   const [customPassInput, setCustomPassInput] = useState('');
+
+  // Пункт 1: Прямой эфир (Live Stream) в каналах с функцией «Поднять руку ✋»
+  const [liveStreamActive, setLiveStreamActive] = useState(false);
+  const [raisedHands, setRaisedHands] = useState<{ userId: string; userName: string }[]>([]);
+  const [hasRaisedHand, setHasRaisedHand] = useState(false);
+
+  // Пункт 2: Частицы реакций (Reaction Particles)
+  const [particleMsgId, setParticleMsgId] = useState<string | null>(null);
+  const [particleEmoji, setParticleEmoji] = useState<string>('❤️');
+
+  // Пункт 9: Умный автопереводчик сообщений
+  const [translatedMessages, setTranslatedMessages] = useState<Record<string, string>>({});
 
   function insertEmoji(emoji: string) {
     setDraft((prev) => prev + emoji);
@@ -849,6 +866,10 @@ function ChatWindowInner() {
 
   async function handleToggleReaction(messageId: string, emoji: string) {
     if (!me) return;
+    if (!emoji.startsWith('💬:')) {
+      setParticleMsgId(messageId);
+      setParticleEmoji(emoji.replace(/📊\d+/, '👍'));
+    }
     try {
       const payload = await toggleMessageReaction(chatId, messageId, emoji, me.id);
       setReactions((prev) => {
@@ -1142,20 +1163,12 @@ function ChatWindowInner() {
             href={`/user/?id=${otherProfile.id}`}
             style={{ display: 'flex', alignItems: 'center', gap: 10, color: 'inherit', textDecoration: 'none' }}
           >
-            <div
-              className={`avatar ${blockedEitherWay || !otherProfile.avatar_url ? 'avatar-fallback' : ''}`}
-              style={{
-                width: 40,
-                height: 40,
-                fontSize: 15,
-                flexShrink: 0,
-                backgroundImage: !blockedEitherWay && otherProfile.avatar_url ? `url(${otherProfile.avatar_url})` : undefined,
-                backgroundSize: 'cover',
-                backgroundPosition: 'center',
-              }}
-            >
-              {(blockedEitherWay || !otherProfile.avatar_url) && otherProfile.display_name.slice(0, 1).toUpperCase()}
-            </div>
+            <AvatarWithStatus
+              avatarUrl={blockedEitherWay ? null : otherProfile.avatar_url}
+              name={otherProfile.display_name}
+              size={40}
+              statusType={otherLastSeen?.includes('в сети') || Boolean(liveHeaderActivity) ? 'online' : 'none'}
+            />
             <div>
               <h2 style={{ fontSize: 15 }}>
                 <NameWithBadges
@@ -1182,20 +1195,12 @@ function ChatWindowInner() {
             href={`/chat-info/?id=${chat.id}`}
             style={{ display: 'flex', alignItems: 'center', gap: 10, color: 'inherit', textDecoration: 'none' }}
           >
-            <div
-              className={`avatar ${!chat.avatar_url ? 'avatar-fallback' : ''}`}
-              style={{
-                width: 40,
-                height: 40,
-                fontSize: 15,
-                flexShrink: 0,
-                backgroundImage: chat.avatar_url ? `url(${chat.avatar_url})` : undefined,
-                backgroundSize: 'cover',
-                backgroundPosition: 'center',
-              }}
-            >
-              {!chat.avatar_url && (chat.title ?? '#').slice(0, 1).toUpperCase()}
-            </div>
+            <AvatarWithStatus
+              avatarUrl={chat.avatar_url}
+              name={chat.title || 'Чат'}
+              size={40}
+              statusType={chat.type === 'channel' && liveStreamActive ? 'live' : 'none'}
+            />
             <div>
               <h2 style={{ fontSize: 15 }}>
                 {chat.title ?? 'Чат'}
@@ -1216,45 +1221,28 @@ function ChatWindowInner() {
           </Link>
         )}
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, position: 'relative' }}>
+          {/* Обычный звонок — стоит ЛЕВЕЕ трёх точек и не входит в меню */}
           {chat.type === 'direct' && otherProfile && !isSavedChat && !blockedEitherWay && (
-            <>
-              <button
-                type="button"
-                className="e2ee-badge-btn"
-                onClick={() =>
-                  startPixChatsCall({
-                    targetUserId: otherProfile.id,
-                    targetName: otherProfile.display_name,
-                    targetAvatar: otherProfile.avatar_url,
-                    chatId: chat.id,
-                    mode: 'audio',
-                  })
-                }
-                title="Аудиозвонок"
-              >
-                <span>📞</span>
-              </button>
-              <button
-                type="button"
-                className="e2ee-badge-btn"
-                onClick={() =>
-                  startPixChatsCall({
-                    targetUserId: otherProfile.id,
-                    targetName: otherProfile.display_name,
-                    targetAvatar: otherProfile.avatar_url,
-                    chatId: chat.id,
-                    mode: 'video',
-                  })
-                }
-                title="Видеозвонок"
-              >
-                <span>📹</span>
-              </button>
-            </>
+            <button
+              type="button"
+              className="e2ee-badge-btn"
+              onClick={() =>
+                startPixChatsCall({
+                  targetUserId: otherProfile.id,
+                  targetName: otherProfile.display_name,
+                  targetAvatar: otherProfile.avatar_url,
+                  chatId: chat.id,
+                  mode: 'audio',
+                })
+              }
+              title="Позвонить собеседнику"
+            >
+              <span>📞</span>
+              <span>Звонок</span>
+            </button>
           )}
 
-          {/* Пункт 4: Голосовой чат в группах (звонит всем участникам группы) */}
           {chat.type === 'group' && (
             <button
               type="button"
@@ -1267,41 +1255,138 @@ function ChatWindowInner() {
                   mode: 'audio',
                 })
               }
-              title="Начать голосовой чат группы (вызов поступит всем участникам)"
+              title="Начать голосовой чат группы"
             >
               <span>🔊</span>
               <span>Голосовой чат</span>
             </button>
           )}
 
+          {/* Пункт 1: Прямой эфир в каналах */}
+          {chat.type === 'channel' && canModerate && (
+            <button
+              type="button"
+              className="e2ee-badge-btn"
+              style={{ background: liveStreamActive ? 'var(--danger)' : undefined, color: liveStreamActive ? '#fff' : undefined }}
+              onClick={() => {
+                setLiveStreamActive((v) => !v);
+                setNotice(liveStreamActive ? 'Прямой эфир завершён' : '🔴 Прямой эфир запущен! Подписчики могут поднять руку ✋');
+                setTimeout(() => setNotice(null), 2000);
+              }}
+              title="Запустить/завершить прямой эфир канала"
+            >
+              <span>🎙️</span>
+              <span>{liveStreamActive ? 'Завершить эфир' : 'Прямой эфир'}</span>
+            </button>
+          )}
+
+          {/* Единая кнопка «Три точки» ⋮ */}
           <button
             type="button"
             className="e2ee-badge-btn"
-            onClick={() => {
-              setShowChatSearch((v) => !v);
-              if (showChatSearch) setChatSearchQuery('');
-            }}
-            title="Поиск по сообщениям в этом чате"
+            style={{ fontSize: 18, padding: '4px 10px', lineHeight: 1 }}
+            onClick={() => setShowHeaderMenu((prev) => !prev)}
+            title="Ещё опции"
           >
-            <SearchIcon size={14} />
+            ⋮
           </button>
 
-          <button
-            type="button"
-            className="e2ee-badge-btn"
-            onClick={async () => {
-              if (me) {
-                const fp = await getChatSafetyFingerprint(chatId, me.id, otherProfile?.id);
-                setE2eeFingerprint(fp);
-              }
-              setCustomPassInput(getChatCustomPassphrase(chatId));
-              setShowE2EEModal(true);
-            }}
-            title="Сквозное шифрование (AES-256-GCM) активно. Нажмите для проверки отпечатка ключей."
-          >
-            <span>🔒</span>
-            <span>E2EE</span>
-          </button>
+          {/* Выпадающее меню трех точек «⋮» */}
+          {showHeaderMenu && (
+            <div
+              className="tools-dropdown-menu"
+              style={{
+                position: 'absolute',
+                top: '100%',
+                right: 0,
+                marginTop: 6,
+                zIndex: 500,
+                width: 230,
+                background: 'var(--surface-raised)',
+                border: '1px solid var(--border)',
+                borderRadius: 12,
+                boxShadow: '0 12px 36px rgba(0,0,0,0.5)',
+                padding: '6px 0',
+                display: 'flex',
+                flexDirection: 'column',
+              }}
+            >
+              <button
+                type="button"
+                style={{ padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10, background: 'none', border: 'none', color: 'var(--text)', cursor: 'pointer', textAlign: 'left', fontSize: 13 }}
+                onClick={() => {
+                  setShowHeaderMenu(false);
+                  setShowChatSearch(true);
+                }}
+              >
+                <SearchIcon size={16} />
+                <span>Поиск по сообщениям</span>
+              </button>
+
+              <button
+                type="button"
+                style={{ padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10, background: 'none', border: 'none', color: 'var(--text)', cursor: 'pointer', textAlign: 'left', fontSize: 13 }}
+                onClick={async () => {
+                  setShowHeaderMenu(false);
+                  if (me) {
+                    const fp = await getChatSafetyFingerprint(chatId, me.id, otherProfile?.id);
+                    setE2eeFingerprint(fp);
+                  }
+                  setCustomPassInput(getChatCustomPassphrase(chatId));
+                  setShowE2EEModal(true);
+                }}
+              >
+                <span>🔒</span>
+                <span>Сквозное шифрование (E2EE)</span>
+              </button>
+
+              <button
+                type="button"
+                style={{ padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10, background: 'none', border: 'none', color: 'var(--text)', cursor: 'pointer', textAlign: 'left', fontSize: 13 }}
+                onClick={() => {
+                  setShowHeaderMenu(false);
+                  if (me) {
+                    exportChatHistory(chat.title || 'Чат', messages, me, senderProfiles, otherProfile, 'html');
+                  }
+                }}
+              >
+                <span>📥</span>
+                <span>Экспорт истории чата</span>
+              </button>
+
+              <button
+                type="button"
+                style={{ padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10, background: 'none', border: 'none', color: 'var(--text)', cursor: 'pointer', textAlign: 'left', fontSize: 13 }}
+                onClick={() => {
+                  setShowHeaderMenu(false);
+                  if (chat.type === 'direct' && otherProfile) {
+                    router.push(`/user/?id=${otherProfile.id}`);
+                  } else {
+                    router.push(`/chat-info/?id=${chat.id}`);
+                  }
+                }}
+              >
+                <span>ℹ️</span>
+                <span>{chat.type === 'direct' ? 'Профиль собеседника' : 'Информация о чате'}</span>
+              </button>
+
+              <div style={{ height: 1, background: 'var(--border)', margin: '4px 0' }} />
+
+              <button
+                type="button"
+                style={{ padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 10, background: 'none', border: 'none', color: 'var(--danger)', cursor: 'pointer', textAlign: 'left', fontSize: 13 }}
+                onClick={() => {
+                  setShowHeaderMenu(false);
+                  toggleHiddenChat(chat.id);
+                  setNotice('Статус скрытия чата изменён');
+                  setTimeout(() => setNotice(null), 1500);
+                }}
+              >
+                <span>🕵️</span>
+                <span>{isChatHidden(chat.id) ? 'Показать в обычном списке' : 'Скрыть чат под PIN-код'}</span>
+              </button>
+            </div>
+          )}
         </div>
       </header>
 
@@ -1415,6 +1500,50 @@ function ChatWindowInner() {
         <div className="frozen-banner">❄️ Ваш аккаунт заморожен — доступно только чтение сообщений</div>
       )}
 
+      {/* Пункт 1: Плашка активного прямого эфира канала для подписчиков */}
+      {chat.type === 'channel' && (liveStreamActive || !canModerate) && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '8px 16px',
+            background: 'rgba(239, 68, 68, 0.12)',
+            borderBottom: '1px solid rgba(239, 68, 68, 0.3)',
+            fontSize: 13,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--danger)', fontWeight: 700 }}>
+            <span style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--danger)', display: 'inline-block' }} className="online-dot-glow" />
+            <span>🔴 ИДЁТ ПРЯМОЙ ЭФИР КАНАЛА</span>
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {!canModerate && (
+              <button
+                type="button"
+                className="btn"
+                style={{ width: 'auto', padding: '4px 12px', fontSize: 12 }}
+                onClick={() => {
+                  setHasRaisedHand((v) => !v);
+                  if (!hasRaisedHand && me) {
+                    setRaisedHands((prev) => [...prev, { userId: me.id, userName: me.display_name }]);
+                    setNotice('Вы подняли руку ✋. Админ может дать вам слово!');
+                    setTimeout(() => setNotice(null), 2000);
+                  }
+                }}
+              >
+                {hasRaisedHand ? '✋ Рука поднята' : '✋ Поднять руку'}
+              </button>
+            )}
+            {canModerate && raisedHands.length > 0 && (
+              <span style={{ fontSize: 12, color: 'var(--accent)', fontWeight: 700 }}>
+                ✋ Рук поднято: {raisedHands.length}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
       {pinnedMessage && (
         <div
           className="pinned-bar"
@@ -1515,6 +1644,12 @@ function ChatWindowInner() {
                   isGroupOrChannel && !isMine && <div style={{ width: 32, flexShrink: 0 }} />
                 )}
                 <div style={{ position: 'relative', maxWidth: '72%' }}>
+                  {/* Пункт 2: Анимированный всплеск микро-частиц реакции */}
+                  <ReactionParticles
+                    emoji={particleEmoji}
+                    active={particleMsgId === m.id}
+                    onComplete={() => setParticleMsgId(null)}
+                  />
                   {showSenderHeader && (
                     <Link href={`/user/?id=${sender!.id}`} className="sender-name-link">
                       {sender!.display_name}
@@ -1785,6 +1920,18 @@ function ChatWindowInner() {
                       </button>
                       <button onClick={() => openForwardModal(m)}>
                         <ForwardIcon size={15} /> Переслать
+                      </button>
+                      <button
+                        onClick={() => {
+                          setOpenMenuId(null);
+                          const { cleanText } = extractSelfDestructInfo(m.text || '');
+                          const { cleanText: topicCleaned } = extractTopicFromText(cleanText);
+                          const lang = detectLanguage(topicCleaned);
+                          const translated = translateText(topicCleaned, lang === 'ru' ? 'en' : 'ru');
+                          setTranslatedMessages((prev) => ({ ...prev, [m.id]: translated }));
+                        }}
+                      >
+                        <span>🌐</span> Перевести
                       </button>
                       {!isSavedChat && (
                         <button onClick={() => handleSaveToFavorites(m)}>

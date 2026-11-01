@@ -2,10 +2,12 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { useConnectionStatus } from '../lib/useConnectionStatus';
 import { ChatsIcon, FriendsIcon, SettingsIcon, ProfileIcon } from './Icons';
 
 export function IconRail() {
   const pathname = usePathname();
+  const connStatus = useConnectionStatus();
 
   const items = [
     { href: '/chats/', icon: <ChatsIcon size={18} />, title: 'Чаты' },
@@ -20,9 +22,17 @@ export function IconRail() {
         <img
           src={`${process.env.NEXT_PUBLIC_BASE_PATH || ''}/logo/icon.png`}
           alt="PixChats Logo"
-          className="icon-rail-logo-img"
+          style={{ width: 38, height: 38, objectFit: 'contain' }}
         />
-        <span className="icon-rail-brand">PixChats</span>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+          <span className="icon-rail-brand" style={{ fontSize: 18 }}>PixChats</span>
+          {connStatus === 'offline' && (
+            <span style={{ fontSize: 10, color: 'var(--danger)', fontWeight: 600 }}>Ожидание сети…</span>
+          )}
+          {connStatus === 'connecting' && (
+            <span style={{ fontSize: 10, color: 'var(--accent)', fontWeight: 600 }}>Соединение…</span>
+          )}
+        </div>
       </Link>
       <div className="icon-rail-tabs">
         {items.map((item) => {
