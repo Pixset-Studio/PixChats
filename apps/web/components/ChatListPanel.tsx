@@ -35,6 +35,7 @@ import {
   type CustomChatFolder,
 } from '../lib/chatFolders';
 import { parsePollMessage, extractSelfDestructInfo } from './FormattedMessageText';
+import { parseChecklistMessage, parseLocationMessage } from './ChatInteractiveTools';
 import { getHiddenChatIds, getAppLockConfig, lockSessionNow } from '../lib/appLock';
 import { isStickerTagText } from '../lib/stickers';
 import { extractTopicFromText } from '../lib/channelConfig';
@@ -69,12 +70,12 @@ function formatPreviewText(message: Message): string {
   if (message.is_deleted || message.text === 'Сообщение удалено') {
     return '';
   }
-  if (message.caption === '__VIDEONOTE__' || message.text?.startsWith('__VIDEONOTE__')) {
+  if (message.caption?.startsWith('__VIDEONOTE__') || message.text?.startsWith('__VIDEONOTE__')) {
     return '🎥 Видеосообщение (кружочек)';
   }
   switch (message.message_type) {
     case 'image':
-      return '📷 Фото';
+      return message.text?.includes('Граффити') ? '🎨 Граффити / Рисунок' : '📷 Фото';
     case 'video':
       return '🎥 Видео';
     case 'audio':
@@ -92,6 +93,14 @@ function formatPreviewText(message: Message): string {
       const poll = parsePollMessage(topicCleaned);
       if (poll) {
         return `📊 Опрос: ${poll.question}`;
+      }
+      const checklist = parseChecklistMessage(topicCleaned);
+      if (checklist) {
+        return `☑️ Чек-лист: ${checklist.title}`;
+      }
+      const loc = parseLocationMessage(topicCleaned);
+      if (loc) {
+        return `📍 ${loc.title || 'Геопозиция на карте'}`;
       }
       return expiresAt ? `🔥 ${topicCleaned}` : topicCleaned;
     }
@@ -586,34 +595,6 @@ export function ChatListPanel() {
 
   return (
     <div>
-      {isDesktop && (
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'baseline',
-            gap: 6,
-            marginBottom: 8,
-            paddingLeft: 2,
-          }}
-        >
-          <span style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 15, color: 'var(--text)' }}>
-            PixChats
-          </span>
-          <span
-            style={{
-              fontSize: 10.5,
-              fontWeight: 500,
-              color: 'var(--text-muted)',
-              opacity: 0.36,
-              letterSpacing: '0.02em',
-              userSelect: 'none',
-            }}
-          >
-            v{APP_VERSION}
-          </span>
-        </div>
-      )}
-
       {/* Кружочки историй (24 часа) над списком чатов */}
       {!isSearchMode && <StoriesBar profile={profile} />}
 

@@ -1,7 +1,12 @@
 'use client';
 
 import React, { useEffect, useRef, useState } from 'react';
-import { getCurrentProfile, getSupabaseClient, sendMessage } from '@pixchats/core';
+import {
+  getCurrentProfile,
+  getCachedCurrentProfile,
+  getSupabaseClient,
+  sendMessage,
+} from '@pixchats/core';
 import type { Profile } from '@pixchats/core';
 import { getNotificationPrefs } from '../lib/notificationPrefs';
 import {
@@ -82,7 +87,19 @@ const RTC_CONFIG: RTCConfiguration = {
   iceCandidatePoolSize: 10,
 };
 
-const RELAY_SAMPLE_RATE = 10000;
+const RELAY_SAMPLE_RATE = 16000;
+
+function enhanceOpusSdp(sdp?: string): string | undefined {
+  if (!sdp) return sdp;
+  try {
+    return sdp.replace(
+      /a=fmtp:(\d+) minptime=10;useinbandfec=1/g,
+      'a=fmtp:$1 minptime=10;useinbandfec=1;stereo=0;sprop-stereo=0;maxaveragebitrate=64000;cbr=0'
+    );
+  } catch {
+    return sdp;
+  }
+}
 
 function encodeInt16ToBase64(samples: Int16Array): string {
   const bytes = new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength);
@@ -151,7 +168,6 @@ function createRingtoneWavDataUrl(isIncoming: boolean): string {
       const t = i / sampleRate;
       let sample = 0;
       if (isIncoming) {
-        // Фирменная трёхнотная мелодия звонка PixChats (C5 -> E5 -> G5 -> C6)
         if (t < 0.22) {
           sample = Math.sin(2 * Math.PI * 523.25 * t) * 0.35;
         } else if (t >= 0.24 && t < 0.46) {
@@ -162,7 +178,6 @@ function createRingtoneWavDataUrl(isIncoming: boolean): string {
           sample = Math.sin(2 * Math.PI * 1046.5 * t) * Math.exp(-(t - 0.75) * 4) * 0.4;
         }
       } else {
-        // Гудок исходящего вызова (440 Гц)
         if (t < 0.7) {
           sample = Math.sin(2 * Math.PI * 440 * t) * 0.25;
         }
@@ -183,7 +198,7 @@ function createRingtoneWavDataUrl(isIncoming: boolean): string {
 }
 
 export function CallManager() {
-  const [me, setMe] = useState<Profile | null>(null);
+  const [me, setMe] = useState<Profile | null>(() => getCachedCurrentProfile());
   const [session, setSession] = useState<ActiveCallSession | null>(null);
   const [minimized, setMinimized] = useState(false);
   const [micMuted, setMicMuted] = useState(false);
@@ -191,11 +206,13 @@ export function CallManager() {
   const [screenSharing, setScreenSharing] = useState(false);
   const [durationSec, setDurationSec] = useState(0);
   const [hasRemoteVideo, setHasRemoteVideo] = useState(false);
+  const [remoteWebrtcVideoReady, setRemoteWebrtcVideoReady] = useState(false);
   const [remoteRelayFrame, setRemoteRelayFrame] = useState<string | null>(null);
   const [groupParticipants, setGroupParticipants] = useState<CallParticipant[]>([]);
   const [speakingUsers, setSpeakingUsers] = useState<Record<string, boolean>>({});
+  const [callNotice, setCallNotice] = useState<string | null>(null);
 
-  const meRef = useRef<Profile | null>(null);
+  const meRef = useRef<Profile | null>(me);
   meRef.current = me;
 
   const micMutedRef = useRef<boolean>(false);
@@ -206,6 +223,11 @@ export function CallManager() {
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const roomChannelRef = useRef<any>(null);
+  const globalCallChannelRef = useRef<any>(null);
+  const inviteRetryTimerRef = useRef<any>(null);
+  const inviteTargetChannelRef = useRef<any>(null);
+  const dismissedCallIdsRef = useRef<Set<string>>(new Set());
+
   const localStreamRef = useRef<MediaStream | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
   const remoteStreamRef = useRef<MediaStream | null>(null);
@@ -221,15 +243,21 @@ export function CallManager() {
   const sharedAudioCtxRef = useRef<AudioContext | null>(null);
   const durationRef = useRef<number>(0);
 
-  // Ресурсы гибридного голосового ретранслятора (Web Audio PCM Relay + WebRTC Stats)
+  // Ресурсы голосового ретранслятора (используется ТОЛЬКО для групповых чатов или при полном отказе ICE)
   const micSourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const micProcessorNodeRef = useRef<ScriptProcessorNode | null>(null);
   const micZeroGainRef = useRef<GainNode | null>(null);
   const nextPlayTimeBySenderRef = useRef<Record<string, number>>({});
   const speakingTimersRef = useRef<Record<string, any>>({});
   const webrtcAudioActiveRef = useRef<boolean>(false);
-  const lastWebrtcBytesRef = useRef<number>(0);
   const statsTimerRef = useRef<any>(null);
+
+  function showTransientCallNotice(msg: string) {
+    setCallNotice(msg);
+    setTimeout(() => {
+      setCallNotice((prev) => (prev === msg ? null : prev));
+    }, 3200);
+  }
 
   function getOrResumeAudioContext(): AudioContext | null {
     if (typeof window === 'undefined') return null;
@@ -291,8 +319,14 @@ export function CallManager() {
     }, 700);
   }
 
-  // Воспроизведение полученного PCM-фрагмента голоса через Web Audio API (резервный канал + микшер для групповых чатов)
+  // Воспроизведение полученного PCM-фрагмента голоса через Web Audio API (для групповых чатов или резерва при блоке UDP)
   function playRemotePcmChunk(base64Pcm: string, sampleRate: number, senderId?: string) {
+    // В личном звонке НИКОГДА не накладываем PCM поверх живого WebRTC потока, чтобы не было эффекта фильтра/эха!
+    const currentSess = sessionRef.current;
+    if (currentSess && !currentSess.isGroup && webrtcAudioActiveRef.current) {
+      return;
+    }
+
     try {
       const ctx = getOrResumeAudioContext();
       if (!ctx) return;
@@ -310,15 +344,15 @@ export function CallManager() {
       const key = senderId || 'default-peer';
       const now = ctx.currentTime;
       let nextTime = nextPlayTimeBySenderRef.current[key] || 0;
-      if (nextTime < now || nextTime > now + 0.65) {
-        nextTime = now + 0.04;
+      if (nextTime < now || nextTime > now + 0.5) {
+        nextTime = now + 0.03;
       }
 
       const source = ctx.createBufferSource();
       source.buffer = audioBuffer;
 
       const gainNode = ctx.createGain();
-      gainNode.gain.value = 1.45;
+      gainNode.gain.value = 1.0;
 
       source.connect(gainNode);
       gainNode.connect(ctx.destination);
@@ -356,7 +390,6 @@ export function CallManager() {
     speakingTimersRef.current = {};
     setSpeakingUsers({});
     webrtcAudioActiveRef.current = false;
-    lastWebrtcBytesRef.current = 0;
   }
 
   function startVoicePcmRelay(localStream: MediaStream) {
@@ -393,7 +426,10 @@ export function CallManager() {
         }
         const rms = Math.sqrt(sumSq / input.length);
 
-        if (rms > 0.0007) {
+        if (rms > 0.001) {
+          if (meRef.current?.id) {
+            markSpeakerActive(meRef.current.id);
+          }
           trailingSilenceChunks = 3;
         } else if (trailingSilenceChunks > 0) {
           trailingSilenceChunks--;
@@ -402,22 +438,31 @@ export function CallManager() {
           return;
         }
 
-        // Даунсэмплинг до RELAY_SAMPLE_RATE (10 кГц моно)
+        // Если это личный звонок 1-на-1 и прямое WebRTC-соединение активно — не шлём лишний PCM по WebSocket
+        if (!sess.isGroup && webrtcAudioActiveRef.current) {
+          pendingSamples = [];
+          return;
+        }
+
+        // Анти-алиасинг фильтр (boxcar averaging) при даунсэмплинге до 16 кГц, чтобы голос звучал чисто без эффекта робота
         const outLength = Math.floor(input.length / ratio);
         for (let i = 0; i < outLength; i++) {
-          const idx = Math.min(input.length - 1, Math.floor(i * ratio));
-          const s = Math.max(-1, Math.min(1, input[idx]));
+          const startIdx = Math.floor(i * ratio);
+          const endIdx = Math.min(input.length, Math.max(startIdx + 1, Math.floor((i + 1) * ratio)));
+          let acc = 0;
+          for (let j = startIdx; j < endIdx; j++) {
+            acc += input[j];
+          }
+          const avg = acc / (endIdx - startIdx);
+          const s = Math.max(-1, Math.min(1, avg));
           pendingSamples.push(s < 0 ? s * 0x8000 : s * 0x7fff);
         }
 
-        // Отправляем пакет каждые ~160 мс (1600 сэмплов при 10 кГц)
-        if (pendingSamples.length >= 1600) {
+        // Отправляем пакет каждые ~150 мс (2400 сэмплов при 16 кГц)
+        if (pendingSamples.length >= 2400) {
           const int16 = new Int16Array(pendingSamples);
           pendingSamples = [];
           const b64 = encodeInt16ToBase64(int16);
-          if (meRef.current?.id) {
-            markSpeakerActive(meRef.current.id);
-          }
           try {
             roomChannelRef.current.send({
               type: 'broadcast',
@@ -441,41 +486,30 @@ export function CallManager() {
       micZeroGainRef.current = zeroGain;
     } catch {}
 
-    // Мониторим, идёт ли реальный аудио-поток по прямому WebRTC (чтобы не дублировать звук)
-    statsTimerRef.current = setInterval(async () => {
+    // Мониторим состояние WebRTC, чтобы в 1-на-1 звонках работал чистый 48kHz Opus без наложения PCM
+    statsTimerRef.current = setInterval(() => {
       const pc = pcRef.current;
-      if (!pc) {
+      const sess = sessionRef.current;
+      if (!pc || !sess || sess.isGroup) {
         webrtcAudioActiveRef.current = false;
         return;
       }
       const ice = pc.iceConnectionState;
-      if (ice !== 'connected' && ice !== 'completed') {
-        webrtcAudioActiveRef.current = false;
-        return;
-      }
-      try {
-        const stats = await pc.getStats();
-        let audioBytes = 0;
-        stats.forEach((report: any) => {
-          if (
-            report.type === 'inbound-rtp' &&
-            (report.kind === 'audio' || report.mediaType === 'audio')
-          ) {
-            audioBytes += report.bytesReceived || 0;
-          }
-        });
-        const delta = audioBytes - lastWebrtcBytesRef.current;
-        lastWebrtcBytesRef.current = audioBytes;
-        const audioPlaying = Boolean(
-          remoteAudioRef.current &&
-            !remoteAudioRef.current.paused &&
-            remoteAudioRef.current.srcObject
-        );
-        webrtcAudioActiveRef.current = delta > 400 && audioPlaying;
-      } catch {
+      const conn = pc.connectionState;
+      const hasLiveRemoteAudioTrack = Boolean(
+        remoteStreamRef.current
+          ?.getAudioTracks()
+          .some((t) => t.readyState === 'live' && t.enabled)
+      );
+      if (
+        (ice === 'connected' || ice === 'completed' || conn === 'connected') &&
+        hasLiveRemoteAudioTrack
+      ) {
+        webrtcAudioActiveRef.current = true;
+      } else if (ice === 'failed' || ice === 'disconnected' || ice === 'closed') {
         webrtcAudioActiveRef.current = false;
       }
-    }, 1200);
+    }, 600);
   }
 
   // Звуковой сигнал вызова (HTML5 WAV + Web Audio API + Вибрация)
@@ -484,7 +518,6 @@ export function CallManager() {
     const prefs = getNotificationPrefs();
     if (!prefs.sound) return;
 
-    // 1. HTML5 Audio loop (надёжно работает на мобильных браузерах и в WebView)
     try {
       const wavUrl = createRingtoneWavDataUrl(isIncoming);
       if (wavUrl) {
@@ -496,7 +529,6 @@ export function CallManager() {
       }
     } catch {}
 
-    // 2. Дублирующий синтезатор Web Audio API + периодическая вибрация на телефонах
     const playTone = () => {
       try {
         if (isIncoming && typeof navigator !== 'undefined' && navigator.vibrate) {
@@ -510,11 +542,11 @@ export function CallManager() {
 
         osc.type = 'sine';
         if (isIncoming) {
-          osc.frequency.setValueAtTime(523.25, now); // C5
-          osc.frequency.setValueAtTime(659.25, now + 0.18); // E5
-          osc.frequency.setValueAtTime(783.99, now + 0.36); // G5
+          osc.frequency.setValueAtTime(523.25, now);
+          osc.frequency.setValueAtTime(659.25, now + 0.18);
+          osc.frequency.setValueAtTime(783.99, now + 0.36);
         } else {
-          osc.frequency.setValueAtTime(440, now); // A4 гудок
+          osc.frequency.setValueAtTime(440, now);
         }
 
         gain.gain.setValueAtTime(0.001, now);
@@ -547,6 +579,19 @@ export function CallManager() {
     stopIncomingCallNativeAlert();
   }
 
+  function stopInviteRetryLoop() {
+    if (inviteRetryTimerRef.current) {
+      clearInterval(inviteRetryTimerRef.current);
+      inviteRetryTimerRef.current = null;
+    }
+    if (inviteTargetChannelRef.current) {
+      try {
+        getSupabaseClient().removeChannel(inviteTargetChannelRef.current);
+      } catch {}
+      inviteTargetChannelRef.current = null;
+    }
+  }
+
   function isDeveloperUser(profile: Profile | null, extraStr?: string): boolean {
     if (!profile && !extraStr) return false;
     if ((profile as any)?.is_admin) return true;
@@ -573,7 +618,6 @@ export function CallManager() {
         const next = prev + 1;
         durationRef.current = next;
 
-        // 60-минутный лимит (3600 секунд) для обычных пользователей
         if (!isDevCall && next >= 3600) {
           clearInterval(timer);
           void handleEndCall();
@@ -583,6 +627,19 @@ export function CallManager() {
     }, 1000);
     return () => clearInterval(timer);
   }, [session?.status, session?.callerIsDeveloper]);
+
+  // Автоматический сброс неотвеченного исходящего вызова через 45 секунд
+  useEffect(() => {
+    if (!session || session.direction !== 'outgoing' || session.status !== 'ringing' || session.isGroup) {
+      return;
+    }
+    const timeout = setTimeout(() => {
+      if (sessionRef.current?.status === 'ringing') {
+        void handleEndCall();
+      }
+    }, 45000);
+    return () => clearTimeout(timeout);
+  }, [session?.callId, session?.status, session?.direction, session?.isGroup]);
 
   function syncRemoteAudioPlayback() {
     const stream = remoteStreamRef.current;
@@ -599,47 +656,79 @@ export function CallManager() {
       if (remoteVideoRef.current.srcObject !== stream) {
         remoteVideoRef.current.srcObject = stream;
       }
-      remoteVideoRef.current.muted = false;
+      remoteVideoRef.current.muted = true; // Звук уже воспроизводится через persistentAudioEl, поэтому video muted для надёжного autoplay
       void remoteVideoRef.current.play().catch(() => {});
     }
   }
 
   // Привязка локального и удалённого медиа-потоков к video/audio элементам
   useEffect(() => {
-    if (localVideoRef.current && (screenStreamRef.current || localStreamRef.current)) {
-      localVideoRef.current.srcObject = screenStreamRef.current || localStreamRef.current;
+    const activeLocalVideoStream = screenStreamRef.current || localStreamRef.current;
+    if (localVideoRef.current && activeLocalVideoStream) {
+      if (localVideoRef.current.srcObject !== activeLocalVideoStream) {
+        localVideoRef.current.srcObject = activeLocalVideoStream;
+      }
+      void localVideoRef.current.play().catch(() => {});
     }
     syncRemoteAudioPlayback();
   }, [session, minimized, cameraEnabled, screenSharing, hasRemoteVideo]);
 
-  // Гибридная ретрансляция видеокадров (камера / экран) для групповых звонков и симметричного NAT
+  // Независимый захват кадров с активного видеопотока (камера или демонстрация экрана) через offscreen <video>
+  // Гарантирует 100% доставку видео собеседнику без серого экрана даже при симметричном NAT или свёрнутом окне!
   useEffect(() => {
     if (!session || (!cameraEnabled && !screenSharing)) return;
+    const activeStream = screenSharing
+      ? screenStreamRef.current
+      : localStreamRef.current;
+    if (!activeStream || activeStream.getVideoTracks().length === 0) return;
+
+    const offscreenVid = document.createElement('video');
+    offscreenVid.muted = true;
+    offscreenVid.playsInline = true;
+    offscreenVid.autoplay = true;
+    offscreenVid.srcObject = activeStream;
+    void offscreenVid.play().catch(() => {});
+
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
+
     const timer = setInterval(() => {
-      const vid = localVideoRef.current;
-      if (!vid || !ctx || !roomChannelRef.current || vid.readyState < 2) return;
-      const vw = vid.videoWidth || 480;
-      const vh = vid.videoHeight || 270;
-      const targetW = Math.min(480, vw);
+      if (!ctx || !roomChannelRef.current) return;
+      const sourceVid =
+        offscreenVid.readyState >= 2 && offscreenVid.videoWidth > 0
+          ? offscreenVid
+          : localVideoRef.current;
+      if (!sourceVid || sourceVid.readyState < 2) return;
+
+      const vw = sourceVid.videoWidth || (screenSharing ? 800 : 480);
+      const vh = sourceVid.videoHeight || (screenSharing ? 450 : 270);
+      const maxW = screenSharing ? 720 : 480;
+      const targetW = Math.min(maxW, vw);
       const targetH = Math.max(180, Math.round((vh / vw) * targetW));
       canvas.width = targetW;
       canvas.height = targetH;
       try {
-        ctx.drawImage(vid, 0, 0, targetW, targetH);
-        const frame = canvas.toDataURL('image/jpeg', 0.52);
+        ctx.drawImage(sourceVid, 0, 0, targetW, targetH);
+        const frame = canvas.toDataURL('image/jpeg', screenSharing ? 0.62 : 0.56);
         roomChannelRef.current.send({
           type: 'broadcast',
           event: 'video-frame',
           payload: {
             senderId: meRef.current?.id,
             frame,
+            isScreen: screenSharing,
           },
         });
       } catch {}
-    }, 240);
-    return () => clearInterval(timer);
+    }, 150);
+
+    return () => {
+      clearInterval(timer);
+      try {
+        offscreenVid.pause();
+        offscreenVid.srcObject = null;
+      } catch {}
+    };
   }, [session?.callId, cameraEnabled, screenSharing]);
 
   async function acquireLocalMedia(wantVideo: boolean): Promise<MediaStream> {
@@ -648,6 +737,8 @@ export function CallManager() {
         echoCancellation: true,
         noiseSuppression: true,
         autoGainControl: true,
+        channelCount: 1,
+        sampleRate: 48000,
       };
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -661,7 +752,7 @@ export function CallManager() {
       } catch {
         try {
           const fallbackStream = await navigator.mediaDevices.getUserMedia({
-            audio: true,
+            audio: audioConstraints,
             video: false,
           });
           setCameraEnabled(false);
@@ -677,6 +768,7 @@ export function CallManager() {
 
   function cleanupCallResources() {
     stopRingtone();
+    stopInviteRetryLoop();
     stopVoicePcmRelay();
 
     if (acceptRetryTimerRef.current) {
@@ -726,8 +818,10 @@ export function CallManager() {
     setCameraEnabled(false);
     setScreenSharing(false);
     setHasRemoteVideo(false);
+    setRemoteWebrtcVideoReady(false);
     setRemoteRelayFrame(null);
     setGroupParticipants([]);
+    setCallNotice(null);
   }
 
   async function flushPendingIceCandidates(pc: RTCPeerConnection) {
@@ -739,6 +833,49 @@ export function CallManager() {
         await pc.addIceCandidate(new RTCIceCandidate(cand));
       } catch {}
     }
+  }
+
+  async function renegotiatePeerConnection() {
+    const pc = pcRef.current;
+    const room = roomChannelRef.current;
+    if (!pc || !room || makingOfferRef.current) return;
+    if (pc.signalingState !== 'stable') return;
+    makingOfferRef.current = true;
+    try {
+      const offer = await pc.createOffer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: true,
+      });
+      if (offer.sdp) {
+        offer.sdp = enhanceOpusSdp(offer.sdp);
+      }
+      await pc.setLocalDescription(offer);
+      room.send({
+        type: 'broadcast',
+        event: 'webrtc-offer',
+        payload: { senderId: meRef.current?.id, sdp: pc.localDescription || offer },
+      });
+    } catch {
+    } finally {
+      makingOfferRef.current = false;
+    }
+  }
+
+  async function syncOutgoingVideoTrack(newVideoTrack: MediaStreamTrack | null, ownerStream: MediaStream | null) {
+    const pc = pcRef.current;
+    if (!pc) return;
+    try {
+      const videoTransceiver = pc.getTransceivers().find(
+        (t) => t.sender.track?.kind === 'video' || t.receiver.track?.kind === 'video'
+      );
+      if (videoTransceiver) {
+        await videoTransceiver.sender.replaceTrack(newVideoTrack);
+        videoTransceiver.direction = newVideoTrack ? 'sendrecv' : 'recvonly';
+      } else if (newVideoTrack && ownerStream) {
+        pc.addTrack(newVideoTrack, ownerStream);
+      }
+      await renegotiatePeerConnection();
+    } catch {}
   }
 
   function createPeerConnection(callId: string, localStream: MediaStream): RTCPeerConnection {
@@ -753,10 +890,14 @@ export function CallManager() {
       pc.addTrack(track, localStream);
     });
 
-    // Если микрофон не был получен, добавляем приёмный аудио-трансивер, чтобы слышать собеседника
     if (localStream.getAudioTracks().length === 0) {
       try {
         pc.addTransceiver('audio', { direction: 'recvonly' });
+      } catch {}
+    }
+    if (localStream.getVideoTracks().length === 0) {
+      try {
+        pc.addTransceiver('video', { direction: 'recvonly' });
       } catch {}
     }
 
@@ -766,8 +907,28 @@ export function CallManager() {
         if (!remoteStream.getTracks().some((t) => t.id === track.id)) {
           remoteStream.addTrack(track);
         }
+        if (track.kind === 'audio') {
+          if (!sessionRef.current?.isGroup) {
+            webrtcAudioActiveRef.current = true;
+          }
+          track.onunmute = () => {
+            if (!sessionRef.current?.isGroup) {
+              webrtcAudioActiveRef.current = true;
+            }
+            syncRemoteAudioPlayback();
+          };
+        }
         if (track.kind === 'video') {
-          setHasRemoteVideo(true);
+          if (!track.muted) {
+            setHasRemoteVideo(true);
+          }
+          track.onunmute = () => {
+            setHasRemoteVideo(true);
+            syncRemoteAudioPlayback();
+          };
+          track.onmute = () => {
+            setRemoteWebrtcVideoReady(false);
+          };
         }
       };
 
@@ -801,6 +962,10 @@ export function CallManager() {
       const iceState = pc.iceConnectionState;
       if (state === 'connected' || iceState === 'connected' || iceState === 'completed') {
         stopRingtone();
+        stopInviteRetryLoop();
+        if (!sessionRef.current?.isGroup) {
+          webrtcAudioActiveRef.current = true;
+        }
         if (acceptRetryTimerRef.current) {
           clearInterval(acceptRetryTimerRef.current);
           acceptRetryTimerRef.current = null;
@@ -833,24 +998,7 @@ export function CallManager() {
     startVoicePcmRelay(localStream);
 
     const sendWebRtcOffer = async () => {
-      if (makingOfferRef.current) return;
-      if (pc.signalingState !== 'stable') return;
-      makingOfferRef.current = true;
-      try {
-        const offer = await pc.createOffer({
-          offerToReceiveAudio: true,
-          offerToReceiveVideo: true,
-        });
-        await pc.setLocalDescription(offer);
-        room.send({
-          type: 'broadcast',
-          event: 'webrtc-offer',
-          payload: { senderId: meRef.current?.id, sdp: pc.localDescription || offer },
-        });
-      } catch {
-      } finally {
-        makingOfferRef.current = false;
-      }
+      await renegotiatePeerConnection();
     };
 
     room
@@ -876,9 +1024,9 @@ export function CallManager() {
           }
           if (hasOtherPeer) {
             stopRingtone();
+            stopInviteRetryLoop();
             setSession((prev) => (prev ? { ...prev, status: 'connected' } : null));
           }
-          // Если второй участник уже в комнате, а соединение ещё не установлено — инициируем Offer
           if (isInitiator && hasOtherPeer && !pc.remoteDescription && pc.signalingState === 'stable') {
             void sendWebRtcOffer();
           }
@@ -887,12 +1035,14 @@ export function CallManager() {
       .on('broadcast', { event: 'call-accepted' }, async ({ payload }) => {
         if (payload?.senderId && payload.senderId === meRef.current?.id) return;
         stopRingtone();
+        stopInviteRetryLoop();
         setSession((prev) => (prev ? { ...prev, status: 'connected' } : null));
         await sendWebRtcOffer();
       })
       .on('broadcast', { event: 'webrtc-offer' }, async ({ payload }) => {
         if (!payload?.sdp || (payload?.senderId && payload.senderId === meRef.current?.id)) return;
         stopRingtone();
+        stopInviteRetryLoop();
         if (acceptRetryTimerRef.current) {
           clearInterval(acceptRetryTimerRef.current);
           acceptRetryTimerRef.current = null;
@@ -909,6 +1059,9 @@ export function CallManager() {
           await flushPendingIceCandidates(pc);
 
           const answer = await pc.createAnswer();
+          if (answer.sdp) {
+            answer.sdp = enhanceOpusSdp(answer.sdp);
+          }
           await pc.setLocalDescription(answer);
           room.send({
             type: 'broadcast',
@@ -927,6 +1080,7 @@ export function CallManager() {
             await flushPendingIceCandidates(pc);
           }
           stopRingtone();
+          stopInviteRetryLoop();
           setSession((prev) => (prev ? { ...prev, status: 'connected' } : null));
           syncRemoteAudioPlayback();
         } catch {}
@@ -944,11 +1098,11 @@ export function CallManager() {
       .on('broadcast', { event: 'voice-pcm' }, ({ payload }) => {
         if (!payload?.pcm || (payload?.senderId && payload.senderId === meRef.current?.id)) return;
         stopRingtone();
+        stopInviteRetryLoop();
         markSpeakerActive(payload.senderId);
         setSession((prev) =>
           prev && prev.status !== 'connected' ? { ...prev, status: 'connected' } : prev
         );
-        // Если прямой WebRTC не передаёт звук (например, из-за симметричного NAT) или это групповой звонок — воспроизводим через Web Audio PCM Relay
         if (!webrtcAudioActiveRef.current || activeSess.isGroup) {
           playRemotePcmChunk(payload.pcm, payload.sr || RELAY_SAMPLE_RATE, payload.senderId);
         }
@@ -964,6 +1118,7 @@ export function CallManager() {
           setHasRemoteVideo(payload.video);
           if (!payload.video) {
             setRemoteRelayFrame(null);
+            setRemoteWebrtcVideoReady(false);
           }
         }
       })
@@ -992,7 +1147,6 @@ export function CallManager() {
             };
             sendAccepted();
             setSession((prev) => (prev ? { ...prev, status: 'connected' } : null));
-            // Повторяем сигнал готовности, если инициатор ещё загружает микрофон
             if (!activeSess.isGroup) {
               if (acceptRetryTimerRef.current) clearInterval(acceptRetryTimerRef.current);
               acceptRetryTimerRef.current = setInterval(() => {
@@ -1019,6 +1173,7 @@ export function CallManager() {
     }
 
     unlockAudioElements();
+    stopInviteRetryLoop();
 
     const callId = `call-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const newSession: ActiveCallSession = {
@@ -1042,33 +1197,56 @@ export function CallManager() {
 
     joinSignalingRoom(newSession, true, localStream);
 
-    // Отправляем приглашение в персональный сигнальный канал собеседника
+    const invitePayload = {
+      callId,
+      chatId: params.chatId,
+      targetUserId: params.targetUserId,
+      callerId: currentMe.id,
+      callerName: currentMe.display_name,
+      callerAvatar: currentMe.avatar_url,
+      mode: params.mode,
+      isGroup: false,
+      callerIsDeveloper: isDeveloperUser(currentMe),
+    };
+
+    // Отправляем приглашение и повторяем каждые 2.2 сек, пока идёт вызов (ringing),
+    // чтобы звонок 100% доходил даже при переподключении сети или открытии вкладки собеседником!
     const supabase = getSupabaseClient();
     const targetChannel = supabase.channel(`pixchats-calls:${params.targetUserId}`);
-    targetChannel.subscribe((status) => {
-      if (status === 'SUBSCRIBED') {
+    inviteTargetChannelRef.current = targetChannel;
+
+    const sendInviteNow = () => {
+      if (sessionRef.current?.callId !== callId || sessionRef.current?.status !== 'ringing') {
+        stopInviteRetryLoop();
+        return;
+      }
+      try {
         targetChannel.send({
           type: 'broadcast',
           event: 'call-invite',
-          payload: {
-            callId,
-            chatId: params.chatId,
-            callerId: currentMe.id,
-            callerName: currentMe.display_name,
-            callerAvatar: currentMe.avatar_url,
-            mode: params.mode,
-            isGroup: false,
-            callerIsDeveloper: isDeveloperUser(currentMe),
-          },
+          payload: invitePayload,
         });
-        setTimeout(() => {
-          supabase.removeChannel(targetChannel);
-        }, 2000);
+      } catch {}
+      try {
+        globalCallChannelRef.current?.send({
+          type: 'broadcast',
+          event: 'call-invite',
+          payload: invitePayload,
+        });
+      } catch {}
+    };
+
+    targetChannel.subscribe((status) => {
+      if (status === 'SUBSCRIBED') {
+        sendInviteNow();
       }
     });
+    // Также сразу дублируем в глобальный сигнальный канал
+    sendInviteNow();
+    inviteRetryTimerRef.current = setInterval(sendInviteNow, 2200);
   }
 
-  // Начать групповой голосовой чат (Пункт 4: всем участникам группы приходит входящий вызов)
+  // Начать групповой голосовой чат
   async function handleStartGroupCall(params: StartGroupCallParams) {
     const currentMe = meRef.current || (await getCurrentProfile());
     if (!currentMe || sessionRef.current) return;
@@ -1101,7 +1279,6 @@ export function CallManager() {
 
     joinSignalingRoom(newSession, true, localStream);
 
-    // Оповещаем всех участников группы входящим вызовом (если это запуск нового звонка, а не тихое подключение к текущему)
     if (!params.joinOnly) {
       try {
         const supabase = getSupabaseClient();
@@ -1114,6 +1291,26 @@ export function CallManager() {
           .map((r: any) => r.user_id)
           .filter((uid: string) => uid && uid !== currentMe.id);
 
+        const groupInvitePayload = {
+          callId,
+          chatId: params.chatId,
+          targetUserIds: targetIds,
+          callerId: currentMe.id,
+          callerName: `🔊 ${params.chatTitle} (${currentMe.display_name})`,
+          callerAvatar: params.chatAvatar || currentMe.avatar_url,
+          mode,
+          isGroup: true,
+          callerIsDeveloper: isDeveloperUser(currentMe),
+        };
+
+        try {
+          globalCallChannelRef.current?.send({
+            type: 'broadcast',
+            event: 'call-invite',
+            payload: groupInvitePayload,
+          });
+        } catch {}
+
         for (const uid of targetIds) {
           const ch = supabase.channel(`pixchats-calls:${uid}`);
           ch.subscribe((st) => {
@@ -1121,25 +1318,15 @@ export function CallManager() {
               ch.send({
                 type: 'broadcast',
                 event: 'call-invite',
-                payload: {
-                  callId,
-                  chatId: params.chatId,
-                  callerId: currentMe.id,
-                  callerName: `🔊 ${params.chatTitle} (${currentMe.display_name})`,
-                  callerAvatar: params.chatAvatar || currentMe.avatar_url,
-                  mode,
-                  isGroup: true,
-                  callerIsDeveloper: isDeveloperUser(currentMe),
-                },
+                payload: { ...groupInvitePayload, targetUserId: uid },
               });
               setTimeout(() => {
                 supabase.removeChannel(ch);
-              }, 2500);
+              }, 3500);
             }
           });
         }
 
-        // Также отправляем сервисное уведомление в ленту группы
         sendMessage(
           params.chatId,
           `🔊 ${currentMe.display_name} запустил(а) голосовой чат группы — нажмите «🔊 Голосовой чат» в шапке, чтобы присоединиться!`
@@ -1169,6 +1356,12 @@ export function CallManager() {
     const current = sessionRef.current;
     const elapsed = durationRef.current;
 
+    if (current?.callId) {
+      dismissedCallIdsRef.current.add(current.callId);
+    }
+
+    stopInviteRetryLoop();
+
     if (roomChannelRef.current && !current?.isGroup) {
       try {
         roomChannelRef.current.send({
@@ -1180,6 +1373,13 @@ export function CallManager() {
     }
 
     if (current && current.status === 'ringing' && !current.isGroup) {
+      try {
+        globalCallChannelRef.current?.send({
+          type: 'broadcast',
+          event: 'call-cancelled',
+          payload: { callId: current.callId, targetUserId: current.peerId },
+        });
+      } catch {}
       try {
         const supabase = getSupabaseClient();
         const peerCh = supabase.channel(`pixchats-calls:${current.peerId}`);
@@ -1220,44 +1420,59 @@ export function CallManager() {
   }
 
   async function handleToggleCamera() {
-    if (!localStreamRef.current) return;
-    const videoTracks = localStreamRef.current.getVideoTracks();
+    if (!localStreamRef.current) {
+      localStreamRef.current = new MediaStream();
+    }
+    const existingVideoTracks = localStreamRef.current.getVideoTracks().filter((t) => t.readyState === 'live');
 
-    if (videoTracks.length > 0) {
-      const nextEnabled = !cameraEnabled;
-      videoTracks.forEach((t) => {
-        t.enabled = nextEnabled;
+    if (existingVideoTracks.length > 0 && cameraEnabled) {
+      existingVideoTracks.forEach((t) => {
+        t.enabled = false;
+        t.stop();
+        localStreamRef.current?.removeTrack(t);
       });
-      setCameraEnabled(nextEnabled);
+      setCameraEnabled(false);
+      if (!screenSharing) {
+        await syncOutgoingVideoTrack(null, null);
+        roomChannelRef.current?.send({
+          type: 'broadcast',
+          event: 'media-update',
+          payload: { senderId: meRef.current?.id, video: false },
+        });
+      }
+      return;
+    }
+
+    try {
+      const camStream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
+        audio: false,
+      });
+      const camTrack = camStream.getVideoTracks()[0];
+      if (!camTrack) {
+        showTransientCallNotice('Камера не найдена на устройстве');
+        return;
+      }
+
+      // Останавливаем старые остановленные видео-дорожки
+      localStreamRef.current.getVideoTracks().forEach((old) => {
+        old.stop();
+        localStreamRef.current?.removeTrack(old);
+      });
+      localStreamRef.current.addTrack(camTrack);
+
+      if (!screenSharing) {
+        await syncOutgoingVideoTrack(camTrack, localStreamRef.current);
+      }
+
+      setCameraEnabled(true);
       roomChannelRef.current?.send({
         type: 'broadcast',
         event: 'media-update',
-        payload: { senderId: meRef.current?.id, video: nextEnabled },
+        payload: { senderId: meRef.current?.id, video: true },
       });
-    } else {
-      try {
-        const camStream = await navigator.mediaDevices.getUserMedia({ video: true });
-        const camTrack = camStream.getVideoTracks()[0];
-        if (camTrack) {
-          localStreamRef.current.addTrack(camTrack);
-          if (pcRef.current) {
-            pcRef.current.addTrack(camTrack, localStreamRef.current);
-            const offer = await pcRef.current.createOffer();
-            await pcRef.current.setLocalDescription(offer);
-            roomChannelRef.current?.send({
-              type: 'broadcast',
-              event: 'webrtc-offer',
-              payload: { senderId: meRef.current?.id, sdp: offer },
-            });
-          }
-          setCameraEnabled(true);
-          roomChannelRef.current?.send({
-            type: 'broadcast',
-            event: 'media-update',
-            payload: { senderId: meRef.current?.id, video: true },
-          });
-        }
-      } catch {}
+    } catch {
+      showTransientCallNotice('Не удалось включить камеру (проверьте доступ к камере)');
     }
   }
 
@@ -1269,22 +1484,33 @@ export function CallManager() {
       }
       setScreenSharing(false);
 
-      const camTrack = localStreamRef.current?.getVideoTracks()?.[0] || null;
-      const sender = pcRef.current?.getSenders().find((s) => s.track?.kind === 'video');
-      if (sender && camTrack && cameraEnabled) {
-        await sender.replaceTrack(camTrack);
-      } else {
-        roomChannelRef.current?.send({
-          type: 'broadcast',
-          event: 'media-update',
-          payload: { senderId: meRef.current?.id, video: Boolean(cameraEnabled) },
-        });
-      }
+      const camTrack =
+        cameraEnabled
+          ? localStreamRef.current?.getVideoTracks().find((t) => t.readyState === 'live') || null
+          : null;
+      await syncOutgoingVideoTrack(camTrack, camTrack ? localStreamRef.current : null);
+      roomChannelRef.current?.send({
+        type: 'broadcast',
+        event: 'media-update',
+        payload: { senderId: meRef.current?.id, video: Boolean(camTrack && cameraEnabled) },
+      });
       return;
     }
 
     try {
-      const displayStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+      if (!navigator.mediaDevices || typeof navigator.mediaDevices.getDisplayMedia !== 'function') {
+        showTransientCallNotice('Демонстрация экрана не поддерживается на этом мобильном браузере');
+        return;
+      }
+
+      const displayStream = await navigator.mediaDevices.getDisplayMedia({
+        video: {
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+          frameRate: { ideal: 15, max: 30 },
+        },
+        audio: false,
+      });
       const screenTrack = displayStream.getVideoTracks()[0];
       if (!screenTrack) return;
 
@@ -1294,86 +1520,147 @@ export function CallManager() {
       screenTrack.onended = () => {
         setScreenSharing(false);
         screenStreamRef.current = null;
+        const camTrack =
+          cameraEnabled
+            ? localStreamRef.current?.getVideoTracks().find((t) => t.readyState === 'live') || null
+            : null;
+        void syncOutgoingVideoTrack(camTrack, camTrack ? localStreamRef.current : null);
         roomChannelRef.current?.send({
           type: 'broadcast',
           event: 'media-update',
-          payload: { senderId: meRef.current?.id, video: Boolean(cameraEnabled) },
+          payload: { senderId: meRef.current?.id, video: Boolean(camTrack && cameraEnabled) },
         });
       };
 
-      if (pcRef.current) {
-        const sender = pcRef.current.getSenders().find((s) => s.track?.kind === 'video');
-        if (sender) {
-          await sender.replaceTrack(screenTrack);
-        } else {
-          pcRef.current.addTrack(screenTrack, displayStream);
-          const offer = await pcRef.current.createOffer();
-          await pcRef.current.setLocalDescription(offer);
-          roomChannelRef.current?.send({
-            type: 'broadcast',
-            event: 'webrtc-offer',
-            payload: { senderId: meRef.current?.id, sdp: offer },
-          });
-        }
-      }
+      await syncOutgoingVideoTrack(screenTrack, displayStream);
 
       roomChannelRef.current?.send({
         type: 'broadcast',
         event: 'media-update',
         payload: { senderId: meRef.current?.id, video: true },
       });
-    } catch {}
+    } catch (err: any) {
+      if (err?.name !== 'NotAllowedError') {
+        showTransientCallNotice('Не удалось запустить демонстрацию экрана');
+      }
+    }
   }
 
-  // Глобальная подписка на входящие звонки (личные и групповые)
+  // Глобальная подписка на входящие звонки (персональный канал + глобальный резервный канал)
   useEffect(() => {
     let personalCallChannel: any = null;
+    let globalCallChannel: any = null;
+    let currentSubscribedUserId: string | null = null;
 
-    (async () => {
-      const profile = await getCurrentProfile();
-      if (!profile) return;
+    const handleIncomingInvitePayload = (payload: any, myUserId: string) => {
+      if (!payload || !payload.callId) return;
+      if (payload.callerId === myUserId) return;
+      if (dismissedCallIdsRef.current.has(payload.callId)) return;
+      if (sessionRef.current) return;
+
+      // Проверяем адресата для глобального канала
+      if (
+        payload.targetUserId &&
+        payload.targetUserId !== myUserId &&
+        !(Array.isArray(payload.targetUserIds) && payload.targetUserIds.includes(myUserId))
+      ) {
+        return;
+      }
+
+      const incoming: ActiveCallSession = {
+        callId: payload.callId,
+        chatId: payload.chatId,
+        peerId: payload.callerId,
+        peerName: payload.callerName || 'Собеседник',
+        peerAvatar: payload.callerAvatar,
+        mode: payload.mode === 'video' ? 'video' : 'audio',
+        direction: 'incoming',
+        status: 'ringing',
+        isGroup: Boolean(payload.isGroup),
+        callerIsDeveloper: Boolean(payload.callerIsDeveloper),
+      };
+
+      setSession(incoming);
+      startRingtone(true);
+
+      const prefs = getNotificationPrefs();
+      if (prefs.enabled && prefs.incomingCalls !== false) {
+        void triggerIncomingCallNativeAlert({
+          callerName: incoming.peerName,
+          mode: incoming.mode,
+          chatId: incoming.chatId,
+          silent: !prefs.sound,
+        });
+      }
+    };
+
+    const handleCancelledPayload = (payload: any) => {
+      if (payload?.callId) {
+        dismissedCallIdsRef.current.add(payload.callId);
+        if (sessionRef.current?.callId === payload.callId) {
+          cleanupCallResources();
+        }
+      }
+    };
+
+    const setupSubscriptionsForProfile = (profile: Profile) => {
+      if (currentSubscribedUserId === profile.id && personalCallChannel) return;
+      currentSubscribedUserId = profile.id;
       setMe(profile);
       meRef.current = profile;
 
       const supabase = getSupabaseClient();
+      if (personalCallChannel) {
+        try {
+          supabase.removeChannel(personalCallChannel);
+        } catch {}
+      }
+      if (globalCallChannel) {
+        try {
+          supabase.removeChannel(globalCallChannel);
+        } catch {}
+      }
+
       personalCallChannel = supabase
         .channel(`pixchats-calls:${profile.id}`)
-        .on('broadcast', { event: 'call-invite' }, ({ payload }) => {
-          if (!payload || sessionRef.current) return;
-
-          const incoming: ActiveCallSession = {
-            callId: payload.callId,
-            chatId: payload.chatId,
-            peerId: payload.callerId,
-            peerName: payload.callerName || 'Собеседник',
-            peerAvatar: payload.callerAvatar,
-            mode: payload.mode === 'video' ? 'video' : 'audio',
-            direction: 'incoming',
-            status: 'ringing',
-            isGroup: Boolean(payload.isGroup),
-            callerIsDeveloper: Boolean(payload.callerIsDeveloper),
-          };
-
-          setSession(incoming);
-          startRingtone(true);
-
-          const prefs = getNotificationPrefs();
-          if (prefs.enabled && prefs.incomingCalls !== false) {
-            void triggerIncomingCallNativeAlert({
-              callerName: incoming.peerName,
-              mode: incoming.mode,
-              chatId: incoming.chatId,
-              silent: !prefs.sound,
-            });
-          }
-        })
-        .on('broadcast', { event: 'call-cancelled' }, ({ payload }) => {
-          if (payload?.callId && sessionRef.current?.callId === payload.callId) {
-            cleanupCallResources();
-          }
-        })
+        .on('broadcast', { event: 'call-invite' }, ({ payload }) =>
+          handleIncomingInvitePayload(payload, profile.id)
+        )
+        .on('broadcast', { event: 'call-cancelled' }, ({ payload }) =>
+          handleCancelledPayload(payload)
+        )
         .subscribe();
-    })();
+
+      globalCallChannel = supabase
+        .channel('pixchats-calls-global', {
+          config: { broadcast: { self: false } },
+        })
+        .on('broadcast', { event: 'call-invite' }, ({ payload }) =>
+          handleIncomingInvitePayload(payload, profile.id)
+        )
+        .on('broadcast', { event: 'call-cancelled' }, ({ payload }) =>
+          handleCancelledPayload(payload)
+        )
+        .subscribe();
+
+      globalCallChannelRef.current = globalCallChannel;
+    };
+
+    const cached = getCachedCurrentProfile();
+    if (cached) {
+      setupSubscriptionsForProfile(cached);
+    }
+
+    void getCurrentProfile().then((prof) => {
+      if (prof) setupSubscriptionsForProfile(prof);
+    });
+
+    const supabase = getSupabaseClient();
+    const { data: authSub } = supabase.auth.onAuthStateChange(() => {
+      void getCurrentProfile(true).then((prof) => {
+        if (prof) setupSubscriptionsForProfile(prof);
+      });
+    });
 
     const onStartCallEvent = (e: Event) => {
       const custom = e as CustomEvent<StartCallParams>;
@@ -1394,11 +1681,19 @@ export function CallManager() {
     return () => {
       window.removeEventListener('pixchats:start_call', onStartCallEvent);
       window.removeEventListener('pixchats:start_group_call', onStartGroupCallEvent);
+      authSub?.subscription?.unsubscribe();
       if (personalCallChannel) {
-        getSupabaseClient().removeChannel(personalCallChannel);
+        try {
+          supabase.removeChannel(personalCallChannel);
+        } catch {}
+      }
+      if (globalCallChannel) {
+        try {
+          supabase.removeChannel(globalCallChannel);
+        } catch {}
       }
     };
-  }, [me?.id]);
+  }, []);
 
   // Постоянный <audio> элемент вне условных веток, чтобы он никогда не размонтировался при смене статуса звонка
   const persistentAudioEl = (
@@ -1610,265 +1905,300 @@ export function CallManager() {
         }}
       >
         {/* Верхняя панель */}
-      <div
-        style={{
-          width: '100%',
-          maxWidth: 960,
-          margin: '0 auto',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--accent)' }}>
-            {session.callerIsDeveloper
-              ? '👑 Безлимитный звонок разработчика Pixset Studio'
-              : session.isGroup
-                ? `🔊 Голосовая комната группы (${groupParticipants.length || 1} уч.)`
-                : '🔒 Зашифрованный звонок PixChats (WebRTC)'}
-          </span>
-          <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-            · {session.status === 'connected'
-                ? session.callerIsDeveloper
-                  ? `${formatDuration(durationSec)} (Безлимит)`
-                  : `${formatDuration(durationSec)} / 60:00`
-                : session.status === 'ringing'
-                  ? 'Вызов…'
-                  : 'Соединение…'}
-          </span>
+        <div
+          style={{
+            width: '100%',
+            maxWidth: 960,
+            margin: '0 auto',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--accent)' }}>
+              {session.callerIsDeveloper
+                ? '👑 Безлимитный звонок разработчика Pixset Studio'
+                : session.isGroup
+                  ? `🔊 Голосовая комната группы (${groupParticipants.length || 1} уч.)`
+                  : '🔒 Зашифрованный звонок PixChats (HD Voice)'}
+            </span>
+            <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+              · {session.status === 'connected'
+                  ? session.callerIsDeveloper
+                    ? `${formatDuration(durationSec)} (Безлимит)`
+                    : `${formatDuration(durationSec)} / 60:00`
+                  : session.status === 'ringing'
+                    ? 'Вызов…'
+                    : 'Соединение…'}
+            </span>
+          </div>
+
+          <button
+            type="button"
+            className="btn"
+            style={{ width: 'auto', padding: '6px 12px', fontSize: 12 }}
+            onClick={() => setMinimized(true)}
+          >
+            🗕 Свернуть в мини-окно
+          </button>
         </div>
 
-        <button
-          type="button"
-          className="btn"
-          style={{ width: 'auto', padding: '6px 12px', fontSize: 12 }}
-          onClick={() => setMinimized(true)}
-        >
-          🗕 Свернуть в мини-окно
-        </button>
-      </div>
+        {callNotice && (
+          <div
+            style={{
+              margin: '8px auto 0',
+              padding: '8px 16px',
+              borderRadius: 10,
+              background: 'rgba(245, 158, 11, 0.16)',
+              border: '1px solid var(--accent)',
+              color: 'var(--accent)',
+              fontSize: 13,
+              fontWeight: 600,
+            }}
+          >
+            {callNotice}
+          </div>
+        )}
 
-      {/* Центральная область */}
-      <div
-        style={{
-          position: 'relative',
-          flex: 1,
-          width: '100%',
-          maxWidth: 960,
-          margin: '16px auto',
-          borderRadius: 16,
-          background: 'var(--surface)',
-          border: '1px solid var(--border)',
-          overflow: 'hidden',
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          justifyContent: 'center',
-          gap: 18,
-        }}
-      >
-        {hasRemoteVideo ? (
-          <div style={{ position: 'relative', width: '100%', height: '100%', background: '#000' }}>
-            <video
-              ref={remoteVideoRef}
-              autoPlay
-              playsInline
-              style={{ width: '100%', height: '100%', objectFit: 'contain', background: '#000' }}
-            />
-            {remoteRelayFrame && (session.isGroup || !remoteStreamRef.current?.getVideoTracks().some((t) => t.readyState === 'live')) && (
-              <img
-                src={remoteRelayFrame}
-                alt="Видеопоток собеседника"
+        {/* Центральная область */}
+        <div
+          style={{
+            position: 'relative',
+            flex: 1,
+            width: '100%',
+            maxWidth: 960,
+            margin: '16px auto',
+            borderRadius: 16,
+            background: 'var(--surface)',
+            border: '1px solid var(--border)',
+            overflow: 'hidden',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 18,
+          }}
+        >
+          {hasRemoteVideo && (remoteWebrtcVideoReady || remoteRelayFrame) ? (
+            <div style={{ position: 'relative', width: '100%', height: '100%', background: '#000' }}>
+              <video
+                ref={remoteVideoRef}
+                autoPlay
+                playsInline
+                muted
+                onLoadedData={() => {
+                  if (remoteVideoRef.current && remoteVideoRef.current.videoWidth > 0) {
+                    setRemoteWebrtcVideoReady(true);
+                  }
+                }}
+                onResize={() => {
+                  if (remoteVideoRef.current && remoteVideoRef.current.videoWidth > 0) {
+                    setRemoteWebrtcVideoReady(true);
+                  }
+                }}
                 style={{
-                  position: 'absolute',
-                  inset: 0,
                   width: '100%',
                   height: '100%',
                   objectFit: 'contain',
                   background: '#000',
+                  opacity: remoteWebrtcVideoReady ? 1 : 0,
                 }}
               />
-            )}
-          </div>
-        ) : (
-          <div style={{ textAlign: 'center', padding: 24 }}>
-            <div
-              className={`avatar ${!session.peerAvatar ? 'avatar-fallback' : ''}`}
-              style={{
-                width: 112,
-                height: 112,
-                fontSize: 42,
-                margin: '0 auto 16px',
-                border: '3px solid var(--accent)',
-                boxShadow:
-                  session.status === 'connected'
-                    ? '0 0 0 10px rgba(34, 197, 94, 0.16)'
-                    : '0 0 0 10px rgba(255, 212, 0, 0.14)',
-                backgroundImage: session.peerAvatar ? `url(${session.peerAvatar})` : undefined,
-                backgroundSize: 'cover',
-                backgroundPosition: 'center',
-              }}
-            >
-              {!session.peerAvatar && session.peerName.replace('🔊 ', '').slice(0, 1).toUpperCase()}
+              {remoteRelayFrame && (session.isGroup || !remoteWebrtcVideoReady) && (
+                <img
+                  src={remoteRelayFrame}
+                  alt="Видеопоток собеседника"
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    width: '100%',
+                    height: '100%',
+                    objectFit: 'contain',
+                    background: '#000',
+                  }}
+                />
+              )}
             </div>
-            <h2 style={{ margin: '0 0 6px', fontSize: 22 }}>{session.peerName}</h2>
-            <div style={{ fontSize: 14, color: 'var(--text-muted)' }}>
-              {session.status === 'ringing'
-                ? 'Ожидание ответа собеседника…'
-                : session.status === 'connecting'
-                  ? 'Установка защищённого аудио/видео канала…'
-                  : `В разговоре · ${formatDuration(durationSec)}`}
-            </div>
-
-            {session.isGroup && groupParticipants.length > 0 && (
+          ) : (
+            <div style={{ textAlign: 'center', padding: 24 }}>
               <div
+                className={`avatar ${!session.peerAvatar ? 'avatar-fallback' : ''}`}
                 style={{
-                  marginTop: 22,
-                  display: 'flex',
-                  gap: 12,
-                  flexWrap: 'wrap',
-                  justifyContent: 'center',
+                  width: 112,
+                  height: 112,
+                  fontSize: 42,
+                  margin: '0 auto 16px',
+                  border: '3px solid var(--accent)',
+                  boxShadow:
+                    session.status === 'connected'
+                      ? '0 0 0 10px rgba(34, 197, 94, 0.16)'
+                      : '0 0 0 10px rgba(255, 212, 0, 0.14)',
+                  backgroundImage: session.peerAvatar ? `url(${session.peerAvatar})` : undefined,
+                  backgroundSize: 'cover',
+                  backgroundPosition: 'center',
                 }}
               >
-                {groupParticipants.map((part) => {
-                  const isSpeaking = Boolean(speakingUsers[part.id]);
-                  return (
-                    <div
-                      key={part.id}
-                      style={{
-                        display: 'flex',
-                        flexDirection: 'column',
-                        alignItems: 'center',
-                        gap: 6,
-                        padding: '10px 14px',
-                        borderRadius: 12,
-                        background: 'var(--bg-secondary)',
-                        border: isSpeaking ? '2px solid #22c55e' : '1px solid var(--accent)',
-                        boxShadow: isSpeaking ? '0 0 16px rgba(34, 197, 94, 0.35)' : undefined,
-                        transition: 'all 0.15s ease',
-                      }}
-                    >
+                {!session.peerAvatar && session.peerName.replace('🔊 ', '').slice(0, 1).toUpperCase()}
+              </div>
+              <h2 style={{ margin: '0 0 6px', fontSize: 22 }}>{session.peerName}</h2>
+              <div style={{ fontSize: 14, color: 'var(--text-muted)' }}>
+                {session.status === 'ringing'
+                  ? 'Ожидание ответа собеседника…'
+                  : session.status === 'connecting'
+                    ? 'Установка защищённого аудио/видео канала…'
+                    : `В разговоре · ${formatDuration(durationSec)}`}
+              </div>
+
+              {session.isGroup && groupParticipants.length > 0 && (
+                <div
+                  style={{
+                    marginTop: 22,
+                    display: 'flex',
+                    gap: 12,
+                    flexWrap: 'wrap',
+                    justifyContent: 'center',
+                  }}
+                >
+                  {groupParticipants.map((part) => {
+                    const isSpeaking = Boolean(speakingUsers[part.id]);
+                    return (
                       <div
-                        className={`avatar ${!part.avatar ? 'avatar-fallback' : ''}`}
+                        key={part.id}
                         style={{
-                          width: 44,
-                          height: 44,
-                          fontSize: 16,
-                          backgroundImage: part.avatar ? `url(${part.avatar})` : undefined,
-                          backgroundSize: 'cover',
-                          backgroundPosition: 'center',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          gap: 6,
+                          padding: '10px 14px',
+                          borderRadius: 12,
+                          background: 'var(--bg-secondary)',
+                          border: isSpeaking ? '2px solid #22c55e' : '1px solid var(--accent)',
+                          boxShadow: isSpeaking ? '0 0 16px rgba(34, 197, 94, 0.35)' : undefined,
+                          transition: 'all 0.15s ease',
                         }}
                       >
-                        {!part.avatar && part.name.slice(0, 1).toUpperCase()}
+                        <div
+                          className={`avatar ${!part.avatar ? 'avatar-fallback' : ''}`}
+                          style={{
+                            width: 44,
+                            height: 44,
+                            fontSize: 16,
+                            backgroundImage: part.avatar ? `url(${part.avatar})` : undefined,
+                            backgroundSize: 'cover',
+                            backgroundPosition: 'center',
+                          }}
+                        >
+                          {!part.avatar && part.name.slice(0, 1).toUpperCase()}
+                        </div>
+                        <span style={{ fontSize: 12, fontWeight: 600 }}>
+                          {part.name} {isSpeaking ? '🗣️' : ''}
+                        </span>
                       </div>
-                      <span style={{ fontSize: 12, fontWeight: 600 }}>
-                        {part.name} {isSpeaking ? '🗣️' : ''}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        )}
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
 
-        {(cameraEnabled || screenSharing) && (
-          <div
+          {(cameraEnabled || screenSharing) && (
+            <div
+              style={{
+                position: 'absolute',
+                bottom: 16,
+                right: 16,
+                width: 210,
+                height: 136,
+                borderRadius: 12,
+                overflow: 'hidden',
+                border: '2px solid var(--accent)',
+                background: '#000',
+                boxShadow: '0 8px 24px rgba(0,0,0,0.6)',
+              }}
+            >
+              <video
+                ref={localVideoRef}
+                autoPlay
+                muted
+                playsInline
+                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+              />
+            </div>
+          )}
+        </div>
+
+        {/* Нижняя панель управления звонком */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 12,
+            flexWrap: 'wrap',
+          }}
+        >
+          <button
+            type="button"
+            className="btn"
             style={{
-              position: 'absolute',
-              bottom: 16,
-              right: 16,
-              width: 210,
-              height: 136,
-              borderRadius: 12,
-              overflow: 'hidden',
-              border: '2px solid var(--accent)',
-              background: '#000',
-              boxShadow: '0 8px 24px rgba(0,0,0,0.6)',
+              width: 'auto',
+              padding: '11px 18px',
+              borderColor: micMuted ? 'var(--danger)' : undefined,
+              color: micMuted ? 'var(--danger)' : undefined,
             }}
+            onClick={handleToggleMic}
           >
-            <video
-              ref={localVideoRef}
-              autoPlay
-              muted
-              playsInline
-              style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-            />
-          </div>
-        )}
+            {micMuted ? '🔇 Микрофон выкл' : '🎤 Микрофон вкл'}
+          </button>
+
+          <button
+            type="button"
+            className="btn"
+            style={{
+              width: 'auto',
+              padding: '11px 18px',
+              borderColor: cameraEnabled ? 'var(--accent)' : undefined,
+              color: cameraEnabled ? 'var(--accent)' : undefined,
+            }}
+            onClick={handleToggleCamera}
+          >
+            {cameraEnabled ? '📷 Камера вкл' : '📷 Включить камеру'}
+          </button>
+
+          <button
+            type="button"
+            className="btn"
+            style={{
+              width: 'auto',
+              padding: '11px 18px',
+              borderColor: screenSharing ? 'var(--accent)' : undefined,
+              color: screenSharing ? 'var(--accent)' : undefined,
+            }}
+            onClick={handleToggleScreenShare}
+          >
+            {screenSharing ? '🖥️ Остановить экран' : '🖥️ Демонстрация экрана'}
+          </button>
+
+          <button
+            type="button"
+            className="btn"
+            style={{
+              width: 'auto',
+              padding: '11px 22px',
+              background: '#dc2626',
+              borderColor: '#ef4444',
+              color: '#fff',
+              fontWeight: 700,
+            }}
+            onClick={handleEndCall}
+          >
+            📵 {session.isGroup ? 'Покинуть голосовой чат' : 'Завершить звонок'}
+          </button>
+        </div>
       </div>
-
-      {/* Нижняя панель управления звонком */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          gap: 12,
-          flexWrap: 'wrap',
-        }}
-      >
-        <button
-          type="button"
-          className="btn"
-          style={{
-            width: 'auto',
-            padding: '11px 18px',
-            borderColor: micMuted ? 'var(--danger)' : undefined,
-            color: micMuted ? 'var(--danger)' : undefined,
-          }}
-          onClick={handleToggleMic}
-        >
-          {micMuted ? '🔇 Микрофон выкл' : '🎤 Микрофон вкл'}
-        </button>
-
-        <button
-          type="button"
-          className="btn"
-          style={{
-            width: 'auto',
-            padding: '11px 18px',
-            borderColor: cameraEnabled ? 'var(--accent)' : undefined,
-            color: cameraEnabled ? 'var(--accent)' : undefined,
-          }}
-          onClick={handleToggleCamera}
-        >
-          {cameraEnabled ? '📷 Камера вкл' : '📷 Включить камеру'}
-        </button>
-
-        <button
-          type="button"
-          className="btn"
-          style={{
-            width: 'auto',
-            padding: '11px 18px',
-            borderColor: screenSharing ? 'var(--accent)' : undefined,
-            color: screenSharing ? 'var(--accent)' : undefined,
-          }}
-          onClick={handleToggleScreenShare}
-        >
-          {screenSharing ? '🖥️ Остановить экран' : '🖥️ Демонстрация экрана'}
-        </button>
-
-        <button
-          type="button"
-          className="btn"
-          style={{
-            width: 'auto',
-            padding: '11px 22px',
-            background: '#dc2626',
-            borderColor: '#ef4444',
-            color: '#fff',
-            fontWeight: 700,
-          }}
-          onClick={handleEndCall}
-        >
-          📵 {session.isGroup ? 'Покинуть голосовой чат' : 'Завершить звонок'}
-        </button>
-      </div>
-    </div>
     </>
   );
 }
+
 

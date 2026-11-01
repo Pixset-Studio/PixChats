@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import { parseChecklistMessage, parseLocationMessage } from './ChatInteractiveTools';
 
 export interface PollPayload {
   question: string;
@@ -286,6 +287,7 @@ export interface FormattedMessageTextProps {
   myUserId?: string;
   reactions?: Record<string, string[]>;
   onVotePollOption?: (optionIndex: number) => void;
+  onToggleChecklistItem?: (itemIndex: number) => void;
   onSelfDestructExpired?: (messageId: string) => void;
 }
 
@@ -297,6 +299,7 @@ export function FormattedMessageText({
   myUserId,
   reactions = {},
   onVotePollOption,
+  onToggleChecklistItem,
   onSelfDestructExpired,
 }: FormattedMessageTextProps) {
   const { expiresAt, cleanText } = extractSelfDestructInfo(rawText);
@@ -304,6 +307,7 @@ export function FormattedMessageText({
     if (!expiresAt) return null;
     return Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000));
   });
+  const [copiedCoords, setCopiedCoords] = useState(false);
 
   useEffect(() => {
     if (!expiresAt || isDeleted) return;
@@ -432,6 +436,226 @@ export function FormattedMessageText({
 
         <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
           Всего голосов: {totalVotes} · Нажмите на вариант, чтобы проголосовать
+        </div>
+      </div>
+    );
+  }
+
+  // 1b. Идея 2: Интерактивный совместный чек-лист (Задачи в чате)
+  const checklist = parseChecklistMessage(cleanText);
+  if (checklist && !isDeleted) {
+    const itemChecks = checklist.items.map((_, idx) => {
+      const key = `☑️${idx + 1}`;
+      return reactions[key] || [];
+    });
+    const completedCount = itemChecks.filter((users) => users.length > 0).length;
+    const totalItems = checklist.items.length;
+    const progressPct = totalItems > 0 ? Math.round((completedCount / totalItems) * 100) : 0;
+
+    return (
+      <div
+        className="bubble poll-bubble-card"
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 10,
+          minWidth: 260,
+          maxWidth: 370,
+          padding: '12px 14px',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+          <span
+            style={{
+              fontSize: 10,
+              fontWeight: 700,
+              textTransform: 'uppercase',
+              letterSpacing: '0.06em',
+              color: 'var(--accent)',
+            }}
+          >
+            ☑️ Чек-лист · {completedCount}/{totalItems} ({progressPct}%)
+          </span>
+          {secondsRemaining !== null && (
+            <span style={{ fontSize: 11, color: '#f59e0b', fontWeight: 700 }}>
+              🔥 {secondsRemaining}с
+            </span>
+          )}
+        </div>
+
+        <div style={{ fontWeight: 700, fontSize: 14.5, lineHeight: 1.35, color: 'var(--text)' }}>
+          {checklist.title}
+        </div>
+
+        {/* Полоса прогресса выполнения задач */}
+        <div
+          style={{
+            height: 6,
+            borderRadius: 99,
+            background: 'rgba(255,255,255,0.1)',
+            overflow: 'hidden',
+          }}
+        >
+          <div
+            style={{
+              height: '100%',
+              width: `${progressPct}%`,
+              background: progressPct === 100 ? '#22c55e' : 'var(--accent)',
+              transition: 'width 0.25s ease',
+            }}
+          />
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {checklist.items.map((itemText, idx) => {
+            const checkUsers = itemChecks[idx];
+            const isChecked = checkUsers.length > 0;
+            const checkedByMe = Boolean(myUserId && checkUsers.includes(myUserId));
+
+            return (
+              <button
+                key={idx}
+                type="button"
+                onClick={() => onToggleChecklistItem?.(idx)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 10,
+                  width: '100%',
+                  padding: '8px 10px',
+                  borderRadius: 8,
+                  background: isChecked ? 'rgba(34, 197, 94, 0.12)' : 'rgba(0, 0, 0, 0.28)',
+                  border: `1px solid ${checkedByMe ? '#22c55e' : isChecked ? 'rgba(34, 197, 94, 0.4)' : 'var(--border)'}`,
+                  color: 'var(--text)',
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  fontSize: 13,
+                }}
+              >
+                <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span
+                    style={{
+                      width: 18,
+                      height: 18,
+                      borderRadius: 5,
+                      border: `2px solid ${isChecked ? '#22c55e' : 'var(--text-muted)'}`,
+                      background: isChecked ? '#22c55e' : 'transparent',
+                      color: '#000',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontSize: 12,
+                      fontWeight: 900,
+                      flexShrink: 0,
+                    }}
+                  >
+                    {isChecked ? '✓' : ''}
+                  </span>
+                  <span
+                    style={{
+                      textDecoration: isChecked ? 'line-through' : 'none',
+                      opacity: isChecked ? 0.72 : 1,
+                      fontWeight: isChecked ? 500 : 600,
+                    }}
+                  >
+                    {itemText}
+                  </span>
+                </span>
+                {checkUsers.length > 0 && (
+                  <span style={{ fontSize: 11, color: '#22c55e', fontWeight: 700, flexShrink: 0 }}>
+                    ✓ {checkUsers.length}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+          Нажмите на пункт, чтобы отметить выполненным или снять галочку
+        </div>
+      </div>
+    );
+  }
+
+  // 1c. Идея 7: Интерактивная карточка геопозиции (Точка на карте)
+  const loc = parseLocationMessage(cleanText);
+  if (loc && !isDeleted) {
+    const bbox = `${(loc.lon - 0.008).toFixed(5)}%2C${(loc.lat - 0.005).toFixed(5)}%2C${(loc.lon + 0.008).toFixed(5)}%2C${(loc.lat + 0.005).toFixed(5)}`;
+    const osmUrl = `https://www.openstreetmap.org/?mlat=${loc.lat}&mlon=${loc.lon}#map=16/${loc.lat}/${loc.lon}`;
+
+    return (
+      <div
+        className="bubble poll-bubble-card"
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 8,
+          minWidth: 265,
+          maxWidth: 360,
+          padding: 10,
+        }}
+      >
+        <div
+          style={{
+            width: '100%',
+            height: 165,
+            borderRadius: 10,
+            overflow: 'hidden',
+            border: '1px solid var(--border)',
+            background: '#111',
+          }}
+        >
+          <iframe
+            title={loc.title || 'Карта'}
+            width="100%"
+            height="165"
+            style={{ border: 0, display: 'block' }}
+            loading="lazy"
+            src={`https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${loc.lat}%2C${loc.lon}`}
+          />
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, padding: '0 2px' }}>
+          <div style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span>📍</span>
+            <span>{loc.title || 'Геопозиция на карте'}</span>
+          </div>
+          {loc.address && (
+            <div style={{ fontSize: 11.5, color: 'var(--text-muted)', lineHeight: 1.35 }}>
+              {loc.address}
+            </div>
+          )}
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace', marginTop: 2 }}>
+            {loc.lat.toFixed(5)}, {loc.lon.toFixed(5)}
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', gap: 6 }}>
+          <a
+            href={osmUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="btn btn-primary"
+            style={{ flex: 1, fontSize: 11.5, padding: '6px 10px', textDecoration: 'none', textAlign: 'center' }}
+          >
+            🗺️ Открыть карту
+          </a>
+          <button
+            type="button"
+            className="btn"
+            style={{ width: 'auto', fontSize: 11.5, padding: '6px 10px' }}
+            onClick={() => {
+              void navigator.clipboard.writeText(`${loc.lat.toFixed(6)}, ${loc.lon.toFixed(6)}`);
+              setCopiedCoords(true);
+              setTimeout(() => setCopiedCoords(false), 1800);
+            }}
+          >
+            {copiedCoords ? '✓ Скопировано' : '📋 Координаты'}
+          </button>
         </div>
       </div>
     );

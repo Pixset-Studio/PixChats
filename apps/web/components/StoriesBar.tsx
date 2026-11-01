@@ -1,189 +1,596 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { getSupabaseClient, uploadMessageFile } from '@pixchats/core';
 import type { Profile } from '@pixchats/core';
 import {
-  STORY_GRADIENTS,
-  deleteStoryById,
-  getCachedStories,
-  getViewedStoryIds,
   loadActiveStories,
+  getCachedStories,
   publishNewStory,
-  recordStoryView,
-  saveCachedStories,
+  deleteStoryById,
   toggleStoryReaction,
+  recordStoryView,
+  getViewedStoryIds,
+  STORY_GRADIENTS,
+  STORY_FILTERS,
   type StoryItem,
 } from '../lib/stories';
+import { compressImageToDataUrl } from '../lib/fileStorage';
 import { VerifiedBadge } from './VerifiedBadge';
 
-const STORY_REACTIONS = ['❤️', '🔥', '⚡', '👏', '😂', '😍'];
+interface StoriesBarProps {
+  profile: Profile;
+}
 
-interface GroupedUserStories {
+interface UserStoryGroup {
   userId: string;
   userName: string;
   userUsername: string;
   userAvatar: string | null;
   isVerified?: boolean;
-  items: StoryItem[];
-  hasUnread: boolean;
+  stories: StoryItem[];
+  hasUnviewed: boolean;
 }
 
-function formatRemainingHours(expiresAt: string): string {
-  const diffMs = Math.max(0, new Date(expiresAt).getTime() - Date.now());
-  const hours = Math.ceil(diffMs / (1000 * 60 * 60));
-  return `${hours} ч.`;
-}
+const STORY_REACTIONS = ['❤️', '🔥', '😂', '😍', '👏', '🎉'];
+const BRUSH_COLORS = ['#ffd400', '#ffffff', '#ef4444', '#22c55e', '#38bdf8', '#ec4899', '#a855f7', '#000000'];
 
-function formatRelativeTime(createdAt: string): string {
-  const diffMin = Math.max(1, Math.floor((Date.now() - new Date(createdAt).getTime()) / 60000));
+function formatStoryAgo(iso: string): string {
+  const diffMin = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000));
+  if (diffMin < 1) return 'только что';
   if (diffMin < 60) return `${diffMin} мин. назад`;
-  return `${Math.floor(diffMin / 60)} ч. назад`;
+  const hours = Math.floor(diffMin / 60);
+  return `${hours} ч. назад`;
 }
 
-export function StoriesBar({ profile }: { profile: Profile }) {
+function isVideoStory(story: StoryItem): boolean {
+  if (story.mediaType === 'video') return true;
+  if (!story.mediaUrl) return false;
+  return (
+    story.mediaUrl.startsWith('data:video/') ||
+    /\.(mp4|webm|mov|m4v)(\?|$)/i.test(story.mediaUrl)
+  );
+}
+
+export function StoriesBar({ profile }: StoriesBarProps) {
   const [stories, setStories] = useState<StoryItem[]>(() => getCachedStories());
   const [viewedIds, setViewedIds] = useState<Set<string>>(() => getViewedStoryIds());
 
-  // Модалка публикации новой истории
+  // Модалка создания истории + Внутренний редактор
   const [showCreateModal, setShowCreateModal] = useState(false);
-  const [storyText, setStoryText] = useState('');
-  const [storyGradient, setStoryGradient] = useState(STORY_GRADIENTS[0].css);
-  const [storyPrivacy, setStoryPrivacy] = useState<'all' | 'friends'>('all');
-  const [storyMediaUrl, setStoryMediaUrl] = useState<string | null>(null);
-  const [uploadingMedia, setUploadingMedia] = useState(false);
+  const [draftText, setDraftText] = useState('');
+  const [selectedGradient, setSelectedGradient] = useState(STORY_GRADIENTS[0].css);
+  const [privacy, setPrivacy] = useState<'all' | 'friends'>('all');
+  const [mediaPreview, setMediaPreview] = useState<string | null>(null);
+  const [mediaType, setMediaType] = useState<'image' | 'video' | 'none'>('none');
+  const [rawVideoFile, setRawVideoFile] = useState<File | null>(null);
+  const [videoMuted, setVideoMuted] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Просмотрщик историй
+  // Встроенная камера для съёмки фото или записи видео прямо в окне Историй
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [cameraFacing, setCameraFacing] = useState<'user' | 'environment'>('user');
+  const [isRecordingVideo, setIsRecordingVideo] = useState(false);
+  const [recordingSec, setRecordingSec] = useState(0);
+  const cameraVideoRef = useRef<HTMLVideoElement | null>(null);
+  const cameraStreamRef = useRef<MediaStream | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordedChunksRef = useRef<Blob[]>([]);
+
+  // Внутренний редактор историй (Фильтры / Текст на экране / Рисование кистью)
+  const [editorTab, setEditorTab] = useState<'none' | 'filters' | 'text' | 'draw'>('none');
+  const [selectedFilterCss, setSelectedFilterCss] = useState<string>('none');
+  const [overlayText, setOverlayText] = useState('');
+  const [overlayColor, setOverlayColor] = useState('#ffffff');
+  const [overlaySize, setOverlaySize] = useState(22);
+  const [overlayY, setOverlayY] = useState(50);
+  const [overlayBg, setOverlayBg] = useState(true);
+
+  // Холст для рисования поверх истории
+  const drawCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const isDrawingRef = useRef(false);
+  const lastPointRef = useRef<{ x: number; y: number } | null>(null);
+  const [brushColor, setBrushColor] = useState('#ffd400');
+  const [brushSize, setBrushSize] = useState(5);
+  const [drawHistory, setDrawHistory] = useState<string[]>([]);
+  const [drawingDataUrl, setDrawingDataUrl] = useState<string | null>(null);
+
+  // Модалка полноэкранного просмотра историй
   const [activeGroupUserId, setActiveGroupUserId] = useState<string | null>(null);
   const [activeStoryIndex, setActiveStoryIndex] = useState(0);
+  const [progress, setProgress] = useState(0);
+  const [paused, setPaused] = useState(false);
+  const [viewerMuted, setViewerMuted] = useState(false);
+  const viewerVideoRef = useRef<HTMLVideoElement | null>(null);
 
   useEffect(() => {
     let mounted = true;
-    loadActiveStories().then((list) => {
+    loadActiveStories().then((loaded) => {
       if (mounted) {
-        setStories(list);
+        setStories(loaded);
         setViewedIds(getViewedStoryIds());
       }
     });
 
+    const onLocalUpdate = (e: Event) => {
+      const custom = e as CustomEvent<{ stories: StoryItem[] }>;
+      if (custom.detail?.stories) {
+        setStories(custom.detail.stories);
+        setViewedIds(getViewedStoryIds());
+      }
+    };
+    window.addEventListener('pixchats:stories_updated', onLocalUpdate);
+
     const supabase = getSupabaseClient();
     const channel = supabase
       .channel('pixchats-stories-global')
-      .on('broadcast', { event: 'stories-sync' }, ({ payload }: any) => {
-        if (Array.isArray(payload?.stories)) {
-          saveCachedStories(payload.stories);
-          setStories(getCachedStories());
+      .on('broadcast', { event: 'stories-sync' }, ({ payload }) => {
+        if (payload?.stories && Array.isArray(payload.stories)) {
+          loadActiveStories().then((merged) => {
+            if (mounted) setStories(merged);
+          });
         }
       })
       .subscribe();
 
-    const onLocalSync = () => {
-      setStories(getCachedStories());
-      setViewedIds(getViewedStoryIds());
-    };
-    window.addEventListener('pixchats:stories_updated', onLocalSync);
-
     return () => {
       mounted = false;
-      window.removeEventListener('pixchats:stories_updated', onLocalSync);
+      window.removeEventListener('pixchats:stories_updated', onLocalUpdate);
       supabase.removeChannel(channel);
     };
   }, []);
 
-  // Группируем истории по пользователям (сначала свои, затем другие)
-  const groupedMap = new Map<string, GroupedUserStories>();
-  for (const item of stories) {
-    const existing = groupedMap.get(item.userId);
-    const isUnread = !viewedIds.has(item.id) && item.userId !== profile.id;
-    if (!existing) {
-      groupedMap.set(item.userId, {
-        userId: item.userId,
-        userName: item.userName,
-        userUsername: item.userUsername,
-        userAvatar: item.userAvatar,
-        isVerified: item.isVerified,
-        items: [item],
-        hasUnread: isUnread,
-      });
-    } else {
-      existing.items.push(item);
-      if (isUnread) existing.hasUnread = true;
+  // Группируем истории по пользователям
+  const groups: UserStoryGroup[] = React.useMemo(() => {
+    const map = new Map<string, StoryItem[]>();
+    for (const s of stories) {
+      const list = map.get(s.userId) || [];
+      list.push(s);
+      map.set(s.userId, list);
     }
-  }
 
-  // Сортируем истории каждого автора по времени (от старых к новым для последовательного просмотра)
-  for (const g of groupedMap.values()) {
-    g.items.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-  }
-
-  const myGroup = groupedMap.get(profile.id) || null;
-  const otherGroups = Array.from(groupedMap.values()).filter((g) => g.userId !== profile.id);
-
-  const activeGroup = activeGroupUserId ? groupedMap.get(activeGroupUserId) || null : null;
-  const currentStory = activeGroup ? activeGroup.items[activeStoryIndex] || activeGroup.items[0] : null;
-
-  useEffect(() => {
-    if (!currentStory) return;
-    recordStoryView(currentStory.id, profile.id).then((updated) => {
-      setStories(updated);
-      setViewedIds(getViewedStoryIds());
+    const result: UserStoryGroup[] = [];
+    map.forEach((userStories, uid) => {
+      const sortedAsc = [...userStories].sort(
+        (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+      );
+      const first = sortedAsc[0];
+      const hasUnviewed = sortedAsc.some((st) => !viewedIds.has(st.id));
+      result.push({
+        userId: uid,
+        userName: uid === profile.id ? 'Моя история' : first.userName,
+        userUsername: first.userUsername,
+        userAvatar: uid === profile.id ? profile.avatar_url : first.userAvatar,
+        isVerified: first.isVerified,
+        stories: sortedAsc,
+        hasUnviewed,
+      });
     });
 
-    const timer = setTimeout(() => {
-      if (!activeGroup) return;
-      if (activeStoryIndex + 1 < activeGroup.items.length) {
-        setActiveStoryIndex((i) => i + 1);
-      } else {
-        setActiveGroupUserId(null);
+    result.sort((a, b) => {
+      if (a.userId === profile.id) return -1;
+      if (b.userId === profile.id) return 1;
+      if (a.hasUnviewed && !b.hasUnviewed) return -1;
+      if (!a.hasUnviewed && b.hasUnviewed) return 1;
+      return 0;
+    });
+
+    return result;
+  }, [stories, viewedIds, profile]);
+
+  const activeGroup = groups.find((g) => g.userId === activeGroupUserId) || null;
+  const activeStory = activeGroup?.stories[activeStoryIndex] || null;
+
+  // Записываем просмотр при открытии истории
+  useEffect(() => {
+    if (!activeStory) return;
+    setViewedIds((prev) => {
+      const next = new Set(prev);
+      next.add(activeStory.id);
+      return next;
+    });
+    void recordStoryView(activeStory.id, profile.id);
+  }, [activeStory?.id, profile.id]);
+
+  // Автоматический таймер переключения истории (5.5 секунд для фото/текста, либо по длительности видео)
+  useEffect(() => {
+    if (!activeStory || paused) return;
+    const isVid = isVideoStory(activeStory);
+    if (isVid) {
+      const fallbackTimer = setInterval(() => {
+        const vid = viewerVideoRef.current;
+        if (vid && vid.duration && Number.isFinite(vid.duration) && vid.duration > 0) {
+          const pct = Math.min(100, (vid.currentTime / vid.duration) * 100);
+          setProgress(pct);
+        } else {
+          setProgress((prev) => {
+            if (prev >= 100) {
+              goNextStory();
+              return 0;
+            }
+            return prev + 1.2;
+          });
+        }
+      }, 100);
+      return () => clearInterval(fallbackTimer);
+    }
+
+    const stepMs = 55;
+    const timer = setInterval(() => {
+      setProgress((prev) => {
+        if (prev >= 100) {
+          goNextStory();
+          return 0;
+        }
+        return prev + 1;
+      });
+    }, stepMs);
+    return () => clearInterval(timer);
+  }, [activeStory?.id, paused, activeGroupUserId, activeStoryIndex]);
+
+  function openGroupViewer(group: UserStoryGroup) {
+    const firstUnviewedIdx = group.stories.findIndex((s) => !viewedIds.has(s.id));
+    setActiveGroupUserId(group.userId);
+    setActiveStoryIndex(firstUnviewedIdx >= 0 ? firstUnviewedIdx : 0);
+    setProgress(0);
+    setPaused(false);
+  }
+
+  function closeViewer() {
+    setActiveGroupUserId(null);
+    setActiveStoryIndex(0);
+    setProgress(0);
+  }
+
+  function goNextStory() {
+    if (!activeGroup) return;
+    if (activeStoryIndex + 1 < activeGroup.stories.length) {
+      setActiveStoryIndex(activeStoryIndex + 1);
+      setProgress(0);
+    } else {
+      const currentGroupIdx = groups.findIndex((g) => g.userId === activeGroup.userId);
+      if (currentGroupIdx >= 0 && currentGroupIdx + 1 < groups.length) {
+        const nextGroup = groups[currentGroupIdx + 1];
+        setActiveGroupUserId(nextGroup.userId);
         setActiveStoryIndex(0);
+        setProgress(0);
+      } else {
+        closeViewer();
       }
-    }, 7000);
-
-    return () => clearTimeout(timer);
-  }, [currentStory?.id, activeGroupUserId, activeStoryIndex]);
-
-  async function handleSelectPhoto(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setUploadingMedia(true);
-    try {
-      const uploaded = await uploadMessageFile(`stories-${profile.id}`, file);
-      setStoryMediaUrl(uploaded.url);
-    } catch {
-      // Fallback DataURL
-      const reader = new FileReader();
-      reader.onload = () => setStoryMediaUrl(String(reader.result));
-      reader.readAsDataURL(file);
-    } finally {
-      setUploadingMedia(false);
     }
   }
 
-  async function handlePublishStory(e: React.FormEvent) {
+  function goPrevStory() {
+    if (!activeGroup) return;
+    if (activeStoryIndex > 0) {
+      setActiveStoryIndex(activeStoryIndex - 1);
+      setProgress(0);
+    } else {
+      const currentGroupIdx = groups.findIndex((g) => g.userId === activeGroup.userId);
+      if (currentGroupIdx > 0) {
+        const prevGroup = groups[currentGroupIdx - 1];
+        setActiveGroupUserId(prevGroup.userId);
+        setActiveStoryIndex(prevGroup.stories.length - 1);
+        setProgress(0);
+      } else {
+        setProgress(0);
+      }
+    }
+  }
+
+  function stopStoryCamera() {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch {}
+    }
+    mediaRecorderRef.current = null;
+    if (cameraStreamRef.current) {
+      cameraStreamRef.current.getTracks().forEach((t) => t.stop());
+      cameraStreamRef.current = null;
+    }
+    setIsRecordingVideo(false);
+    setRecordingSec(0);
+    setCameraOpen(false);
+  }
+
+  async function startStoryCamera(facing: 'user' | 'environment' = cameraFacing) {
+    stopStoryCamera();
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: facing, width: { ideal: 1080 }, height: { ideal: 1920 } },
+        audio: true,
+      });
+      cameraStreamRef.current = stream;
+      setCameraFacing(facing);
+      setCameraOpen(true);
+      setTimeout(() => {
+        if (cameraVideoRef.current) {
+          cameraVideoRef.current.srcObject = stream;
+          void cameraVideoRef.current.play().catch(() => {});
+        }
+      }, 60);
+    } catch {
+      try {
+        const fallback = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        cameraStreamRef.current = fallback;
+        setCameraOpen(true);
+        setTimeout(() => {
+          if (cameraVideoRef.current) {
+            cameraVideoRef.current.srcObject = fallback;
+            void cameraVideoRef.current.play().catch(() => {});
+          }
+        }, 60);
+      } catch {}
+    }
+  }
+
+  function capturePhotoFromCamera() {
+    const vid = cameraVideoRef.current;
+    if (!vid) return;
+    const canvas = document.createElement('canvas');
+    canvas.width = vid.videoWidth || 720;
+    canvas.height = vid.videoHeight || 1280;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    if (cameraFacing === 'user') {
+      ctx.translate(canvas.width, 0);
+      ctx.scale(-1, 1);
+    }
+    ctx.drawImage(vid, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.86);
+    setMediaPreview(dataUrl);
+    setMediaType('image');
+    setRawVideoFile(null);
+    stopStoryCamera();
+  }
+
+  function startVideoRecordingInStory() {
+    const stream = cameraStreamRef.current;
+    if (!stream || isRecordingVideo) return;
+    try {
+      recordedChunksRef.current = [];
+      const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')
+        ? 'video/webm;codecs=vp8,opus'
+        : MediaRecorder.isTypeSupported('video/mp4')
+          ? 'video/mp4'
+          : '';
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) recordedChunksRef.current.push(e.data);
+      };
+      recorder.onstop = () => {
+        const blob = new Blob(recordedChunksRef.current, { type: recorder.mimeType || 'video/webm' });
+        if (blob.size > 200) {
+          const ext = (recorder.mimeType || '').includes('mp4') ? 'mp4' : 'webm';
+          const file = new File([blob], `story-video-${Date.now()}.${ext}`, {
+            type: recorder.mimeType || 'video/webm',
+          });
+          const localUrl = URL.createObjectURL(blob);
+          setRawVideoFile(file);
+          setMediaPreview(localUrl);
+          setMediaType('video');
+        }
+        stopStoryCamera();
+      };
+      recorder.start(200);
+      mediaRecorderRef.current = recorder;
+      setIsRecordingVideo(true);
+      setRecordingSec(0);
+    } catch {}
+  }
+
+  function stopVideoRecordingInStory() {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch {}
+    }
+  }
+
+  useEffect(() => {
+    if (!isRecordingVideo) return;
+    const t = setInterval(() => {
+      setRecordingSec((prev) => {
+        if (prev >= 14) {
+          stopVideoRecordingInStory();
+          return 15;
+        }
+        return prev + 1;
+      });
+    }, 1000);
+    return () => clearInterval(t);
+  }, [isRecordingVideo]);
+
+  async function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      if (file.type.startsWith('video/')) {
+        setRawVideoFile(file);
+        const objUrl = URL.createObjectURL(file);
+        setMediaPreview(objUrl);
+        setMediaType('video');
+      } else {
+        const compressed = await compressImageToDataUrl(file, 1080, 0.82);
+        setMediaPreview(compressed);
+        setMediaType('image');
+        setRawVideoFile(null);
+      }
+    } catch {}
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }
+
+  function getCanvasCoords(e: React.PointerEvent<HTMLCanvasElement>): { x: number; y: number } {
+    const canvas = drawCanvasRef.current;
+    if (!canvas) return { x: 0, y: 0 };
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    return {
+      x: (e.clientX - rect.left) * scaleX,
+      y: (e.clientY - rect.top) * scaleY,
+    };
+  }
+
+  function handleCanvasPointerDown(e: React.PointerEvent<HTMLCanvasElement>) {
+    if (editorTab !== 'draw') return;
+    e.stopPropagation();
+    const canvas = drawCanvasRef.current;
+    if (!canvas) return;
+    try {
+      canvas.setPointerCapture(e.pointerId);
+    } catch {}
+    isDrawingRef.current = true;
+    const pt = getCanvasCoords(e);
+    lastPointRef.current = pt;
+
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.fillStyle = brushColor;
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, brushSize / 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  function handleCanvasPointerMove(e: React.PointerEvent<HTMLCanvasElement>) {
+    if (!isDrawingRef.current || editorTab !== 'draw') return;
+    const canvas = drawCanvasRef.current;
+    const last = lastPointRef.current;
+    if (!canvas || !last) return;
+    const pt = getCanvasCoords(e);
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.strokeStyle = brushColor;
+      ctx.lineWidth = brushSize;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      ctx.moveTo(last.x, last.y);
+      ctx.lineTo(pt.x, pt.y);
+      ctx.stroke();
+    }
+    lastPointRef.current = pt;
+  }
+
+  function handleCanvasPointerUp() {
+    if (!isDrawingRef.current) return;
+    isDrawingRef.current = false;
+    lastPointRef.current = null;
+    const canvas = drawCanvasRef.current;
+    if (canvas) {
+      const dataUrl = canvas.toDataURL('image/png');
+      setDrawHistory((prev) => [...prev.slice(-12), dataUrl]);
+      setDrawingDataUrl(dataUrl);
+    }
+  }
+
+  function handleUndoDrawing() {
+    const canvas = drawCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    if (drawHistory.length <= 1) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      setDrawHistory([]);
+      setDrawingDataUrl(null);
+      return;
+    }
+
+    const nextHistory = drawHistory.slice(0, -1);
+    const prevDataUrl = nextHistory[nextHistory.length - 1];
+    const img = new Image();
+    img.onload = () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0);
+    };
+    img.src = prevDataUrl;
+    setDrawHistory(nextHistory);
+    setDrawingDataUrl(prevDataUrl);
+  }
+
+  function handleClearDrawing() {
+    const canvas = drawCanvasRef.current;
+    if (canvas) {
+      const ctx = canvas.getContext('2d');
+      ctx?.clearRect(0, 0, canvas.width, canvas.height);
+    }
+    setDrawHistory([]);
+    setDrawingDataUrl(null);
+  }
+
+  function resetCreateModal() {
+    stopStoryCamera();
+    setShowCreateModal(false);
+    setDraftText('');
+    setMediaPreview(null);
+    setMediaType('none');
+    setRawVideoFile(null);
+    setVideoMuted(false);
+    setEditorTab('none');
+    setSelectedFilterCss('none');
+    setOverlayText('');
+    setOverlayColor('#ffffff');
+    setOverlaySize(22);
+    setOverlayY(50);
+    setOverlayBg(true);
+    setDrawHistory([]);
+    setDrawingDataUrl(null);
+  }
+
+  async function handlePublish(e: React.FormEvent) {
     e.preventDefault();
-    if (!storyText.trim() && !storyMediaUrl) return;
+    if (!draftText.trim() && !mediaPreview && !overlayText.trim() && !drawingDataUrl) return;
     setPublishing(true);
     try {
+      let finalMediaUrl = mediaPreview;
+      if (mediaType === 'video' && rawVideoFile) {
+        try {
+          const uploaded = await uploadMessageFile(`stories-${profile.id}`, rawVideoFile);
+          finalMediaUrl = uploaded.url;
+        } catch {
+          if (rawVideoFile.size <= 8 * 1024 * 1024) {
+            finalMediaUrl = await new Promise<string>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(String(reader.result));
+              reader.onerror = reject;
+              reader.readAsDataURL(rawVideoFile);
+            });
+          }
+        }
+      }
+
       await publishNewStory({
         userId: profile.id,
         userName: profile.display_name,
         userUsername: profile.username,
         userAvatar: profile.avatar_url,
         isVerified: profile.is_verified,
-        mediaUrl: storyMediaUrl,
-        bgGradient: storyGradient,
-        text: storyText,
-        privacy: storyPrivacy,
+        mediaUrl: finalMediaUrl,
+        mediaType: finalMediaUrl ? (mediaType === 'video' ? 'video' : 'image') : 'none',
+        videoMuted,
+        filterCss: selectedFilterCss !== 'none' ? selectedFilterCss : undefined,
+        overlayText: overlayText.trim() || undefined,
+        overlayColor,
+        overlaySize,
+        overlayY,
+        overlayBg,
+        drawingDataUrl,
+        bgGradient: selectedGradient,
+        text: draftText,
+        privacy,
       });
-      setStoryText('');
-      setStoryMediaUrl(null);
-      setShowCreateModal(false);
+      setStories(getCachedStories());
+      resetCreateModal();
     } finally {
       setPublishing(false);
     }
   }
+
+  const myGroup = groups.find((g) => g.userId === profile.id);
 
   return (
     <>
@@ -193,42 +600,41 @@ export function StoriesBar({ profile }: { profile: Profile }) {
           alignItems: 'center',
           gap: 12,
           overflowX: 'auto',
-          padding: '4px 2px 10px',
+          padding: '6px 2px 12px',
           marginBottom: 8,
-           borderBottom: '1px solid var(--border)',
+          borderBottom: '1px solid var(--border)',
           scrollbarWidth: 'none',
         }}
       >
-        {/* Кнопка добавления / просмотра своей истории */}
+        {/* Кнопка создания истории */}
         <div
           style={{
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'center',
-            gap: 4,
+            gap: 5,
             cursor: 'pointer',
             flexShrink: 0,
-            width: 62,
+            width: 64,
           }}
           onClick={() => {
-            if (myGroup && myGroup.items.length > 0) {
-              setActiveGroupUserId(profile.id);
-              setActiveStoryIndex(0);
+            if (myGroup) {
+              openGroupViewer(myGroup);
             } else {
               setShowCreateModal(true);
             }
           }}
         >
-          <div style={{ position: 'relative', width: 52, height: 52 }}>
+          <div style={{ position: 'relative', width: 54, height: 54 }}>
             <div
               style={{
-                width: 52,
-                height: 52,
+                width: 54,
+                height: 54,
                 borderRadius: '50%',
                 padding: 2,
                 background: myGroup
-                  ? 'linear-gradient(135deg, #FFD400 0%, #FF8800 100%)'
-                  : 'rgba(255, 255, 255, 0.16)',
+                  ? 'linear-gradient(135deg, #ffd400, #f59e0b, #ec4899)'
+                  : 'var(--border)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
@@ -237,44 +643,44 @@ export function StoriesBar({ profile }: { profile: Profile }) {
               <div
                 className={`avatar ${!profile.avatar_url ? 'avatar-fallback' : ''}`}
                 style={{
-                  width: 46,
-                  height: 46,
-                  borderRadius: '50%',
+                  width: 48,
+                  height: 48,
+                  fontSize: 18,
                   border: '2px solid var(--bg)',
                   backgroundImage: profile.avatar_url ? `url(${profile.avatar_url})` : undefined,
                   backgroundSize: 'cover',
                   backgroundPosition: 'center',
-                  fontSize: 16,
                 }}
               >
                 {!profile.avatar_url && profile.display_name.slice(0, 1).toUpperCase()}
               </div>
             </div>
+
             <button
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
                 setShowCreateModal(true);
               }}
-              title="Опубликовать новую историю на 24 часа"
+              title="Опубликовать фото или видео в историю"
               style={{
                 position: 'absolute',
                 right: -2,
                 bottom: -2,
-                width: 20,
-                height: 20,
+                width: 22,
+                height: 22,
                 borderRadius: '50%',
                 background: 'var(--accent)',
                 color: '#09090b',
                 border: '2px solid var(--bg)',
-                fontWeight: 800,
-                fontSize: 13,
+                fontWeight: 900,
+                fontSize: 14,
+                lineHeight: 1,
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 cursor: 'pointer',
                 padding: 0,
-                lineHeight: 1,
               }}
             >
               +
@@ -283,9 +689,9 @@ export function StoriesBar({ profile }: { profile: Profile }) {
           <span
             style={{
               fontSize: 11,
-              color: myGroup ? 'var(--accent)' : 'var(--text-muted)',
-              fontWeight: myGroup ? 600 : 500,
-              maxWidth: 60,
+              color: 'var(--text)',
+              fontWeight: 600,
+              maxWidth: 64,
               overflow: 'hidden',
               textOverflow: 'ellipsis',
               whiteSpace: 'nowrap',
@@ -295,213 +701,708 @@ export function StoriesBar({ profile }: { profile: Profile }) {
           </span>
         </div>
 
-        {/* Истории других пользователей */}
-        {otherGroups.map((group) => (
-          <div
-            key={group.userId}
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              gap: 4,
-              cursor: 'pointer',
-              flexShrink: 0,
-              width: 62,
-            }}
-            onClick={() => {
-              setActiveGroupUserId(group.userId);
-              setActiveStoryIndex(0);
-            }}
-          >
+        {/* Кружочки историй других пользователей */}
+        {groups
+          .filter((g) => g.userId !== profile.id)
+          .map((group) => (
             <div
+              key={group.userId}
               style={{
-                width: 52,
-                height: 52,
-                borderRadius: '50%',
-                padding: 2,
-                background: group.hasUnread
-                  ? 'linear-gradient(135deg, #FFD400 0%, #FF6B00 100%)'
-                  : 'rgba(255, 255, 255, 0.22)',
                 display: 'flex',
+                flexDirection: 'column',
                 alignItems: 'center',
-                justifyContent: 'center',
+                gap: 5,
+                cursor: 'pointer',
+                flexShrink: 0,
+                width: 64,
               }}
+              onClick={() => openGroupViewer(group)}
             >
               <div
-                className={`avatar ${!group.userAvatar ? 'avatar-fallback' : ''}`}
                 style={{
-                  width: 46,
-                  height: 46,
+                  width: 54,
+                  height: 54,
                   borderRadius: '50%',
-                  border: '2px solid var(--bg)',
-                  backgroundImage: group.userAvatar ? `url(${group.userAvatar})` : undefined,
-                  backgroundSize: 'cover',
-                  backgroundPosition: 'center',
-                  fontSize: 16,
+                  padding: 2.5,
+                  background: group.hasUnviewed
+                    ? 'linear-gradient(135deg, #ffd400 0%, #f59e0b 50%, #ec4899 100%)'
+                    : 'rgba(255,255,255,0.18)',
+                  boxShadow: group.hasUnviewed ? '0 0 12px rgba(255, 212, 0, 0.28)' : 'none',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  transition: 'all 0.2s ease',
                 }}
               >
-                {!group.userAvatar && group.userName.slice(0, 1).toUpperCase()}
+                <div
+                  className={`avatar ${!group.userAvatar ? 'avatar-fallback' : ''}`}
+                  style={{
+                    width: 47,
+                    height: 47,
+                    fontSize: 17,
+                    border: '2px solid var(--bg)',
+                    backgroundImage: group.userAvatar ? `url(${group.userAvatar})` : undefined,
+                    backgroundSize: 'cover',
+                    backgroundPosition: 'center',
+                  }}
+                >
+                  {!group.userAvatar && group.userName.slice(0, 1).toUpperCase()}
+                </div>
               </div>
+              <span
+                style={{
+                  fontSize: 11,
+                  color: group.hasUnviewed ? 'var(--text)' : 'var(--text-muted)',
+                  fontWeight: group.hasUnviewed ? 700 : 500,
+                  maxWidth: 64,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {group.userName}
+              </span>
             </div>
-            <span
-              style={{
-                fontSize: 11,
-                color: group.hasUnread ? 'var(--text)' : 'var(--text-muted)',
-                fontWeight: group.hasUnread ? 600 : 400,
-                maxWidth: 60,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {group.userName}
-            </span>
-          </div>
-        ))}
+          ))}
       </div>
 
-      {/* Модальное окно создания новой истории на 24 часа */}
+      {/* Модальное окно создания истории с записью фото/видео и встроенным редактором */}
       {showCreateModal && (
-        <div className="modal-overlay" onClick={() => setShowCreateModal(false)} style={{ zIndex: 9999 }}>
-          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 420, width: '94%' }}>
+        <div className="modal-overlay" onClick={resetCreateModal}>
+          <div
+            className="modal-card"
+            style={{ maxWidth: 460, width: '95%', maxHeight: '92vh', overflowY: 'auto' }}
+            onClick={(e) => e.stopPropagation()}
+          >
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-              <h3 style={{ margin: 0, fontSize: 17 }}>📸 Новая история (на 24 часа)</h3>
+              <h3 style={{ margin: 0, fontSize: 17 }}>✨ Студия историй (24 часа)</h3>
               <button
                 type="button"
                 className="btn-ghost"
                 style={{ width: 'auto', padding: '4px 8px' }}
-                onClick={() => setShowCreateModal(false)}
+                onClick={resetCreateModal}
               >
                 ✕
               </button>
             </div>
 
-            <form onSubmit={handlePublishStory}>
-              {/* Превью карточки истории */}
+            <form onSubmit={handlePublish}>
+              {/* Превью истории ИЛИ живая камера */}
               <div
                 style={{
-                  width: '100%',
-                  height: 220,
-                  borderRadius: 14,
-                  background: storyMediaUrl ? `#000 url(${storyMediaUrl}) center/cover no-repeat` : storyGradient,
-                  border: '1px solid rgba(255, 212, 0, 0.35)',
+                  position: 'relative',
+                  height: 310,
+                  borderRadius: 16,
+                  background: selectedGradient,
+                  overflow: 'hidden',
                   display: 'flex',
-                  flexDirection: 'column',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  padding: 18,
-                  textAlign: 'center',
-                  position: 'relative',
-                  overflow: 'hidden',
+                  padding: 20,
                   marginBottom: 12,
+                  border: '1px solid var(--border)',
+                  userSelect: 'none',
                 }}
               >
-                {storyMediaUrl && (
+                {cameraOpen ? (
+                  <div style={{ position: 'absolute', inset: 0, background: '#000' }}>
+                    <video
+                      ref={cameraVideoRef}
+                      autoPlay
+                      muted
+                      playsInline
+                      style={{
+                        width: '100%',
+                        height: '100%',
+                        objectFit: 'cover',
+                        transform: cameraFacing === 'user' ? 'scaleX(-1)' : 'none',
+                      }}
+                    />
+                    {isRecordingVideo && (
+                      <div
+                        style={{
+                          position: 'absolute',
+                          top: 12,
+                          left: 12,
+                          background: 'rgba(220, 38, 38, 0.9)',
+                          color: '#fff',
+                          padding: '4px 10px',
+                          borderRadius: 999,
+                          fontSize: 12,
+                          fontWeight: 800,
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 6,
+                        }}
+                      >
+                        <span>● REC</span>
+                        <span>00:{String(recordingSec).padStart(2, '0')} / 00:15</span>
+                      </div>
+                    )}
+
+                    <div
+                      style={{
+                        position: 'absolute',
+                        bottom: 12,
+                        left: 12,
+                        right: 12,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: 8,
+                      }}
+                    >
+                      <button
+                        type="button"
+                        className="btn"
+                        style={{ width: 'auto', padding: '7px 12px', fontSize: 12, background: 'rgba(0,0,0,0.65)', color: '#fff' }}
+                        onClick={() => void startStoryCamera(cameraFacing === 'user' ? 'environment' : 'user')}
+                      >
+                        🔄 Камера
+                      </button>
+                      {!isRecordingVideo && (
+                        <button
+                          type="button"
+                          className="btn btn-primary"
+                          style={{ width: 'auto', padding: '7px 14px', fontSize: 12, fontWeight: 700 }}
+                          onClick={capturePhotoFromCamera}
+                        >
+                          📸 Сделать фото
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="btn"
+                        style={{
+                          width: 'auto',
+                          padding: '7px 14px',
+                          fontSize: 12,
+                          fontWeight: 700,
+                          background: isRecordingVideo ? '#fff' : '#dc2626',
+                          color: isRecordingVideo ? '#dc2626' : '#fff',
+                          borderColor: '#dc2626',
+                        }}
+                        onClick={isRecordingVideo ? stopVideoRecordingInStory : startVideoRecordingInStory}
+                      >
+                        {isRecordingVideo ? '⏹ Стоп видео' : '🔴 Записать видео'}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn"
+                        style={{ width: 'auto', padding: '7px 10px', fontSize: 12, background: 'rgba(0,0,0,0.65)', color: '#fff' }}
+                        onClick={stopStoryCamera}
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    {mediaPreview && mediaType === 'video' && (
+                      <video
+                        src={mediaPreview}
+                        autoPlay
+                        loop
+                        playsInline
+                        muted={videoMuted}
+                        style={{
+                          position: 'absolute',
+                          inset: 0,
+                          width: '100%',
+                          height: '100%',
+                          objectFit: 'cover',
+                          filter: selectedFilterCss !== 'none' ? selectedFilterCss : undefined,
+                        }}
+                      />
+                    )}
+                    {mediaPreview && mediaType !== 'video' && (
+                      <img
+                        src={mediaPreview}
+                        alt="Превью"
+                        style={{
+                          position: 'absolute',
+                          inset: 0,
+                          width: '100%',
+                          height: '100%',
+                          objectFit: 'cover',
+                          filter: selectedFilterCss !== 'none' ? selectedFilterCss : undefined,
+                        }}
+                      />
+                    )}
+
+                    {/* Холст для рисования кистью поверх истории */}
+                    <canvas
+                      ref={drawCanvasRef}
+                      width={540}
+                      height={960}
+                      onPointerDown={handleCanvasPointerDown}
+                      onPointerMove={handleCanvasPointerMove}
+                      onPointerUp={handleCanvasPointerUp}
+                      onPointerCancel={handleCanvasPointerUp}
+                      style={{
+                        position: 'absolute',
+                        inset: 0,
+                        width: '100%',
+                        height: '100%',
+                        zIndex: editorTab === 'draw' ? 12 : 4,
+                        cursor: editorTab === 'draw' ? 'crosshair' : 'default',
+                        touchAction: editorTab === 'draw' ? 'none' : 'auto',
+                        pointerEvents: editorTab === 'draw' ? 'auto' : 'none',
+                      }}
+                    />
+
+                    {/* Стикер-текст поверх истории из редактора */}
+                    {overlayText.trim() && (
+                      <div
+                        style={{
+                          position: 'absolute',
+                          left: '50%',
+                          top: `${overlayY}%`,
+                          transform: 'translate(-50%, -50%)',
+                          zIndex: 8,
+                          color: overlayColor,
+                          fontSize: overlaySize,
+                          fontWeight: 800,
+                          textAlign: 'center',
+                          padding: overlayBg ? '6px 14px' : '2px 6px',
+                          borderRadius: 10,
+                          background: overlayBg ? 'rgba(0, 0, 0, 0.62)' : 'transparent',
+                          textShadow: '0 2px 10px rgba(0,0,0,0.85)',
+                          maxWidth: '88%',
+                          wordBreak: 'break-word',
+                          pointerEvents: 'none',
+                        }}
+                      >
+                        {overlayText}
+                      </div>
+                    )}
+
+                    {/* Основная подпись снизу или по центру */}
+                    {draftText.trim() ? (
+                      <div
+                        style={{
+                          position: 'relative',
+                          zIndex: 6,
+                          marginTop: mediaPreview ? 'auto' : 0,
+                          color: '#fff',
+                          fontWeight: 700,
+                          fontSize: mediaPreview ? 15 : 20,
+                          textAlign: 'center',
+                          textShadow: '0 2px 12px rgba(0,0,0,0.85)',
+                          background: mediaPreview ? 'rgba(0,0,0,0.52)' : 'transparent',
+                          padding: mediaPreview ? '8px 14px' : 0,
+                          borderRadius: 12,
+                          maxWidth: '92%',
+                          wordBreak: 'break-word',
+                          pointerEvents: 'none',
+                        }}
+                      >
+                        {draftText}
+                      </div>
+                    ) : !mediaPreview && !overlayText.trim() && !drawingDataUrl ? (
+                      <div
+                        style={{
+                          position: 'relative',
+                          zIndex: 2,
+                          color: 'rgba(255,255,255,0.65)',
+                          fontSize: 13.5,
+                          textAlign: 'center',
+                          pointerEvents: 'none',
+                        }}
+                      >
+                        Выберите фото/видео из галереи, снимите на камеру или напишите текст…
+                      </div>
+                    ) : null}
+
+                    {mediaPreview && (
+                      <div style={{ position: 'absolute', top: 10, right: 10, zIndex: 15, display: 'flex', gap: 6 }}>
+                        {mediaType === 'video' && (
+                          <button
+                            type="button"
+                            className="btn"
+                            style={{
+                              width: 'auto',
+                              padding: '4px 10px',
+                              fontSize: 11.5,
+                              background: 'rgba(0,0,0,0.72)',
+                              color: '#fff',
+                            }}
+                            onClick={() => setVideoMuted((v) => !v)}
+                          >
+                            {videoMuted ? '🔇 Без звука' : '🔊 Со звуком'}
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="btn"
+                          style={{
+                            width: 'auto',
+                            padding: '4px 10px',
+                            fontSize: 11.5,
+                            background: 'rgba(0,0,0,0.72)',
+                            color: '#fff',
+                          }}
+                          onClick={() => {
+                            setMediaPreview(null);
+                            setMediaType('none');
+                            setRawVideoFile(null);
+                          }}
+                        >
+                          ✕ Убрать медиа
+                        </button>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+
+              {/* Источники медиа: Галерея (Фото/Видео) + Живая Камера */}
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*,video/*"
+                  style={{ display: 'none' }}
+                  onChange={handleFileSelect}
+                />
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ width: 'auto', flex: 1, fontSize: 12, padding: '7px 10px' }}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  🖼️ Фото / Видео из галереи
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  style={{
+                    width: 'auto',
+                    flex: 1,
+                    fontSize: 12,
+                    padding: '7px 10px',
+                    borderColor: cameraOpen ? 'var(--accent)' : undefined,
+                    color: cameraOpen ? 'var(--accent)' : undefined,
+                  }}
+                  onClick={() => (cameraOpen ? stopStoryCamera() : void startStoryCamera())}
+                >
+                  📸 Камера (Фото / Видео)
+                </button>
+              </div>
+
+              {/* Панель инструментов Внутреннего Редактора Историй */}
+              <div
+                style={{
+                  display: 'flex',
+                  gap: 6,
+                  marginBottom: 10,
+                  background: 'var(--bg-secondary)',
+                  padding: 5,
+                  borderRadius: 10,
+                  border: '1px solid var(--border)',
+                }}
+              >
+                <button
+                  type="button"
+                  className="btn"
+                  style={{
+                    flex: 1,
+                    padding: '6px 8px',
+                    fontSize: 12,
+                    borderColor: editorTab === 'filters' ? 'var(--accent)' : 'transparent',
+                    color: editorTab === 'filters' ? 'var(--accent)' : undefined,
+                  }}
+                  onClick={() => setEditorTab(editorTab === 'filters' ? 'none' : 'filters')}
+                >
+                  🎨 Фильтры
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  style={{
+                    flex: 1,
+                    padding: '6px 8px',
+                    fontSize: 12,
+                    borderColor: editorTab === 'text' ? 'var(--accent)' : 'transparent',
+                    color: editorTab === 'text' ? 'var(--accent)' : undefined,
+                  }}
+                  onClick={() => setEditorTab(editorTab === 'text' ? 'none' : 'text')}
+                >
+                  🔤 Текст-стикер
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  style={{
+                    flex: 1,
+                    padding: '6px 8px',
+                    fontSize: 12,
+                    borderColor: editorTab === 'draw' ? 'var(--accent)' : 'transparent',
+                    color: editorTab === 'draw' ? 'var(--accent)' : undefined,
+                  }}
+                  onClick={() => setEditorTab(editorTab === 'draw' ? 'none' : 'draw')}
+                >
+                  ✏️ Рисовать
+                </button>
+              </div>
+
+              {/* Вкладка 1: Фильтры */}
+              {editorTab === 'filters' && (
+                <div
+                  style={{
+                    padding: 10,
+                    borderRadius: 10,
+                    background: 'var(--bg-secondary)',
+                    border: '1px solid var(--border)',
+                    marginBottom: 10,
+                  }}
+                >
+                  <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginBottom: 6 }}>
+                    Цветокоррекция и видео/фото фильтр:
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, overflowX: 'auto', paddingBottom: 4 }}>
+                    {STORY_FILTERS.map((f) => (
+                      <button
+                        key={f.id}
+                        type="button"
+                        className="btn"
+                        style={{
+                          width: 'auto',
+                          padding: '5px 10px',
+                          fontSize: 11.5,
+                          whiteSpace: 'nowrap',
+                          borderColor: selectedFilterCss === f.css ? 'var(--accent)' : undefined,
+                          color: selectedFilterCss === f.css ? 'var(--accent)' : undefined,
+                        }}
+                        onClick={() => setSelectedFilterCss(f.css)}
+                      >
+                        {f.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Вкладка 2: Стикер-текст поверх экрана */}
+              {editorTab === 'text' && (
+                <div
+                  style={{
+                    padding: 10,
+                    borderRadius: 10,
+                    background: 'var(--bg-secondary)',
+                    border: '1px solid var(--border)',
+                    marginBottom: 10,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 8,
+                  }}
+                >
+                  <input
+                    type="text"
+                    className="input"
+                    placeholder="Крупная надпись поверх истории…"
+                    value={overlayText}
+                    onChange={(e) => setOverlayText(e.target.value)}
+                    maxLength={80}
+                  />
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                    {BRUSH_COLORS.map((c) => (
+                      <button
+                        key={c}
+                        type="button"
+                        onClick={() => setOverlayColor(c)}
+                        style={{
+                          width: 22,
+                          height: 22,
+                          borderRadius: '50%',
+                          background: c,
+                          border: overlayColor === c ? '2px solid var(--accent)' : '1px solid var(--border)',
+                          cursor: 'pointer',
+                        }}
+                      />
+                    ))}
+                    <button
+                      type="button"
+                      className="btn"
+                      style={{ width: 'auto', padding: '3px 8px', fontSize: 11, marginLeft: 'auto' }}
+                      onClick={() => setOverlayBg((v) => !v)}
+                    >
+                      {overlayBg ? 'Подложка: Вкл' : 'Подложка: Выкл'}
+                    </button>
+                  </div>
+                  <div style={{ display: 'flex', gap: 10, alignItems: 'center', fontSize: 11.5 }}>
+                    <span>Размер:</span>
+                    <input
+                      type="range"
+                      min={14}
+                      max={36}
+                      value={overlaySize}
+                      onChange={(e) => setOverlaySize(Number(e.target.value))}
+                      style={{ flex: 1 }}
+                    />
+                    <span>Высота:</span>
+                    <input
+                      type="range"
+                      min={15}
+                      max={85}
+                      value={overlayY}
+                      onChange={(e) => setOverlayY(Number(e.target.value))}
+                      style={{ flex: 1 }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Вкладка 3: Кисть и рисование по истории */}
+              {editorTab === 'draw' && (
+                <div
+                  style={{
+                    padding: 10,
+                    borderRadius: 10,
+                    background: 'var(--bg-secondary)',
+                    border: '1px solid var(--border)',
+                    marginBottom: 10,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 8,
+                  }}
+                >
+                  <div style={{ fontSize: 11.5, color: 'var(--accent)', fontWeight: 600 }}>
+                    ✏️ Проведите пальцем или мышью прямо по превью истории выше, чтобы рисовать!
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                    {BRUSH_COLORS.map((c) => (
+                      <button
+                        key={c}
+                        type="button"
+                        onClick={() => setBrushColor(c)}
+                        style={{
+                          width: 22,
+                          height: 22,
+                          borderRadius: '50%',
+                          background: c,
+                          border: brushColor === c ? '2px solid var(--accent)' : '1px solid var(--border)',
+                          cursor: 'pointer',
+                        }}
+                      />
+                    ))}
+                    <input
+                      type="range"
+                      min={2}
+                      max={18}
+                      value={brushSize}
+                      onChange={(e) => setBrushSize(Number(e.target.value))}
+                      style={{ width: 70 }}
+                      title="Толщина кисти"
+                    />
+                    <button
+                      type="button"
+                      className="btn"
+                      style={{ width: 'auto', padding: '3px 8px', fontSize: 11 }}
+                      onClick={handleUndoDrawing}
+                      disabled={drawHistory.length === 0}
+                    >
+                      ↩ Отменить
+                    </button>
+                    <button
+                      type="button"
+                      className="btn"
+                      style={{ width: 'auto', padding: '3px 8px', fontSize: 11 }}
+                      onClick={handleClearDrawing}
+                      disabled={!drawingDataUrl}
+                    >
+                      🗑️ Очистить
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Выбор фонового градиента (если без медиа) */}
+              {!mediaPreview && (
+                <div style={{ display: 'flex', gap: 8, marginBottom: 10, alignItems: 'center' }}>
+                  <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Фон:</span>
+                  {STORY_GRADIENTS.map((g) => (
+                    <button
+                      key={g.id}
+                      type="button"
+                      onClick={() => setSelectedGradient(g.css)}
+                      title={g.label}
+                      style={{
+                        width: 24,
+                        height: 24,
+                        borderRadius: '50%',
+                        background: g.css,
+                        border: selectedGradient === g.css ? '2px solid var(--accent)' : '1px solid var(--border)',
+                        cursor: 'pointer',
+                      }}
+                    />
+                  ))}
+                </div>
+              )}
+
+              <div className="field" style={{ marginBottom: 10 }}>
+                <input
+                  className="input"
+                  placeholder="Подпись к истории (до 240 символов)…"
+                  maxLength={240}
+                  value={draftText}
+                  onChange={(e) => setDraftText(e.target.value)}
+                />
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+                <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>Кто видит историю:</span>
+                <div style={{ display: 'flex', gap: 6 }}>
                   <button
                     type="button"
                     className="btn"
                     style={{
-                      position: 'absolute',
-                      top: 8,
-                      right: 8,
                       width: 'auto',
-                      padding: '4px 8px',
-                      fontSize: 11,
-                      background: 'rgba(0,0,0,0.75)',
+                      padding: '4px 10px',
+                      fontSize: 12,
+                      borderColor: privacy === 'all' ? 'var(--accent)' : undefined,
+                      color: privacy === 'all' ? 'var(--accent)' : undefined,
                     }}
-                    onClick={() => setStoryMediaUrl(null)}
+                    onClick={() => setPrivacy('all')}
                   >
-                    ✕ Убрать фото
+                    🌍 Все
                   </button>
-                )}
-                <div
-                  style={{
-                    color: '#fff',
-                    fontWeight: 700,
-                    fontSize: 17,
-                    textShadow: '0 2px 10px rgba(0,0,0,0.85)',
-                    background: storyMediaUrl && storyText ? 'rgba(0,0,0,0.55)' : 'transparent',
-                    padding: storyMediaUrl && storyText ? '6px 12px' : 0,
-                    borderRadius: 8,
-                    maxWidth: '92%',
-                    wordBreak: 'break-word',
-                  }}
-                >
-                  {storyText || (storyMediaUrl ? '' : 'Введите текст вашей истории или прикрепите фото…')}
+                  <button
+                    type="button"
+                    className="btn"
+                    style={{
+                      width: 'auto',
+                      padding: '4px 10px',
+                      fontSize: 12,
+                      borderColor: privacy === 'friends' ? 'var(--accent)' : undefined,
+                      color: privacy === 'friends' ? 'var(--accent)' : undefined,
+                    }}
+                    onClick={() => setPrivacy('friends')}
+                  >
+                    👥 Друзья
+                  </button>
                 </div>
               </div>
 
-              <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*"
-                  style={{ display: 'none' }}
-                  onChange={handleSelectPhoto}
-                />
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
                 <button
                   type="button"
-                  className="btn btn-compact"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={uploadingMedia}
+                  className="btn"
+                  style={{ width: 'auto' }}
+                  onClick={resetCreateModal}
                 >
-                  {uploadingMedia ? '⏳ Загрузка…' : '📷 Прикрепить фото'}
-                </button>
-
-                {STORY_GRADIENTS.map((g) => (
-                  <button
-                    key={g.id}
-                    type="button"
-                    title={g.label}
-                    onClick={() => setStoryGradient(g.css)}
-                    style={{
-                      width: 24,
-                      height: 24,
-                      borderRadius: '50%',
-                      background: g.css,
-                      border: storyGradient === g.css ? '2px solid var(--accent)' : '1px solid var(--border)',
-                      cursor: 'pointer',
-                      padding: 0,
-                    }}
-                  />
-                ))}
-              </div>
-
-              <div className="field" style={{ marginBottom: 10 }}>
-                <label>Текст или подпись к истории</label>
-                <textarea
-                  className="input"
-                  rows={2}
-                  maxLength={240}
-                  value={storyText}
-                  onChange={(e) => setStoryText(e.target.value)}
-                  placeholder="Что нового сегодня?"
-                />
-              </div>
-
-              <div className="field" style={{ marginBottom: 14 }}>
-                <label>Кто может видеть историю</label>
-                <select
-                  className="input"
-                  value={storyPrivacy}
-                  onChange={(e) => setStoryPrivacy(e.target.value as 'all' | 'friends')}
-                >
-                  <option value="all">🌍 Все пользователи</option>
-                  <option value="friends">👥 Только друзья</option>
-                </select>
-              </div>
-
-              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-                <button type="button" className="btn" style={{ width: 'auto' }} onClick={() => setShowCreateModal(false)}>
                   Отмена
                 </button>
                 <button
                   type="submit"
                   className="btn btn-primary"
-                  style={{ width: 'auto', fontWeight: 700 }}
-                  disabled={publishing || (!storyText.trim() && !storyMediaUrl)}
+                  style={{ width: 'auto' }}
+                  disabled={
+                    publishing ||
+                    (!draftText.trim() && !mediaPreview && !overlayText.trim() && !drawingDataUrl)
+                  }
                 >
-                  {publishing ? 'Публикуем…' : '⚡ Опубликовать на 24ч'}
+                  {publishing ? 'Публикуем…' : 'Опубликовать ✨'}
                 </button>
               </div>
             </form>
@@ -509,109 +1410,145 @@ export function StoriesBar({ profile }: { profile: Profile }) {
         </div>
       )}
 
-      {/* Полноэкранный просмотрщик историй */}
-      {activeGroup && currentStory && (
+      {/* Полноэкранный просмотрщик историй (с поддержкой видео, звука и слоёв редактора) */}
+      {activeGroup && activeStory && (
         <div
           className="modal-overlay"
-          onClick={() => {
-            setActiveGroupUserId(null);
-            setActiveStoryIndex(0);
-          }}
-          style={{ zIndex: 9999, background: 'rgba(0, 0, 0, 0.92)' }}
+          style={{ zIndex: 9999, background: 'rgba(5, 5, 7, 0.94)', padding: 12 }}
+          onClick={closeViewer}
         >
           <div
             onClick={(e) => e.stopPropagation()}
+            onPointerDown={() => setPaused(true)}
+            onPointerUp={() => setPaused(false)}
             style={{
-              width: '94%',
-              maxWidth: 400,
-              height: '82vh',
-              maxHeight: 640,
-              borderRadius: 18,
-              background: currentStory.mediaUrl
-                ? `#000 url(${currentStory.mediaUrl}) center/contain no-repeat`
-                : currentStory.bgGradient,
-              border: '1.5px solid rgba(255, 212, 0, 0.4)',
+              position: 'relative',
+              width: '100%',
+              maxWidth: 420,
+              height: '84vh',
+              maxHeight: 720,
+              borderRadius: 20,
+              overflow: 'hidden',
+              background: activeStory.bgGradient || STORY_GRADIENTS[0].css,
+              border: '1px solid var(--border)',
+              boxShadow: '0 24px 64px rgba(0,0,0,0.85)',
               display: 'flex',
               flexDirection: 'column',
               justifyContent: 'space-between',
-              padding: 16,
-              position: 'relative',
-              overflow: 'hidden',
-              boxShadow: '0 24px 64px rgba(0,0,0,0.9)',
             }}
           >
-            {/* Верхняя часть: полоски прогресса + автор */}
-            <div style={{ zIndex: 2 }}>
-              <div style={{ display: 'flex', gap: 4, marginBottom: 12 }}>
-                {activeGroup.items.map((st, idx) => (
-                  <div
-                    key={st.id}
-                    onClick={() => setActiveStoryIndex(idx)}
-                    style={{
-                      flex: 1,
-                      height: 3.5,
-                      borderRadius: 999,
-                      background:
-                        idx <= activeStoryIndex ? 'var(--accent)' : 'rgba(255, 255, 255, 0.25)',
-                      cursor: 'pointer',
-                    }}
-                  />
-                ))}
+            {/* Полоски прогресса сверху */}
+            <div style={{ position: 'relative', zIndex: 10, padding: '12px 14px 0' }}>
+              <div style={{ display: 'flex', gap: 4, marginBottom: 10 }}>
+                {activeGroup.stories.map((st, idx) => {
+                  const fillPct =
+                    idx < activeStoryIndex ? 100 : idx === activeStoryIndex ? progress : 0;
+                  return (
+                    <div
+                      key={st.id}
+                      style={{
+                        flex: 1,
+                        height: 3,
+                        borderRadius: 999,
+                        background: 'rgba(255,255,255,0.26)',
+                        overflow: 'hidden',
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: `${fillPct}%`,
+                          height: '100%',
+                          background: '#ffd400',
+                          transition: idx === activeStoryIndex ? 'width 0.06s linear' : 'none',
+                        }}
+                      />
+                    </div>
+                  );
+                })}
               </div>
 
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: 8,
-                  background: 'rgba(0, 0, 0, 0.5)',
-                  padding: '8px 10px',
-                  borderRadius: 12,
-                  backdropFilter: 'blur(8px)',
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              {/* Шапка автора истории */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                   <div
-                    className={`avatar ${!activeGroup.userAvatar ? 'avatar-fallback' : ''}`}
+                    className={`avatar ${!activeStory.userAvatar ? 'avatar-fallback' : ''}`}
                     style={{
-                      width: 34,
-                      height: 34,
+                      width: 36,
+                      height: 36,
                       fontSize: 14,
-                      backgroundImage: activeGroup.userAvatar ? `url(${activeGroup.userAvatar})` : undefined,
+                      backgroundImage: activeStory.userAvatar ? `url(${activeStory.userAvatar})` : undefined,
                       backgroundSize: 'cover',
                       backgroundPosition: 'center',
+                      border: '1.5px solid var(--accent)',
                     }}
                   >
-                    {!activeGroup.userAvatar && activeGroup.userName.slice(0, 1).toUpperCase()}
+                    {!activeStory.userAvatar && activeStory.userName.slice(0, 1).toUpperCase()}
                   </div>
                   <div>
                     <div style={{ fontWeight: 700, fontSize: 13.5, color: '#fff', display: 'flex', alignItems: 'center', gap: 4 }}>
-                      <span>{activeGroup.userName}</span>
-                      {activeGroup.isVerified && <VerifiedBadge size={13} />}
+                      <span>{activeStory.userName}</span>
+                      {activeStory.isVerified && <VerifiedBadge size={13} />}
                     </div>
-                    <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.75)' }}>
-                      {formatRelativeTime(currentStory.createdAt)} • ⏳ ещё {formatRemainingHours(currentStory.expiresAt)}
+                    <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.72)' }}>
+                      {formatStoryAgo(activeStory.createdAt)} ·{' '}
+                      {activeStory.privacy === 'friends' ? '👥 Для друзей' : '🌍 Публичная'}
                     </div>
                   </div>
                 </div>
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  {currentStory.userId === profile.id && (
+                  {isVideoStory(activeStory) && (
                     <button
                       type="button"
                       className="btn-ghost"
-                      style={{ width: 'auto', padding: '4px 8px', fontSize: 13, color: '#ff6b6b' }}
-                      title="Удалить эту историю"
+                      style={{ width: 'auto', padding: '4px 8px', color: '#fff', fontSize: 14 }}
+                      onClick={() => setViewerMuted((v) => !v)}
+                      title={viewerMuted ? 'Включить звук' : 'Выключить звук'}
+                    >
+                      {viewerMuted || activeStory.videoMuted ? '🔇' : '🔊'}
+                    </button>
+                  )}
+                  {activeStory.userId === profile.id && (
+                    <button
+                      type="button"
+                      className="btn"
+                      style={{
+                        width: 'auto',
+                        padding: '4px 8px',
+                        fontSize: 11.5,
+                        background: 'rgba(0,0,0,0.55)',
+                        color: '#fff',
+                      }}
+                      onClick={() => {
+                        setShowCreateModal(true);
+                        closeViewer();
+                      }}
+                    >
+                      + Ещё
+                    </button>
+                  )}
+                  {activeStory.userId === profile.id && (
+                    <button
+                      type="button"
+                      className="btn"
+                      style={{
+                        width: 'auto',
+                        padding: '4px 8px',
+                        fontSize: 11.5,
+                        background: 'rgba(220,38,38,0.75)',
+                        color: '#fff',
+                        borderColor: 'transparent',
+                      }}
                       onClick={async () => {
-                        const updated = await deleteStoryById(currentStory.id);
+                        const updated = await deleteStoryById(activeStory.id);
                         setStories(updated);
-                        if (activeGroup.items.length <= 1) {
-                          setActiveGroupUserId(null);
+                        if (activeGroup.stories.length <= 1) {
+                          closeViewer();
                         } else {
-                          setActiveStoryIndex(0);
+                          goNextStory();
                         }
                       }}
+                      title="Удалить эту историю"
                     >
                       🗑️
                     </button>
@@ -619,11 +1556,8 @@ export function StoriesBar({ profile }: { profile: Profile }) {
                   <button
                     type="button"
                     className="btn-ghost"
-                    style={{ width: 'auto', padding: '4px 8px', fontSize: 15, color: '#fff' }}
-                    onClick={() => {
-                      setActiveGroupUserId(null);
-                      setActiveStoryIndex(0);
-                    }}
+                    style={{ width: 'auto', padding: '4px 8px', color: '#fff', fontSize: 16 }}
+                    onClick={closeViewer}
                   >
                     ✕
                   </button>
@@ -631,91 +1565,181 @@ export function StoriesBar({ profile }: { profile: Profile }) {
               </div>
             </div>
 
-            {/* Центральный текст истории + переключение влево/вправо */}
+            {/* Медиа истории (Фото или Видео) + Слои редактора */}
+            {activeStory.mediaUrl && isVideoStory(activeStory) ? (
+              <video
+                ref={viewerVideoRef}
+                src={activeStory.mediaUrl}
+                autoPlay
+                playsInline
+                muted={Boolean(viewerMuted || activeStory.videoMuted)}
+                onEnded={() => goNextStory()}
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  width: '100%',
+                  height: '100%',
+                  objectFit: 'contain',
+                  background: '#000',
+                  zIndex: 1,
+                  filter: activeStory.filterCss && activeStory.filterCss !== 'none' ? activeStory.filterCss : undefined,
+                }}
+              />
+            ) : activeStory.mediaUrl ? (
+              <img
+                src={activeStory.mediaUrl}
+                alt="История"
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  width: '100%',
+                  height: '100%',
+                  objectFit: 'contain',
+                  background: '#000',
+                  zIndex: 1,
+                  filter: activeStory.filterCss && activeStory.filterCss !== 'none' ? activeStory.filterCss : undefined,
+                }}
+              />
+            ) : null}
+
+            {/* Слой рисунка кистью из редактора */}
+            {activeStory.drawingDataUrl && (
+              <img
+                src={activeStory.drawingDataUrl}
+                alt=""
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  width: '100%',
+                  height: '100%',
+                  objectFit: 'contain',
+                  zIndex: 2,
+                  pointerEvents: 'none',
+                }}
+              />
+            )}
+
+            {/* Слой стикер-текста из редактора */}
+            {activeStory.overlayText && (
+              <div
+                style={{
+                  position: 'absolute',
+                  left: '50%',
+                  top: `${activeStory.overlayY ?? 50}%`,
+                  transform: 'translate(-50%, -50%)',
+                  zIndex: 3,
+                  color: activeStory.overlayColor || '#ffffff',
+                  fontSize: activeStory.overlaySize || 22,
+                  fontWeight: 800,
+                  textAlign: 'center',
+                  padding: activeStory.overlayBg !== false ? '6px 14px' : '2px 6px',
+                  borderRadius: 10,
+                  background: activeStory.overlayBg !== false ? 'rgba(0, 0, 0, 0.62)' : 'transparent',
+                  textShadow: '0 2px 10px rgba(0,0,0,0.85)',
+                  maxWidth: '88%',
+                  wordBreak: 'break-word',
+                  pointerEvents: 'none',
+                }}
+              >
+                {activeStory.overlayText}
+              </div>
+            )}
+
+            {/* Невидимые зоны навигации влево / вправо */}
             <div
+              onClick={goPrevStory}
               style={{
-                flex: 1,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                textAlign: 'center',
-                padding: '12px 16px',
+                position: 'absolute',
+                top: 70,
+                bottom: 90,
+                left: 0,
+                width: '32%',
+                zIndex: 5,
                 cursor: 'pointer',
               }}
-              onClick={() => {
-                if (activeStoryIndex + 1 < activeGroup.items.length) {
-                  setActiveStoryIndex((i) => i + 1);
-                } else {
-                  setActiveGroupUserId(null);
-                  setActiveStoryIndex(0);
-                }
+            />
+            <div
+              onClick={goNextStory}
+              style={{
+                position: 'absolute',
+                top: 70,
+                bottom: 90,
+                right: 0,
+                width: '68%',
+                zIndex: 5,
+                cursor: 'pointer',
               }}
-            >
-              {currentStory.text && (
-                <div
-                  style={{
-                    color: '#fff',
-                    fontWeight: 700,
-                    fontSize: 19,
-                    lineHeight: 1.45,
-                    textShadow: '0 2px 12px rgba(0,0,0,0.9)',
-                    background: currentStory.mediaUrl ? 'rgba(0, 0, 0, 0.62)' : 'transparent',
-                    padding: currentStory.mediaUrl ? '10px 14px' : 0,
-                    borderRadius: 12,
-                    maxWidth: '95%',
-                    wordBreak: 'break-word',
-                  }}
-                >
-                  {currentStory.text}
-                </div>
-              )}
-            </div>
+            />
 
-            {/* Нижняя панель: реакции и просмотры */}
+            {/* Центральный / нижний текст истории */}
+            {activeStory.text && (
+              <div
+                style={{
+                  position: 'relative',
+                  zIndex: 4,
+                  margin: activeStory.mediaUrl ? 'auto 16px 12px' : 'auto 24px',
+                  padding: activeStory.mediaUrl ? '10px 14px' : 0,
+                  borderRadius: 12,
+                  background: activeStory.mediaUrl ? 'rgba(0,0,0,0.62)' : 'transparent',
+                  color: '#fff',
+                  fontWeight: 700,
+                  fontSize: activeStory.mediaUrl ? 15 : 22,
+                  textAlign: 'center',
+                  lineHeight: 1.4,
+                  textShadow: '0 2px 12px rgba(0,0,0,0.8)',
+                  wordBreak: 'break-word',
+                }}
+              >
+                {activeStory.text}
+              </div>
+            )}
+
+            {/* Нижняя панель просмотров и быстрых реакций */}
             <div
               style={{
-                zIndex: 2,
-                background: 'rgba(0, 0, 0, 0.6)',
-                padding: '10px 12px',
-                borderRadius: 12,
-                backdropFilter: 'blur(8px)',
+                position: 'relative',
+                zIndex: 10,
+                padding: '10px 14px 14px',
+                background: 'linear-gradient(to top, rgba(0,0,0,0.82), transparent)',
                 display: 'flex',
-                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'space-between',
                 gap: 8,
               }}
             >
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 11.5, color: 'rgba(255,255,255,0.8)' }}>
-                <span>👁️ Просмотров: {currentStory.viewers?.length || 1}</span>
-                <span>{currentStory.privacy === 'friends' ? '👥 Только друзья' : '🌍 Публичная история'}</span>
+              <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.85)', fontWeight: 600 }}>
+                👁️ {activeStory.viewers?.length || 1}
               </div>
 
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-around', gap: 6 }}>
+              <div style={{ display: 'flex', gap: 6 }}>
                 {STORY_REACTIONS.map((emoji) => {
-                  const count = currentStory.reactions?.[emoji]?.length || 0;
-                  const reacted = currentStory.reactions?.[emoji]?.includes(profile.id);
+                  const users = activeStory.reactions?.[emoji] || [];
+                  const reactedByMe = users.includes(profile.id);
                   return (
                     <button
                       key={emoji}
                       type="button"
                       onClick={async () => {
-                        const updated = await toggleStoryReaction(currentStory.id, emoji, profile.id);
+                        const updated = await toggleStoryReaction(activeStory.id, emoji, profile.id);
                         setStories(updated);
                       }}
                       style={{
-                        background: reacted ? 'rgba(255, 212, 0, 0.25)' : 'rgba(255, 255, 255, 0.1)',
-                        border: reacted ? '1px solid var(--accent)' : '1px solid transparent',
+                        background: reactedByMe ? 'rgba(255, 212, 0, 0.28)' : 'rgba(255,255,255,0.12)',
+                        border: reactedByMe ? '1px solid var(--accent)' : '1px solid rgba(255,255,255,0.2)',
                         borderRadius: 999,
-                        padding: '5px 10px',
-                        fontSize: 15,
+                        padding: '4px 9px',
+                        fontSize: 14,
                         color: '#fff',
                         cursor: 'pointer',
-                        display: 'inline-flex',
+                        display: 'flex',
                         alignItems: 'center',
                         gap: 4,
                       }}
                     >
                       <span>{emoji}</span>
-                      {count > 0 && <span style={{ fontSize: 11, fontWeight: 700 }}>{count}</span>}
+                      {users.length > 0 && (
+                        <span style={{ fontSize: 11, fontWeight: 700 }}>{users.length}</span>
+                      )}
                     </button>
                   );
                 })}

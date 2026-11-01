@@ -17,6 +17,7 @@ const {
   session,
   shell,
   powerSaveBlocker,
+  desktopCapturer,
 } = require('electron');
 const path = require('path');
 const http = require('http');
@@ -542,6 +543,22 @@ if (!gotSingleInstanceLock) {
         callback(true);
       });
       session.defaultSession.setPermissionCheckHandler(() => true);
+
+      // Нативный захват экрана и окон для демонстрации экрана (getDisplayMedia) в звонках и эфирах
+      if (typeof session.defaultSession.setDisplayMediaRequestHandler === 'function') {
+        session.defaultSession.setDisplayMediaRequestHandler(async (_request, callback) => {
+          try {
+            const sources = await desktopCapturer.getSources({ types: ['screen', 'window'] });
+            if (sources && sources.length > 0) {
+              callback({ video: sources[0] });
+            } else {
+              callback({});
+            }
+          } catch {
+            callback({});
+          }
+        });
+      }
     }
 
     registerNativeIpcHandlers();

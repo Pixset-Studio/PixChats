@@ -8,6 +8,15 @@ export interface StoryItem {
   userAvatar: string | null;
   isVerified?: boolean;
   mediaUrl: string | null;
+  mediaType?: 'image' | 'video' | 'none';
+  videoMuted?: boolean;
+  filterCss?: string;
+  overlayText?: string;
+  overlayColor?: string;
+  overlaySize?: number;
+  overlayY?: number;
+  overlayBg?: boolean;
+  drawingDataUrl?: string | null;
   bgGradient: string;
   text: string;
   privacy: 'all' | 'friends';
@@ -47,6 +56,16 @@ export const STORY_GRADIENTS = [
     label: '🌊 Глубокий космос',
     css: 'linear-gradient(135deg, #06122e 0%, #1d4ed8 55%, #38bdf8 100%)',
   },
+];
+
+export const STORY_FILTERS = [
+  { id: 'none', label: 'Оригинал', css: 'none' },
+  { id: 'warm', label: '☀️ Тёплый', css: 'sepia(0.28) saturate(1.45) contrast(1.06) brightness(1.04)' },
+  { id: 'cyber', label: '🔮 Киберпанк', css: 'hue-rotate(28deg) saturate(1.75) contrast(1.18)' },
+  { id: 'vivid', label: '⚡ Контраст', css: 'contrast(1.28) saturate(1.35) brightness(1.02)' },
+  { id: 'bw', label: '🎬 Нуар Ч/Б', css: 'grayscale(1) contrast(1.22)' },
+  { id: 'retro', label: '🎞️ Винтаж', css: 'sepia(0.55) contrast(0.95) brightness(1.05)' },
+  { id: 'cool', label: '❄️ Холодный', css: 'hue-rotate(-18deg) saturate(1.2) brightness(1.05)' },
 ];
 
 function filterNonExpired(stories: StoryItem[]): StoryItem[] {
@@ -132,7 +151,6 @@ export async function loadActiveStories(): Promise<StoryItem[]> {
     if (!existing) {
       mergedMap.set(s.id, s);
     } else {
-      // Объединяем реакции и просмотры
       const mergedReactions: Record<string, string[]> = { ...(existing.reactions || {}) };
       for (const [emoji, users] of Object.entries(s.reactions || {})) {
         const set = new Set([...(mergedReactions[emoji] || []), ...(users || [])]);
@@ -160,6 +178,15 @@ export async function publishNewStory(params: {
   userAvatar: string | null;
   isVerified?: boolean;
   mediaUrl: string | null;
+  mediaType?: 'image' | 'video' | 'none';
+  videoMuted?: boolean;
+  filterCss?: string;
+  overlayText?: string;
+  overlayColor?: string;
+  overlaySize?: number;
+  overlayY?: number;
+  overlayBg?: boolean;
+  drawingDataUrl?: string | null;
   bgGradient: string;
   text: string;
   privacy: 'all' | 'friends';
@@ -174,6 +201,15 @@ export async function publishNewStory(params: {
     userAvatar: params.userAvatar,
     isVerified: params.isVerified,
     mediaUrl: params.mediaUrl,
+    mediaType: params.mediaType || (params.mediaUrl ? 'image' : 'none'),
+    videoMuted: params.videoMuted,
+    filterCss: params.filterCss,
+    overlayText: params.overlayText?.trim() || undefined,
+    overlayColor: params.overlayColor,
+    overlaySize: params.overlaySize,
+    overlayY: params.overlayY,
+    overlayBg: params.overlayBg,
+    drawingDataUrl: params.drawingDataUrl || null,
     bgGradient: params.bgGradient,
     text: params.text.trim(),
     privacy: params.privacy,

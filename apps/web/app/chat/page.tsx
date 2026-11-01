@@ -100,6 +100,21 @@ import {
   type SecretMediaRule,
 } from '../../lib/secretMedia';
 import { applyScreenshotGuardProtection } from '../../lib/screenshotGuard';
+import {
+  CustomVideoPlayer,
+  CustomMediaLightbox,
+  type MediaGalleryItem,
+} from '../../components/MediaViewer';
+import {
+  startLiveSpeechRecognitionSession,
+  transcribeMediaMessage,
+  getSavedVoiceTranscript,
+  encodeChecklistMessage,
+  ChecklistCreatorModal,
+  SketchPadModal,
+  encodeLocationMessage,
+  LocationPickerModal,
+} from '../../components/ChatInteractiveTools';
 
 interface ScheduledMessageItem {
   id: string;
@@ -219,6 +234,17 @@ function ChatWindowInner() {
   const videoNoteChunksRef = useRef<Blob[]>([]);
   const [expandedVideoNoteIds, setExpandedVideoNoteIds] = useState<Record<string, boolean>>({});
 
+  // Идея 1: Расшифровка голосовых и видеокружков в текст ([Аа])
+  const liveSpeechSessionRef = useRef<{ stopAndGetTranscript: () => string } | null>(null);
+  const [voiceTranscripts, setVoiceTranscripts] = useState<Record<string, string>>({});
+  const [transcribingMsgIds, setTranscribingMsgIds] = useState<Record<string, boolean>>({});
+  const [visibleTranscriptMsgIds, setVisibleTranscriptMsgIds] = useState<Record<string, boolean>>({});
+
+  // Идеи 2, 3, 7: Интерактивные инструменты чата (Чек-листы, Граффити/Разметка фото, Геопозиция)
+  const [showChecklistModal, setShowChecklistModal] = useState(false);
+  const [showSketchPadModal, setShowSketchPadModal] = useState(false);
+  const [showLocationModal, setShowLocationModal] = useState(false);
+
   // Пункт 2: Живые статусы набора текста / записи аудио / записи видеокружка
   const [typingUsers, setTypingUsers] = useState<Record<string, string>>({});
   const lastBroadcastTypingRef = useRef<number>(0);
@@ -257,9 +283,9 @@ function ChatWindowInner() {
   const [scheduledMessages, setScheduledMessages] = useState<ScheduledMessageItem[]>([]);
   const [customScheduleInput, setCustomScheduleInput] = useState('');
 
-  // Пункт 10: Lightbox для просмотра фото с зумом и Drag-and-Drop файлов
+  // Пункт 10: Встроенный кастомный Lightbox для просмотра фото и видео с зумом, поворотом и галереей
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
-  const [lightboxZoom, setLightboxZoom] = useState<number>(1);
+  const [lightboxMediaType, setLightboxMediaType] = useState<'image' | 'video'>('image');
   const [isDraggingOver, setIsDraggingOver] = useState(false);
 
   // Вход по заявкам для приватных каналов/групп
@@ -331,7 +357,7 @@ function ChatWindowInner() {
       const int16 = new Int16Array(bytes.buffer);
       if (int16.length === 0) return;
 
-      const rate = sampleRate > 0 ? sampleRate : 10000;
+      const rate = sampleRate > 0 ? sampleRate : 16000;
       const audioBuffer = ctx.createBuffer(1, int16.length, rate);
       const channelData = audioBuffer.getChannelData(0);
       for (let i = 0; i < int16.length; i++) {
@@ -341,14 +367,14 @@ function ChatWindowInner() {
       const key = senderId || 'host';
       const now = ctx.currentTime;
       let nextTime = liveNextPlayTimeRef.current[key] || 0;
-      if (nextTime < now || nextTime > now + 0.65) {
-        nextTime = now + 0.04;
+      if (nextTime < now || nextTime > now + 0.55) {
+        nextTime = now + 0.035;
       }
 
       const source = ctx.createBufferSource();
       source.buffer = audioBuffer;
       const gain = ctx.createGain();
-      gain.gain.value = 1.45;
+      gain.gain.value = 1.0;
       source.connect(gain);
       gain.connect(ctx.destination);
       source.start(nextTime);
@@ -408,7 +434,7 @@ function ChatWindowInner() {
         liveStreamVideoStreamRef.current.getTracks().forEach((t) => t.stop());
       }
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+        video: { width: { ideal: 640 }, height: { ideal: 480 } },
         audio: false,
       });
       liveStreamVideoStreamRef.current = stream;
@@ -417,6 +443,7 @@ function ChatWindowInner() {
       setTimeout(() => {
         if (liveStreamVideoRef.current) {
           liveStreamVideoRef.current.srcObject = stream;
+          void liveStreamVideoRef.current.play().catch(() => {});
         }
       }, 100);
     } catch {
@@ -449,6 +476,7 @@ function ChatWindowInner() {
       setTimeout(() => {
         if (liveStreamVideoRef.current) {
           liveStreamVideoRef.current.srcObject = stream;
+          void liveStreamVideoRef.current.play().catch(() => {});
         }
       }, 100);
     } catch {
@@ -710,15 +738,22 @@ function ChatWindowInner() {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const recorder = new MediaRecorder(stream);
       audioChunksRef.current = [];
+      liveSpeechSessionRef.current = startLiveSpeechRecognitionSession();
       recorder.ondataavailable = (e) => audioChunksRef.current.push(e.data);
       recorder.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
+        const recognizedText = liveSpeechSessionRef.current?.stopAndGetTranscript() || '';
+        liveSpeechSessionRef.current = null;
         const blob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
         const file = new File([blob], `voice-${Date.now()}.webm`, { type: 'audio/webm' });
         setUploading(true);
         try {
           const { url } = await uploadMessageFile(chatId, file);
-          await sendMessage(chatId, 'Голосовое сообщение', { messageType: 'voice', mediaPath: url });
+          await sendMessage(chatId, 'Голосовое сообщение', {
+            messageType: 'voice',
+            mediaPath: url,
+            caption: recognizedText ? `__TRANSCRIPT__:${recognizedText}` : undefined,
+          });
         } catch (err: any) {
           setNotice(err.message ?? 'Не удалось отправить голосовое');
           setTimeout(() => setNotice(null), 2000);
@@ -759,6 +794,7 @@ function ChatWindowInner() {
 
       const recorder = new MediaRecorder(stream);
       videoNoteChunksRef.current = [];
+      liveSpeechSessionRef.current = startLiveSpeechRecognitionSession();
       recorder.ondataavailable = (e) => {
         if (e.data && e.data.size > 0) videoNoteChunksRef.current.push(e.data);
       };
@@ -788,6 +824,10 @@ function ChatWindowInner() {
   }, [videoNoteRecording]);
 
   function cleanupVideoNoteStream() {
+    if (liveSpeechSessionRef.current) {
+      liveSpeechSessionRef.current.stopAndGetTranscript();
+      liveSpeechSessionRef.current = null;
+    }
     if (videoNoteStreamRef.current) {
       videoNoteStreamRef.current.getTracks().forEach((t) => t.stop());
       videoNoteStreamRef.current = null;
@@ -805,6 +845,8 @@ function ChatWindowInner() {
       return;
     }
     rec.onstop = async () => {
+      const recognizedText = liveSpeechSessionRef.current?.stopAndGetTranscript() || '';
+      liveSpeechSessionRef.current = null;
       const blob = new Blob(videoNoteChunksRef.current, { type: 'video/webm' });
       cleanupVideoNoteStream();
       if (blob.size < 200) return;
@@ -816,7 +858,7 @@ function ChatWindowInner() {
         await sendMessage(chatId, '__VIDEONOTE__:Видеосообщение', {
           messageType: 'video',
           mediaPath: url,
-          caption: '__VIDEONOTE__',
+          caption: recognizedText ? `__VIDEONOTE__|__TRANSCRIPT__:${recognizedText}` : '__VIDEONOTE__',
         });
       } catch (err: any) {
         setNotice(err.message ?? 'Не удалось отправить видеокружок');
@@ -829,6 +871,35 @@ function ChatWindowInner() {
       rec.stop();
     } catch {
       cleanupVideoNoteStream();
+    }
+  }
+
+  // Идея 1: Кнопка [Аа] — расшифровка голосового или видеокружка в текст
+  async function handleToggleVoiceTranscript(m: Message) {
+    if (visibleTranscriptMsgIds[m.id]) {
+      setVisibleTranscriptMsgIds((prev) => ({ ...prev, [m.id]: false }));
+      return;
+    }
+    setVisibleTranscriptMsgIds((prev) => ({ ...prev, [m.id]: true }));
+    if (voiceTranscripts[m.id]) return;
+
+    const cached = getSavedVoiceTranscript(m.id);
+    if (cached) {
+      setVoiceTranscripts((prev) => ({ ...prev, [m.id]: cached }));
+      return;
+    }
+
+    setTranscribingMsgIds((prev) => ({ ...prev, [m.id]: true }));
+    try {
+      const text = await transcribeMediaMessage({
+        messageId: m.id,
+        mediaUrl: m.media_path || '',
+        embeddedCaption: m.caption,
+        messageText: m.text,
+      });
+      setVoiceTranscripts((prev) => ({ ...prev, [m.id]: text }));
+    } finally {
+      setTranscribingMsgIds((prev) => ({ ...prev, [m.id]: false }));
     }
   }
 
@@ -1379,7 +1450,7 @@ function ChatWindowInner() {
         const zeroGain = ctx.createGain();
         zeroGain.gain.value = 0;
 
-        const targetRate = 10000;
+        const targetRate = 16000;
         const ratio = (ctx.sampleRate || 48000) / targetRate;
         let pendingSamples: number[] = [];
         let silenceTail = 0;
@@ -1391,8 +1462,8 @@ function ChatWindowInner() {
           for (let i = 0; i < input.length; i++) sumSq += input[i] * input[i];
           const rms = Math.sqrt(sumSq / input.length);
 
-          if (rms > 0.0007) {
-            silenceTail = 3;
+          if (rms > 0.0005) {
+            silenceTail = 4;
           } else if (silenceTail > 0) {
             silenceTail--;
           } else {
@@ -1402,12 +1473,20 @@ function ChatWindowInner() {
 
           const outLen = Math.floor(input.length / ratio);
           for (let i = 0; i < outLen; i++) {
-            const idx = Math.min(input.length - 1, Math.floor(i * ratio));
-            const s = Math.max(-1, Math.min(1, input[idx]));
+            const startIdx = Math.floor(i * ratio);
+            const endIdx = Math.min(input.length, Math.ceil((i + 1) * ratio));
+            let acc = 0;
+            let count = 0;
+            for (let j = startIdx; j < endIdx; j++) {
+              acc += input[j];
+              count++;
+            }
+            const avg = count > 0 ? acc / count : input[Math.min(input.length - 1, startIdx)];
+            const s = Math.max(-1, Math.min(1, avg));
             pendingSamples.push(s < 0 ? s * 0x8000 : s * 0x7fff);
           }
 
-          if (pendingSamples.length >= 1600) {
+          if (pendingSamples.length >= 2048) {
             const int16 = new Int16Array(pendingSamples);
             pendingSamples = [];
             const bytes = new Uint8Array(int16.buffer, int16.byteOffset, int16.byteLength);
@@ -1445,13 +1524,23 @@ function ChatWindowInner() {
     };
   }, [inLiveStreamStage, liveStreamActive, canSpeakInLiveStream, liveStreamMicMuted, me?.id]);
 
-  // Трансляция кадров камеры или экрана ведущего всем зрителям прямого эфира
+  // Трансляция кадров камеры или экрана ведущего всем зрителям прямого эфира (через offscreen video, чтобы работало всегда)
   useEffect(() => {
-    if (!inLiveStreamStage || !liveStreamActive || (!isCameraActive && !isScreenSharing)) return;
+    if (!liveStreamActive || (!isCameraActive && !isScreenSharing) || !liveStreamVideoStreamRef.current) return;
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
+    const offscreenVid = document.createElement('video');
+    offscreenVid.muted = true;
+    offscreenVid.playsInline = true;
+    offscreenVid.autoplay = true;
+    offscreenVid.srcObject = liveStreamVideoStreamRef.current;
+    void offscreenVid.play().catch(() => {});
+
     const timer = setInterval(() => {
-      const vid = liveStreamVideoRef.current;
+      const vid =
+        offscreenVid.readyState >= 2 && offscreenVid.videoWidth > 0
+          ? offscreenVid
+          : liveStreamVideoRef.current;
       if (!vid || !ctx || !liveStreamChannelRef.current || vid.readyState < 2) return;
       const vw = vid.videoWidth || 480;
       const vh = vid.videoHeight || 270;
@@ -1461,7 +1550,7 @@ function ChatWindowInner() {
       canvas.height = targetH;
       try {
         ctx.drawImage(vid, 0, 0, targetW, targetH);
-        const frame = canvas.toDataURL('image/jpeg', 0.52);
+        const frame = canvas.toDataURL('image/jpeg', 0.56);
         liveStreamChannelRef.current.send({
           type: 'broadcast',
           event: 'livestream-video-frame',
@@ -1473,14 +1562,17 @@ function ChatWindowInner() {
         });
       } catch {}
     }, 240);
-    return () => clearInterval(timer);
-  }, [inLiveStreamStage, liveStreamActive, isCameraActive, isScreenSharing, me?.id]);
+    return () => {
+      clearInterval(timer);
+      offscreenVid.srcObject = null;
+    };
+  }, [liveStreamActive, isCameraActive, isScreenSharing, me?.id]);
 
   async function handleToggleReaction(messageId: string, emoji: string) {
     if (!me) return;
     if (!emoji.startsWith('💬:')) {
       setParticleMsgId(messageId);
-      setParticleEmoji(emoji.replace(/📊\d+/, '👍'));
+      setParticleEmoji(emoji.replace(/📊\d+/, '👍').replace(/☑️\d+/, '✅'));
     }
     try {
       const payload = await toggleMessageReaction(chatId, messageId, emoji, me.id);
@@ -2299,10 +2391,10 @@ function ChatWindowInner() {
           const sender = isGroupOrChannel && !isMine ? senderProfiles[m.sender_id] : null;
           const showSenderHeader = sender && (!prev || prev.sender_id !== m.sender_id || showDateDivider);
 
-          // Отделяем служебные голоса опросов (📊1, 📊2...) и комментарии (💬:...) от обычных эмодзи-реакций
+          // Отделяем служебные голоса опросов (📊1, 📊2...), галочки чек-листов (☑️1...) и комментарии (💬:...) от обычных эмодзи-реакций
           const msgReactions = reactions[m.id] || {};
           const regularReactionsEntries = Object.entries(msgReactions).filter(
-            ([emoji]) => !emoji.startsWith('📊') && !emoji.startsWith('💬:')
+            ([emoji]) => !emoji.startsWith('📊') && !emoji.startsWith('☑️') && !emoji.startsWith('💬:')
           );
           const postComments =
             chat.type === 'channel' && channelGroupCfg.commentsEnabled
@@ -2319,7 +2411,14 @@ function ChatWindowInner() {
           const isVideoNote =
             m.message_type === 'video' &&
             Boolean(m.media_path) &&
-            (m.caption === '__VIDEONOTE__' || m.text?.startsWith('__VIDEONOTE__'));
+            (m.caption?.startsWith('__VIDEONOTE__') || m.text?.startsWith('__VIDEONOTE__'));
+
+          const cleanUserCaption =
+            m.caption &&
+            !m.caption.startsWith('__VIDEONOTE__') &&
+            !m.caption.startsWith('__TRANSCRIPT__:')
+              ? m.caption.replace(/\|?__TRANSCRIPT__:[\s\S]*$/, '')
+              : null;
 
           const isReadByPartner =
             isSavedChat ||
@@ -2413,8 +2512,8 @@ function ChatWindowInner() {
                     )}
                     {m.forwarded_from_chat_id && <div className="forwarded-label">Переслано</div>}
 
-                    {m.caption && m.caption !== '__VIDEONOTE__' && m.caption_position === 'above' && !parseSecretMediaCaption(m.caption || m.text).isSecret && (
-                      <div className="media-caption">{m.caption}</div>
+                    {cleanUserCaption && m.caption_position === 'above' && !parseSecretMediaCaption(m.caption || m.text).isSecret && (
+                      <div className="media-caption">{cleanUserCaption}</div>
                     )}
 
                     {/* Пункт 8: Проверка на секретное («View Once» или сгорающее) медиа */}
@@ -2464,7 +2563,7 @@ function ChatWindowInner() {
                               onClick={(e) => {
                                 e.stopPropagation();
                                 if (secretInfo.rule === 'view_once') {
-                                  setLightboxZoom(1);
+                                  setLightboxMediaType(m.message_type === 'video' ? 'video' : 'image');
                                   setLightboxImage(m.media_path!);
                                   markSecretMediaOpened(m.id);
                                   setOpenedSecretMediaIds((prev) => ({ ...prev, [m.id]: true }));
@@ -2521,7 +2620,7 @@ function ChatWindowInner() {
                               {m.message_type === 'image' ? (
                                 <img src={m.media_path!} alt={m.text} className="media-image" />
                               ) : (
-                                <video src={m.media_path!} autoPlay controls className="media-video" />
+                                <CustomVideoPlayer src={m.media_path!} autoPlay />
                               )}
                             </div>
                           );
@@ -2539,25 +2638,70 @@ function ChatWindowInner() {
                         title={deduplicatedSticker.title}
                       />
                     ) : isVideoNote && m.media_path ? (
-                      /* Пункт 1: Видеосообщение в кружочке (Video Note) */
-                      <div
-                        className={`video-note-bubble ${expandedVideoNoteIds[m.id] ? 'expanded' : ''}`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setExpandedVideoNoteIds((prev) => ({ ...prev, [m.id]: !prev[m.id] }));
-                        }}
-                        title="Нажмите, чтобы включить/выключить звук и увеличить кружочек"
-                      >
-                        <video
-                          src={m.media_path}
-                          autoPlay
-                          loop
-                          playsInline
-                          muted={!expandedVideoNoteIds[m.id]}
-                        />
-                        <span className="video-note-badge">
-                          {expandedVideoNoteIds[m.id] ? '🔊 Звук вкл' : '🔇 Нажмите для звука'}
-                        </span>
+                      /* Пункт 1: Видеосообщение в кружочке (Video Note) + Идея 1: Кнопка [Аа] расшифровки речи */
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: isMine ? 'flex-end' : 'flex-start', gap: 6 }}>
+                        <div style={{ display: 'inline-flex', alignItems: 'flex-end', gap: 8 }}>
+                          <div
+                            className={`video-note-bubble ${expandedVideoNoteIds[m.id] ? 'expanded' : ''}`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setExpandedVideoNoteIds((prev) => ({ ...prev, [m.id]: !prev[m.id] }));
+                            }}
+                            title="Нажмите, чтобы включить/выключить звук и увеличить кружочек"
+                          >
+                            <video
+                              src={m.media_path}
+                              autoPlay
+                              loop
+                              playsInline
+                              muted={!expandedVideoNoteIds[m.id]}
+                            />
+                            <span className="video-note-badge">
+                              {expandedVideoNoteIds[m.id] ? '🔊 Звук вкл' : '🔇 Нажмите для звука'}
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            className="btn"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void handleToggleVoiceTranscript(m);
+                            }}
+                            style={{
+                              width: 'auto',
+                              padding: '4px 8px',
+                              fontSize: 11,
+                              fontWeight: 800,
+                              borderRadius: 8,
+                              borderColor: visibleTranscriptMsgIds[m.id] ? 'var(--accent)' : undefined,
+                              color: visibleTranscriptMsgIds[m.id] ? 'var(--accent)' : undefined,
+                            }}
+                            title="Расшифровать речь из видеокружка в текст"
+                          >
+                            {transcribingMsgIds[m.id] ? '⏳' : 'Аа'}
+                          </button>
+                        </div>
+
+                        {visibleTranscriptMsgIds[m.id] && (
+                          <div
+                            onClick={(e) => e.stopPropagation()}
+                            style={{
+                              padding: '7px 10px',
+                              borderRadius: 10,
+                              background: 'rgba(255, 212, 0, 0.1)',
+                              border: '1px solid rgba(255, 212, 0, 0.35)',
+                              fontSize: 12.5,
+                              color: 'var(--text)',
+                              maxWidth: 280,
+                              lineHeight: 1.4,
+                            }}
+                          >
+                            <span style={{ fontWeight: 700, color: 'var(--accent)', marginRight: 6 }}>[Аа]</span>
+                            {transcribingMsgIds[m.id]
+                              ? 'Распознаём речь из видеокружка…'
+                              : voiceTranscripts[m.id] || getSavedVoiceTranscript(m.id) || 'Текст не распознан'}
+                          </div>
+                        )}
                       </div>
                     ) : m.message_type === 'image' && m.media_path && !parseSecretMediaCaption(m.caption || m.text).isSecret ? (
                       <img
@@ -2571,75 +2715,120 @@ function ChatWindowInner() {
                         onClick={(e) => {
                           e.stopPropagation();
                           if (!m.text?.startsWith('Стикер:')) {
-                            setLightboxZoom(1);
+                            setLightboxMediaType('image');
                             setLightboxImage(m.media_path!);
                           }
                         }}
-                        title="Нажмите для полноэкранного просмотра"
+                        title="Нажмите для полноэкранного просмотра с зумом и поворотом"
                       />
                     ) : m.message_type === 'video' && m.media_path && !parseSecretMediaCaption(m.caption || m.text).isSecret ? (
-                      <video src={m.media_path} controls className="media-video" onClick={(e) => e.stopPropagation()} />
+                      <CustomVideoPlayer
+                        src={m.media_path}
+                        onOpenFullscreen={(videoUrl) => {
+                          setLightboxMediaType('video');
+                          setLightboxImage(videoUrl);
+                        }}
+                      />
                     ) : (m.message_type === 'audio' || m.message_type === 'voice') && m.media_path ? (
                       <div
-                        style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}
+                        style={{ display: 'flex', flexDirection: 'column', gap: 6 }}
                         onClick={(e) => e.stopPropagation()}
                       >
-                        <audio
-                          ref={(el) => {
-                            audioRefs.current[m.id] = el;
-                          }}
-                          src={m.media_path}
-                          controls
-                          className="media-audio"
-                        />
-                        <button
-                          type="button"
-                          className="btn"
-                          style={{
-                            width: 'auto',
-                            padding: '4px 8px',
-                            fontSize: 11,
-                            fontWeight: 700,
-                            borderRadius: 6,
-                          }}
-                          onClick={() => cycleAudioSpeed(m.id)}
-                          title="Скорость воспроизведения голосового сообщения"
-                        >
-                          {audioRates[m.id] || 1}x
-                        </button>
-                        <button
-                          type="button"
-                          className="btn"
-                          style={{
-                            width: 'auto',
-                            padding: '4px 8px',
-                            fontSize: 11,
-                            fontWeight: 700,
-                            borderRadius: 6,
-                            borderColor: 'rgba(255, 212, 0, 0.4)',
-                            color: 'var(--accent)',
-                          }}
-                          onClick={() => {
-                            const localEl = audioRefs.current[m.id];
-                            if (localEl && !localEl.paused) {
-                              localEl.pause();
-                            }
-                            playGlobalAudioTrack({
-                              id: m.id,
-                              src: m.media_path!,
-                              title:
-                                m.message_type === 'voice'
-                                  ? '🎤 Голосовое сообщение'
-                                  : `🎵 ${m.text || 'Аудиозапись'}`,
-                              senderName: isMine ? me.display_name : sender?.display_name || otherProfile?.display_name || 'Собеседник',
-                              chatId: chat.id,
-                              chatTitle: isSavedChat ? 'Избранное' : otherProfile ? otherProfile.display_name : chat.title || 'Чат',
-                            });
-                          }}
-                          title="Слушать в фоновом мини-плеере (не прерывается при переходе в другие чаты)"
-                        >
-                          🎧 В фоне
-                        </button>
+                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                          <audio
+                            ref={(el) => {
+                              audioRefs.current[m.id] = el;
+                            }}
+                            src={m.media_path}
+                            controls
+                            className="media-audio"
+                          />
+                          <button
+                            type="button"
+                            className="btn"
+                            style={{
+                              width: 'auto',
+                              padding: '4px 8px',
+                              fontSize: 11,
+                              fontWeight: 700,
+                              borderRadius: 6,
+                            }}
+                            onClick={() => cycleAudioSpeed(m.id)}
+                            title="Скорость воспроизведения голосового сообщения"
+                          >
+                            {audioRates[m.id] || 1}x
+                          </button>
+                          <button
+                            type="button"
+                            className="btn"
+                            style={{
+                              width: 'auto',
+                              padding: '4px 8px',
+                              fontSize: 11,
+                              fontWeight: 800,
+                              borderRadius: 6,
+                              borderColor: visibleTranscriptMsgIds[m.id] ? 'var(--accent)' : undefined,
+                              color: visibleTranscriptMsgIds[m.id] ? 'var(--accent)' : undefined,
+                            }}
+                            onClick={() => void handleToggleVoiceTranscript(m)}
+                            title="Расшифровать голосовое сообщение в текст [Аа]"
+                          >
+                            {transcribingMsgIds[m.id] ? '⏳' : 'Аа'}
+                          </button>
+                          <button
+                            type="button"
+                            className="btn"
+                            style={{
+                              width: 'auto',
+                              padding: '4px 8px',
+                              fontSize: 11,
+                              fontWeight: 700,
+                              borderRadius: 6,
+                              borderColor: 'rgba(255, 212, 0, 0.4)',
+                              color: 'var(--accent)',
+                            }}
+                            onClick={() => {
+                              const localEl = audioRefs.current[m.id];
+                              if (localEl && !localEl.paused) {
+                                localEl.pause();
+                              }
+                              playGlobalAudioTrack({
+                                id: m.id,
+                                src: m.media_path!,
+                                title:
+                                  m.message_type === 'voice'
+                                    ? '🎤 Голосовое сообщение'
+                                    : `🎵 ${m.text || 'Аудиозапись'}`,
+                                senderName: isMine ? me.display_name : sender?.display_name || otherProfile?.display_name || 'Собеседник',
+                                chatId: chat.id,
+                                chatTitle: isSavedChat ? 'Избранное' : otherProfile ? otherProfile.display_name : chat.title || 'Чат',
+                              });
+                            }}
+                            title="Слушать в фоновом мини-плеере (не прерывается при переходе в другие чаты)"
+                          >
+                            🎧 В фоне
+                          </button>
+                        </div>
+
+                        {visibleTranscriptMsgIds[m.id] && (
+                          <div
+                            style={{
+                              padding: '7px 10px',
+                              borderRadius: 10,
+                              background: 'rgba(255, 212, 0, 0.1)',
+                              border: '1px solid rgba(255, 212, 0, 0.35)',
+                              fontSize: 12.5,
+                              color: 'var(--text)',
+                              maxWidth: 320,
+                              lineHeight: 1.4,
+                            }}
+                          >
+                            <span style={{ fontWeight: 700, color: 'var(--accent)', marginRight: 6 }}>[Аа]</span>
+                            {transcribingMsgIds[m.id]
+                              ? 'Распознаём голосовое сообщение в текст…'
+                              : voiceTranscripts[m.id] || getSavedVoiceTranscript(m.id) || 'Текст не распознан'}
+                          </div>
+                        )}
                       </div>
                     ) : m.message_type === 'file' && m.media_path ? (
                       <a
@@ -2661,6 +2850,7 @@ function ChatWindowInner() {
                           myUserId={me.id}
                           reactions={msgReactions}
                           onVotePollOption={(optIndex) => handleToggleReaction(m.id, `📊${optIndex + 1}`)}
+                          onToggleChecklistItem={(itemIdx) => handleToggleReaction(m.id, `☑️${itemIdx + 1}`)}
                           onSelfDestructExpired={handleSelfDestructExpired}
                         />
                         {!m.is_deleted && m.text?.includes('запустил(а) голосовой чат группы') && chat.type === 'group' && (
@@ -2712,8 +2902,8 @@ function ChatWindowInner() {
                       </>
                     )}
 
-                    {m.caption && m.caption !== '__VIDEONOTE__' && m.caption_position === 'below' && (
-                      <div className="media-caption">{m.caption}</div>
+                    {cleanUserCaption && m.caption_position === 'below' && (
+                      <div className="media-caption">{cleanUserCaption}</div>
                     )}
 
                     <div className="bubble-time-standalone">
@@ -3255,6 +3445,42 @@ function ChatWindowInner() {
                   style={{ justifyContent: 'flex-start', gap: 10, fontSize: 13 }}
                   onClick={() => {
                     setShowToolsMenu(false);
+                    setShowChecklistModal(true);
+                  }}
+                >
+                  <span>☑️</span>
+                  <span>Совместный чек-лист (Задачи)</span>
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ justifyContent: 'flex-start', gap: 10, fontSize: 13 }}
+                  onClick={() => {
+                    setShowToolsMenu(false);
+                    setShowSketchPadModal(true);
+                  }}
+                >
+                  <span>🎨</span>
+                  <span>Граффити и разметка фото</span>
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ justifyContent: 'flex-start', gap: 10, fontSize: 13 }}
+                  onClick={() => {
+                    setShowToolsMenu(false);
+                    setShowLocationModal(true);
+                  }}
+                >
+                  <span>📍</span>
+                  <span>Геопозиция (Точка на карте)</span>
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ justifyContent: 'flex-start', gap: 10, fontSize: 13 }}
+                  onClick={() => {
+                    setShowToolsMenu(false);
                     setShowFormatToolbar((v) => !v);
                   }}
                 >
@@ -3762,85 +3988,81 @@ function ChatWindowInner() {
         </div>
       )}
 
-      {/* Полноэкранный просмотрщик изображений (Lightbox) с зумом (Пункт 10) */}
+      {/* Идея 2: Модальное окно создания совместного чек-листа / задач */}
+      {showChecklistModal && (
+        <ChecklistCreatorModal
+          onClose={() => setShowChecklistModal(false)}
+          onSubmit={async (payload) => {
+            const encoded = encodeChecklistMessage(payload);
+            const withTopic =
+              channelGroupCfg.structureMode === 'topics' && activeTopicId !== 'all'
+                ? encodeTopicPrefix(activeTopicId, encoded)
+                : encoded;
+            const finalPayload = ttlSeconds > 0 ? encodeSelfDestructPrefix(ttlSeconds, withTopic) : withTopic;
+            await sendMessage(chatId, finalPayload);
+            setShowChecklistModal(false);
+          }}
+        />
+      )}
+
+      {/* Идея 3: Встроенная доска для граффити и разметки скриншотов/фото */}
+      {showSketchPadModal && (
+        <SketchPadModal
+          onClose={() => setShowSketchPadModal(false)}
+          onSendImageDataUrl={async (dataUrl, caption) => {
+            setShowSketchPadModal(false);
+            await sendMessage(chatId, caption || '🎨 Граффити', {
+              messageType: 'image',
+              mediaPath: dataUrl,
+              caption: caption || undefined,
+            });
+          }}
+        />
+      )}
+
+      {/* Идея 7: Отправка геопозиции / интерактивной точки на карте */}
+      {showLocationModal && (
+        <LocationPickerModal
+          onClose={() => setShowLocationModal(false)}
+          onSendLocation={async (payload) => {
+            const encoded = encodeLocationMessage(payload);
+            const withTopic =
+              channelGroupCfg.structureMode === 'topics' && activeTopicId !== 'all'
+                ? encodeTopicPrefix(activeTopicId, encoded)
+                : encoded;
+            const finalPayload = ttlSeconds > 0 ? encodeSelfDestructPrefix(ttlSeconds, withTopic) : withTopic;
+            await sendMessage(chatId, finalPayload);
+            setShowLocationModal(false);
+          }}
+        />
+      )}
+
+      {/* Кастомный полноэкранный проигрыватель и просмотрщик медиа (Фото + Видео с зумом, поворотом, панорамированием и галереей) */}
       {lightboxImage && (
-        <div
-          className="modal-overlay"
-          onClick={() => setLightboxImage(null)}
-          style={{ zIndex: 9999, background: 'rgba(0,0,0,0.9)' }}
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              gap: 14,
-              maxWidth: '94vw',
-              maxHeight: '92vh',
-            }}
-          >
-            <div style={{ overflow: 'auto', maxWidth: '92vw', maxHeight: '78vh', borderRadius: 12 }}>
-              <img
-                src={lightboxImage}
-                alt="Просмотр фото"
-                style={{
-                  maxWidth: '88vw',
-                  maxHeight: '76vh',
-                  transform: `scale(${lightboxZoom})`,
-                  transformOrigin: 'center center',
-                  transition: 'transform 0.2s ease',
-                  display: 'block',
-                  borderRadius: 10,
-                }}
-              />
-            </div>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
-              <button
-                type="button"
-                className="btn"
-                style={{ width: 'auto' }}
-                onClick={() => setLightboxZoom((z) => Math.max(0.5, Number((z - 0.25).toFixed(2))))}
-              >
-                🔍 −
-              </button>
-              <button
-                type="button"
-                className="btn"
-                style={{ width: 'auto' }}
-                onClick={() => setLightboxZoom(1)}
-              >
-                {Math.round(lightboxZoom * 100)}%
-              </button>
-              <button
-                type="button"
-                className="btn"
-                style={{ width: 'auto' }}
-                onClick={() => setLightboxZoom((z) => Math.min(3, Number((z + 0.25).toFixed(2))))}
-              >
-                🔍 +
-              </button>
-              <a
-                href={lightboxImage}
-                download="pixchats-photo"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="btn btn-primary"
-                style={{ width: 'auto' }}
-              >
-                ⬇ Скачать
-              </a>
-              <button
-                type="button"
-                className="btn"
-                style={{ width: 'auto' }}
-                onClick={() => setLightboxImage(null)}
-              >
-                ✕ Закрыть
-              </button>
-            </div>
-          </div>
-        </div>
+        <CustomMediaLightbox
+          activeUrl={lightboxImage}
+          activeType={lightboxMediaType}
+          gallery={visibleMessages
+            .filter(
+              (msg) =>
+                (msg.message_type === 'image' || msg.message_type === 'video') &&
+                Boolean(msg.media_path) &&
+                !msg.caption?.startsWith('__VIDEONOTE__') &&
+                !msg.text?.startsWith('__VIDEONOTE__') &&
+                !parseSecretMediaCaption(msg.caption || msg.text).isSecret
+            )
+            .map((msg): MediaGalleryItem => ({
+              id: msg.id,
+              url: msg.media_path!,
+              type: msg.message_type === 'video' ? 'video' : 'image',
+              caption: msg.text,
+            }))}
+          onSelectItem={(item) => {
+            setLightboxMediaType(item.type);
+            setLightboxImage(item.url);
+          }}
+          onClose={() => setLightboxImage(null)}
+        />
       )}
 
       {forwardTarget && (
