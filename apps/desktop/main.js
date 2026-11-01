@@ -175,9 +175,20 @@ function resolveAppIcon() {
   return undefined;
 }
 
-function downloadFileWithRedirects(url, destPath) {
+function emitUpdateProgress(percent, status = 'downloading') {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try {
+    mainWindow.webContents
+      .executeJavaScript(
+        `window.dispatchEvent(new CustomEvent('pixchats:update_progress', { detail: { percent: ${Number(percent) || 0}, status: '${status}' } }));`
+      )
+      .catch(() => {});
+  } catch {}
+}
+
+function downloadFileWithRedirects(url, destPath, onProgress) {
   return new Promise((resolve, reject) => {
-    const request = (currentUrl, redirectsLeft = 5) => {
+    const request = (currentUrl, redirectsLeft = 7) => {
       if (redirectsLeft <= 0) {
         reject(new Error('Too many redirects'));
         return;
@@ -186,7 +197,7 @@ function downloadFileWithRedirects(url, destPath) {
       client
         .get(
           currentUrl,
-          { headers: { 'User-Agent': 'PixChats-Native-Updater/1.0' } },
+          { headers: { 'User-Agent': 'PixChats-Native-Updater/2.0' } },
           (res) => {
             if (
               res.statusCode &&
@@ -201,9 +212,24 @@ function downloadFileWithRedirects(url, destPath) {
               reject(new Error(`HTTP status ${res.statusCode}`));
               return;
             }
+            const totalBytes = parseInt(res.headers['content-length'] || '0', 10) || 0;
+            let downloadedBytes = 0;
+            let lastPercent = -1;
+
             const fileStream = fs.createWriteStream(destPath);
+            res.on('data', (chunk) => {
+              downloadedBytes += chunk.length;
+              if (totalBytes > 0 && typeof onProgress === 'function') {
+                const pct = Math.min(99, Math.round((downloadedBytes * 100) / totalBytes));
+                if (pct !== lastPercent) {
+                  lastPercent = pct;
+                  onProgress(pct);
+                }
+              }
+            });
             res.pipe(fileStream);
             fileStream.on('finish', () => {
+              if (typeof onProgress === 'function') onProgress(100);
               fileStream.close(() => resolve(destPath));
             });
             fileStream.on('error', (err) => {
@@ -310,7 +336,7 @@ function registerNativeIpcHandlers() {
     return 'granted';
   });
 
-  // 5. Нативное скачивание и установка .exe обновления из GitHub Releases
+  // 5. Полностью автоматическое тихое скачивание, самоустановка (/S) и перезапуск .exe обновления
   ipcMain.handle('pixchats:install-update', async (_event, payload) => {
     try {
       const { downloadUrl, fileName } = payload || {};
@@ -318,18 +344,50 @@ function registerNativeIpcHandlers() {
       const safeName = (fileName || 'PixChats-Setup-Update.exe').replace(/[^a-zA-Z0-9._-]/g, '_');
       const tempInstallerPath = path.join(os.tmpdir(), safeName);
 
-      await downloadFileWithRedirects(downloadUrl, tempInstallerPath);
-
-      const child = spawn(tempInstallerPath, [], {
-        detached: true,
-        stdio: 'ignore',
+      emitUpdateProgress(2, 'downloading');
+      await downloadFileWithRedirects(downloadUrl, tempInstallerPath, (pct) => {
+        emitUpdateProgress(pct, 'downloading');
       });
-      child.unref();
+      emitUpdateProgress(100, 'installing');
+
+      if (process.platform === 'win32') {
+        const updaterCmdPath = path.join(os.tmpdir(), 'pixchats-silent-auto-update.cmd');
+        const currentExe = process.execPath;
+        const scriptLines = [
+          '@echo off',
+          'timeout /t 2 /nobreak >nul',
+          `"${tempInstallerPath}" /S`,
+          `if exist "${currentExe}" (`,
+          `  start "" "${currentExe}"`,
+          ') else if exist "%LOCALAPPDATA%\\Programs\\pixchats-desktop\\PixChats.exe" (',
+          '  start "" "%LOCALAPPDATA%\\Programs\\pixchats-desktop\\PixChats.exe"',
+          ') else if exist "%LOCALAPPDATA%\\Programs\\PixChats\\PixChats.exe" (',
+          '  start "" "%LOCALAPPDATA%\\Programs\\PixChats\\PixChats.exe"',
+          ')',
+          `del /q "${tempInstallerPath}" >nul 2>&1`,
+          'del /q "%~f0" >nul 2>&1',
+        ];
+        fs.writeFileSync(updaterCmdPath, scriptLines.join('\r\n'), 'utf8');
+
+        const child = spawn('cmd.exe', ['/c', updaterCmdPath], {
+          detached: true,
+          windowsHide: true,
+          stdio: 'ignore',
+        });
+        child.unref();
+      } else {
+        const child = spawn(tempInstallerPath, ['/S'], {
+          detached: true,
+          windowsHide: true,
+          stdio: 'ignore',
+        });
+        child.unref();
+      }
 
       setTimeout(() => {
         isQuitting = true;
         app.quit();
-      }, 600);
+      }, 500);
       return true;
     } catch {
       return false;

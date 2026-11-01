@@ -1038,7 +1038,7 @@ export default function SettingsPage() {
       <div className="section-title">🔄 Обновления и справка</div>
       <div className="card" style={{ marginBottom: 24 }}>
         <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 0, marginBottom: 12 }}>
-          Нативные клиенты Windows (.exe) и Android (.apk) автоматически проверяют выход новой версии в релизе <strong>«Lastest Version»</strong> и предлагают обновиться.
+          Нативные клиенты Windows (.exe) и Android (.apk) автоматически проверяют выход новой версии PixChats, показывают список изменений («Что нового») и обновляются поверх текущей установки.
         </p>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button
@@ -1046,7 +1046,7 @@ export default function SettingsPage() {
             className="btn btn-primary btn-compact"
             onClick={() => {
               triggerManualUpdateCheck();
-              setNotice('Запущена проверка обновлений Lastest Version…');
+              setNotice('Запущена проверка новой версии PixChats…');
               setTimeout(() => setNotice(null), 2000);
             }}
           >

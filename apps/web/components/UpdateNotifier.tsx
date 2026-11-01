@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { detectRuntimePlatform } from '../lib/nativePlatform';
 
-const CURRENT_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || '0.1.0';
+const CURRENT_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || '0.2.0';
 const CURRENT_BUILD_SHA = (process.env.NEXT_PUBLIC_BUILD_SHA || '').trim();
 const CURRENT_BUILD_TIMESTAMP = (process.env.NEXT_PUBLIC_BUILD_TIMESTAMP || '').trim();
 const GITHUB_REPO = 'Pixset-Studio/PixChats';
@@ -34,7 +34,7 @@ interface GitHubRelease {
 
 function parseSemver(v: string): number[] {
   return v
-    .replace(/^v/i, '')
+    .replace(/^[^0-9]*/i, '')
     .split('.')
     .map((x) => parseInt(x, 10) || 0);
 }
@@ -49,13 +49,30 @@ function isNewerSemver(latest: string, current: string): boolean {
 }
 
 function extractMetaFromBody(body: string) {
-  const versionMatch = body.match(/Версия:\s*v?([0-9]+\.[0-9]+\.[0-9]+)/i) || body.match(/Version:\s*v?([0-9]+\.[0-9]+\.[0-9]+)/i);
+  const versionMatch =
+    body.match(/Версия:\s*v?([0-9]+\.[0-9]+\.[0-9]+)/i) ||
+    body.match(/Version:\s*v?([0-9]+\.[0-9]+\.[0-9]+)/i);
   const commitMatch = body.match(/Commit:\s*([a-f0-9]{7,40})/i);
   const timeMatch = body.match(/Build-Time:\s*([^\s\n]+)/i);
+
+  // Извлекаем пункты «Что нового» из текста релиза
+  const lines = body
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => {
+      if (!l) return false;
+      if (/^(---|###|📦|Актуальная сборка)/i.test(l)) return false;
+      if (/^-\s*(Версия|Version|Commit|Build-Time):/i.test(l)) return false;
+      return true;
+    })
+    .map((l) => l.replace(/^[•*-]\s*/, '').trim())
+    .filter(Boolean);
+
   return {
     version: versionMatch ? versionMatch[1] : null,
     commitSha: commitMatch ? commitMatch[1].toLowerCase() : null,
     buildTime: timeMatch ? timeMatch[1] : null,
+    changelogItems: lines,
   };
 }
 
@@ -63,7 +80,71 @@ export function UpdateNotifier() {
   const [release, setRelease] = useState<GitHubRelease | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [updating, setUpdating] = useState(false);
+  const [progressPercent, setProgressPercent] = useState<number>(0);
+  const [progressStatus, setProgressStatus] = useState<'idle' | 'downloading' | 'installing'>('idle');
   const [platform, setPlatform] = useState<'desktop-exe' | 'android-apk' | 'web'>('web');
+
+  async function executeAutoInstall(rel: GitHubRelease, currentPlat: 'desktop-exe' | 'android-apk' | 'web') {
+    setUpdating(true);
+    setProgressPercent(4);
+    setProgressStatus('downloading');
+
+    const exeAsset = rel.assets?.find((a) => a.name.toLowerCase().endsWith('.exe'));
+    const apkAsset = rel.assets?.find((a) => a.name.toLowerCase().endsWith('.apk'));
+    const targetAsset =
+      currentPlat === 'desktop-exe'
+        ? exeAsset
+        : currentPlat === 'android-apk'
+          ? apkAsset
+          : exeAsset || apkAsset;
+
+    const releaseSignature = `${rel.id}:${targetAsset?.updated_at || rel.published_at || rel.tag_name}`;
+    localStorage.setItem('pixchats:installed_release_sig', releaseSignature);
+    localStorage.setItem('pixchats:last_known_release_id', String(rel.id));
+
+    const downloadUrl = targetAsset ? targetAsset.browser_download_url : rel.html_url;
+
+    // 1. Нативное автообновление Windows (.exe): тихое скачивание в %TEMP%, тихая самоустановка (/S) и автоматический перезапуск
+    if (currentPlat === 'desktop-exe' && window.pixchatsDesktop?.installUpdate && targetAsset) {
+      try {
+        const ok = await window.pixchatsDesktop.installUpdate(downloadUrl, targetAsset.name);
+        if (ok) {
+          setProgressPercent(100);
+          setProgressStatus('installing');
+          return;
+        }
+      } catch {
+        // fallback ниже
+      }
+    }
+
+    // 2. Нативное автообновление Android (.apk): автоматическое скачивание и самоустановка через PackageInstaller Session API
+    if (currentPlat === 'android-apk' && window.PixChatsAndroid?.downloadAndInstallApk && targetAsset) {
+      try {
+        window.PixChatsAndroid.downloadAndInstallApk(downloadUrl);
+        return;
+      } catch {
+        // fallback ниже
+      }
+    }
+
+    // 3. Fallback — прямая автоматическая загрузка пакета обновления
+    const a = document.createElement('a');
+    a.href = downloadUrl;
+    a.download = targetAsset ? targetAsset.name : 'PixChats-Update';
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+
+    setProgressPercent(100);
+    setProgressStatus('installing');
+    setTimeout(() => {
+      setUpdating(false);
+      setShowModal(false);
+    }, 3500);
+  }
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -71,14 +152,33 @@ export function UpdateNotifier() {
     const detected = detectRuntimePlatform();
     setPlatform(detected);
 
+    const onProgress = (e: Event) => {
+      const detail = (e as CustomEvent<{ percent?: number; status?: 'downloading' | 'installing' }>).detail;
+      if (!detail) return;
+      if (typeof detail.percent === 'number') {
+        setProgressPercent(Math.max(0, Math.min(100, detail.percent)));
+      }
+      if (detail.status) {
+        setProgressStatus(detail.status);
+      }
+      if (detail.percent === 100 && detail.status === 'installing') {
+        setTimeout(() => {
+          setUpdating(false);
+          setShowModal(false);
+        }, 4500);
+      }
+    };
+
+    window.addEventListener('pixchats:update_progress', onProgress);
+
     async function checkForUpdates(isManual = false) {
       const currentPlat = detectRuntimePlatform();
       if (currentPlat === 'web' && !isManual) {
-        return; // Автоматическое окно обновления запускается в нативных клиентах (.exe и .apk)
+        return; // Автоматическая самоустановка работает в нативных клиентах (.exe и .apk)
       }
 
       try {
-        const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=10`, {
+        const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=5`, {
           headers: { Accept: 'application/vnd.github.v3+json' },
           cache: 'no-store',
         });
@@ -86,19 +186,8 @@ export function UpdateNotifier() {
         const list: GitHubRelease[] = await res.json();
         if (!Array.isArray(list) || list.length === 0) return;
 
-        // Ищем релиз "Lastest Version" (или "Latest Version"), либо берём самый свежий
-        const latestRel =
-          list.find((r) => {
-            const title = (r.name || '').trim().toLowerCase();
-            const tag = (r.tag_name || '').trim().toLowerCase();
-            return (
-              title === 'lastest version' ||
-              title === 'latest version' ||
-              tag === 'lastest-version' ||
-              tag === 'latest'
-            );
-          }) || list[0];
-
+        // Берём самый свежий опубликованный релиз с конкретной версией
+        const latestRel = list[0];
         if (!latestRel) return;
 
         const targetAsset =
@@ -131,23 +220,22 @@ export function UpdateNotifier() {
         }
 
         // 2. Если версия в релизе или теге выше текущей
-        const remoteVer = meta.version || latestRel.tag_name;
+        const remoteVer = meta.version || latestRel.tag_name || latestRel.name;
         if (remoteVer && isNewerSemver(remoteVer, CURRENT_VERSION)) {
           needsUpdate = true;
         }
 
-        // 3. Сравнение времени публикации релиза "Lastest Version" со временем сборки приложения
+        // 3. Сравнение времени публикации релиза со временем сборки приложения
         const relTimeStr = targetAsset?.updated_at || meta.buildTime || latestRel.published_at || latestRel.created_at;
         if (relTimeStr && CURRENT_BUILD_TIMESTAMP) {
           const relMs = Date.parse(relTimeStr);
           const buildMs = Date.parse(CURRENT_BUILD_TIMESTAMP);
-          // Если релиз опубликован более чем через 15 минут после сборки этого клиента — вышла новая версия!
           if (!Number.isNaN(relMs) && !Number.isNaN(buildMs) && relMs > buildMs + 15 * 60 * 1000) {
             needsUpdate = true;
           }
         }
 
-        // 4. Если старый релиз "Lastest Version" был удалён и создан новый с другим ID
+        // 4. Если вышел новый релиз с другим ID или тегом
         const lastKnownReleaseId = localStorage.getItem('pixchats:last_known_release_id');
         if (!lastKnownReleaseId) {
           localStorage.setItem('pixchats:last_known_release_id', String(latestRel.id));
@@ -158,6 +246,11 @@ export function UpdateNotifier() {
         if (needsUpdate || isManual) {
           setRelease(latestRel);
           setShowModal(true);
+
+          // На ПК и телефоне сразу автоматически запускаем скачивание и самоустановку новой версии без лишних кликов!
+          if (needsUpdate && (currentPlat === 'desktop-exe' || currentPlat === 'android-apk')) {
+            void executeAutoInstall(latestRel, currentPlat);
+          }
         }
       } catch {
         // Оффлайн или лимит GitHub API — тихо игнорируем
@@ -173,15 +266,32 @@ export function UpdateNotifier() {
     return () => {
       clearInterval(interval);
       window.removeEventListener('pixchats:check_updates_manual', onManualCheck);
+      window.removeEventListener('pixchats:update_progress', onProgress);
     };
   }, []);
 
   if (!showModal || !release) return null;
 
   const meta = extractMetaFromBody(release.body || '');
-  const displayVersion = meta.version
-    ? `v${meta.version}`
-    : release.name || release.tag_name || 'Lastest Version';
+  const versionNumber =
+    meta.version ||
+    release.tag_name?.replace(/^v/i, '') ||
+    release.name?.replace(/^[^0-9]*/i, '') ||
+    CURRENT_VERSION;
+  const displayVersion = `v${versionNumber}`;
+  const releaseTitle =
+    release.name && !release.name.toLowerCase().includes('lastest')
+      ? release.name
+      : `PixChats ${displayVersion}`;
+
+  const changelogItems =
+    meta.changelogItems.length > 0
+      ? meta.changelogItems
+      : [
+          'Полностью автоматическое скачивание и самоустановка обновлений на ПК (.exe) и Android (.apk)',
+          'Стабильная передача звука и видео в личных звонках, голосовых чатах групп и прямых эфирах каналов',
+          'Обновление Android (.apk) устанавливается поверх текущей версии без удаления приложения',
+        ];
 
   const exeAsset = release.assets?.find((a) => a.name.toLowerCase().endsWith('.exe'));
   const apkAsset = release.assets?.find((a) => a.name.toLowerCase().endsWith('.apk'));
@@ -192,71 +302,119 @@ export function UpdateNotifier() {
         ? apkAsset
         : exeAsset || apkAsset;
 
-  async function handleInstallUpdate() {
-    if (!release) return;
-    setUpdating(true);
-
-    const releaseSignature = `${release.id}:${targetAsset?.updated_at || release.published_at || release.tag_name}`;
-    localStorage.setItem('pixchats:installed_release_sig', releaseSignature);
-    localStorage.setItem('pixchats:last_known_release_id', String(release.id));
-
-    const downloadUrl = targetAsset ? targetAsset.browser_download_url : release.html_url;
-
-    // 1. Нативное обновление Windows (.exe): скачивание в %TEMP% и автоматический запуск инсталлятора
-    if (platform === 'desktop-exe' && window.pixchatsDesktop?.installUpdate && targetAsset) {
-      try {
-        const ok = await window.pixchatsDesktop.installUpdate(downloadUrl, targetAsset.name);
-        if (ok) {
-          setUpdating(false);
-          setShowModal(false);
-          return;
-        }
-      } catch {
-        // fallback ниже
-      }
-    }
-
-    // 2. Нативное обновление Android (.apk): через системный DownloadManager + Intent.ACTION_VIEW
-    if (platform === 'android-apk' && window.PixChatsAndroid?.downloadAndInstallApk && targetAsset) {
-      try {
-        window.PixChatsAndroid.downloadAndInstallApk(downloadUrl);
-        setTimeout(() => {
-          setUpdating(false);
-          setShowModal(false);
-        }, 1500);
-        return;
-      } catch {
-        // fallback ниже
-      }
-    }
-
-    // 3. Прямая загрузка файла обновления (.exe / .apk)
-    const a = document.createElement('a');
-    a.href = downloadUrl;
-    a.download = targetAsset ? targetAsset.name : 'PixChats-Update';
-    a.target = '_blank';
-    a.rel = 'noopener noreferrer';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-
-    setTimeout(() => {
-      setUpdating(false);
-      setShowModal(false);
-    }, 2000);
-  }
-
   return (
     <div className="update-modal-overlay">
       <div className="update-modal-card" onClick={(e) => e.stopPropagation()}>
-        <div className="update-badge">🚀 Доступна новая версия · {release.name || 'Lastest Version'}</div>
+        <div className="update-badge">
+          {updating ? `⚡ Автообновление · ${releaseTitle}` : `🚀 Новая версия · ${releaseTitle}`}
+        </div>
 
         <h3 style={{ margin: '0 0 6px', fontSize: 19, fontFamily: 'var(--font-display)' }}>
-          Вышла новая версия PixChats ({displayVersion})
+          {updating
+            ? `Автоматическое обновление до ${releaseTitle}`
+            : `Доступно обновление ${releaseTitle}`}
         </h3>
-        <p style={{ margin: '0 0 14px', fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.45 }}>
-          Вышло актуальное обновление мессенджера. Для стабильной работы звонков, чатов и защиты данных необходимо обновиться до последней версии.
+        <p style={{ margin: '0 0 12px', fontSize: 12.5, color: 'var(--text-muted)', lineHeight: 1.45 }}>
+          Текущая версия: <b>v{CURRENT_VERSION}</b> → Новая версия: <b style={{ color: 'var(--accent)' }}>{displayVersion}</b>.{' '}
+          {platform === 'desktop-exe'
+            ? 'Обновление скачивается и устанавливается автоматически в фоновом режиме, после чего приложение само перезапустится.'
+            : platform === 'android-apk'
+              ? 'Обновление скачивается и автоматически запускает установку поверх текущей версии без удаления данных.'
+              : ''}
         </p>
+
+        {/* Индикатор автоматической загрузки и самоустановки */}
+        {updating && (
+          <div
+            style={{
+              padding: '10px 12px',
+              borderRadius: 10,
+              background: 'var(--surface-raised)',
+              border: '1px solid rgba(255, 212, 0, 0.35)',
+              marginBottom: 14,
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                fontSize: 12,
+                fontWeight: 600,
+                marginBottom: 6,
+                color: 'var(--accent)',
+              }}
+            >
+              <span>
+                {progressStatus === 'installing'
+                  ? '⚙️ Автоматическая установка обновления…'
+                  : '⬇️ Автоматическое скачивание обновления…'}
+              </span>
+              <span>{progressPercent}%</span>
+            </div>
+            <div
+              style={{
+                width: '100%',
+                height: 6,
+                borderRadius: 999,
+                background: 'rgba(255, 255, 255, 0.08)',
+                overflow: 'hidden',
+              }}
+            >
+              <div
+                style={{
+                  width: `${Math.max(6, progressPercent)}%`,
+                  height: '100%',
+                  background: 'var(--accent)',
+                  transition: 'width 0.25s ease',
+                }}
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Блок «Что нового» */}
+        <div
+          style={{
+            padding: '12px 14px',
+            borderRadius: 10,
+            background: 'rgba(255, 212, 0, 0.06)',
+            border: '1px solid rgba(255, 212, 0, 0.25)',
+            marginBottom: 14,
+          }}
+        >
+          <div
+            style={{
+              fontSize: 12.5,
+              fontWeight: 700,
+              color: 'var(--accent)',
+              marginBottom: 8,
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+            }}
+          >
+            <span>✨ Что нового в {displayVersion}:</span>
+          </div>
+          <ul
+            style={{
+              margin: 0,
+              paddingLeft: 18,
+              fontSize: 12.5,
+              color: 'var(--text)',
+              lineHeight: 1.5,
+              maxHeight: 150,
+              overflowY: 'auto',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 4,
+            }}
+          >
+            {changelogItems.map((item, idx) => (
+              <li key={idx}>{item}</li>
+            ))}
+          </ul>
+        </div>
 
         {targetAsset && (
           <div
@@ -274,7 +432,7 @@ export function UpdateNotifier() {
             }}
           >
             <span style={{ fontWeight: 600, color: 'var(--accent)' }}>
-              📦 {targetAsset.name}
+              📦 {targetAsset.name} ({displayVersion})
             </span>
             {targetAsset.size > 0 && (
               <span style={{ color: 'var(--text-muted)', fontSize: 11.5 }}>
@@ -284,38 +442,30 @@ export function UpdateNotifier() {
           </div>
         )}
 
-        {release.body && (
-          <div
-            style={{
-              padding: '10px 12px',
-              borderRadius: 8,
-              background: 'rgba(0, 0, 0, 0.25)',
-              border: '1px solid var(--border)',
-              fontSize: 12,
-              color: 'var(--text-muted)',
-              maxHeight: 130,
-              overflowY: 'auto',
-              whiteSpace: 'pre-wrap',
-              marginBottom: 16,
-            }}
-          >
-            {release.body}
-          </div>
-        )}
-
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            className="btn"
+            style={{ width: 'auto', padding: '11px 14px', fontSize: 13 }}
+            onClick={() => setShowModal(false)}
+          >
+            Свернуть в фон
+          </button>
           <button
             type="button"
             className="btn btn-primary"
             style={{ flex: 1, padding: '11px 18px', fontWeight: 700 }}
-            onClick={handleInstallUpdate}
+            onClick={() => void executeAutoInstall(release, platform)}
             disabled={updating}
           >
-            {updating ? '⏳ Скачивание и запуск обновления…' : '🔄 Обновиться сейчас'}
+            {updating
+              ? progressStatus === 'installing'
+                ? '⚙️ Устанавливается автоматически…'
+                : `⏳ Скачивание (${progressPercent}%)…`
+              : `🔄 Установить ${displayVersion} сейчас`}
           </button>
         </div>
       </div>
     </div>
   );
 }
-

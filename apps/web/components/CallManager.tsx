@@ -23,6 +23,7 @@ export interface StartGroupCallParams {
   chatTitle: string;
   chatAvatar?: string | null;
   mode?: 'audio' | 'video';
+  joinOnly?: boolean;
 }
 
 export function startPixChatsCall(params: StartCallParams): void {
@@ -190,7 +191,9 @@ export function CallManager() {
   const [screenSharing, setScreenSharing] = useState(false);
   const [durationSec, setDurationSec] = useState(0);
   const [hasRemoteVideo, setHasRemoteVideo] = useState(false);
+  const [remoteRelayFrame, setRemoteRelayFrame] = useState<string | null>(null);
   const [groupParticipants, setGroupParticipants] = useState<CallParticipant[]>([]);
+  const [speakingUsers, setSpeakingUsers] = useState<Record<string, boolean>>({});
 
   const meRef = useRef<Profile | null>(null);
   meRef.current = me;
@@ -222,7 +225,8 @@ export function CallManager() {
   const micSourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const micProcessorNodeRef = useRef<ScriptProcessorNode | null>(null);
   const micZeroGainRef = useRef<GainNode | null>(null);
-  const nextPlayTimeRef = useRef<number>(0);
+  const nextPlayTimeBySenderRef = useRef<Record<string, number>>({});
+  const speakingTimersRef = useRef<Record<string, any>>({});
   const webrtcAudioActiveRef = useRef<boolean>(false);
   const lastWebrtcBytesRef = useRef<number>(0);
   const statsTimerRef = useRef<any>(null);
@@ -271,8 +275,24 @@ export function CallManager() {
     };
   }, []);
 
-  // Воспроизведение полученного PCM-фрагмента голоса через Web Audio API (резервный канал, когда WebRTC UDP заблокирован NAT)
-  function playRemotePcmChunk(base64Pcm: string, sampleRate: number) {
+  function markSpeakerActive(senderId?: string) {
+    if (!senderId) return;
+    setSpeakingUsers((prev) => (prev[senderId] ? prev : { ...prev, [senderId]: true }));
+    if (speakingTimersRef.current[senderId]) {
+      clearTimeout(speakingTimersRef.current[senderId]);
+    }
+    speakingTimersRef.current[senderId] = setTimeout(() => {
+      setSpeakingUsers((prev) => {
+        if (!prev[senderId]) return prev;
+        const copy = { ...prev };
+        delete copy[senderId];
+        return copy;
+      });
+    }, 700);
+  }
+
+  // Воспроизведение полученного PCM-фрагмента голоса через Web Audio API (резервный канал + микшер для групповых чатов)
+  function playRemotePcmChunk(base64Pcm: string, sampleRate: number, senderId?: string) {
     try {
       const ctx = getOrResumeAudioContext();
       if (!ctx) return;
@@ -287,21 +307,23 @@ export function CallManager() {
         channelData[i] = int16[i] / 32768.0;
       }
 
+      const key = senderId || 'default-peer';
       const now = ctx.currentTime;
-      if (nextPlayTimeRef.current < now || nextPlayTimeRef.current > now + 0.65) {
-        nextPlayTimeRef.current = now + 0.04;
+      let nextTime = nextPlayTimeBySenderRef.current[key] || 0;
+      if (nextTime < now || nextTime > now + 0.65) {
+        nextTime = now + 0.04;
       }
 
       const source = ctx.createBufferSource();
       source.buffer = audioBuffer;
 
       const gainNode = ctx.createGain();
-      gainNode.gain.value = 1.4;
+      gainNode.gain.value = 1.45;
 
       source.connect(gainNode);
       gainNode.connect(ctx.destination);
-      source.start(nextPlayTimeRef.current);
-      nextPlayTimeRef.current += audioBuffer.duration;
+      source.start(nextTime);
+      nextPlayTimeBySenderRef.current[key] = nextTime + audioBuffer.duration;
     } catch {}
   }
 
@@ -329,7 +351,10 @@ export function CallManager() {
       } catch {}
       micZeroGainRef.current = null;
     }
-    nextPlayTimeRef.current = 0;
+    nextPlayTimeBySenderRef.current = {};
+    Object.values(speakingTimersRef.current).forEach((t) => clearTimeout(t));
+    speakingTimersRef.current = {};
+    setSpeakingUsers({});
     webrtcAudioActiveRef.current = false;
     lastWebrtcBytesRef.current = 0;
   }
@@ -390,6 +415,9 @@ export function CallManager() {
           const int16 = new Int16Array(pendingSamples);
           pendingSamples = [];
           const b64 = encodeInt16ToBase64(int16);
+          if (meRef.current?.id) {
+            markSpeakerActive(meRef.current.id);
+          }
           try {
             roomChannelRef.current.send({
               type: 'broadcast',
@@ -584,6 +612,36 @@ export function CallManager() {
     syncRemoteAudioPlayback();
   }, [session, minimized, cameraEnabled, screenSharing, hasRemoteVideo]);
 
+  // Гибридная ретрансляция видеокадров (камера / экран) для групповых звонков и симметричного NAT
+  useEffect(() => {
+    if (!session || (!cameraEnabled && !screenSharing)) return;
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    const timer = setInterval(() => {
+      const vid = localVideoRef.current;
+      if (!vid || !ctx || !roomChannelRef.current || vid.readyState < 2) return;
+      const vw = vid.videoWidth || 480;
+      const vh = vid.videoHeight || 270;
+      const targetW = Math.min(480, vw);
+      const targetH = Math.max(180, Math.round((vh / vw) * targetW));
+      canvas.width = targetW;
+      canvas.height = targetH;
+      try {
+        ctx.drawImage(vid, 0, 0, targetW, targetH);
+        const frame = canvas.toDataURL('image/jpeg', 0.52);
+        roomChannelRef.current.send({
+          type: 'broadcast',
+          event: 'video-frame',
+          payload: {
+            senderId: meRef.current?.id,
+            frame,
+          },
+        });
+      } catch {}
+    }, 240);
+    return () => clearInterval(timer);
+  }, [session?.callId, cameraEnabled, screenSharing]);
+
   async function acquireLocalMedia(wantVideo: boolean): Promise<MediaStream> {
     if (typeof navigator !== 'undefined' && navigator.mediaDevices?.getUserMedia) {
       const audioConstraints: MediaTrackConstraints = {
@@ -668,6 +726,7 @@ export function CallManager() {
     setCameraEnabled(false);
     setScreenSharing(false);
     setHasRemoteVideo(false);
+    setRemoteRelayFrame(null);
     setGroupParticipants([]);
   }
 
@@ -885,18 +944,27 @@ export function CallManager() {
       .on('broadcast', { event: 'voice-pcm' }, ({ payload }) => {
         if (!payload?.pcm || (payload?.senderId && payload.senderId === meRef.current?.id)) return;
         stopRingtone();
+        markSpeakerActive(payload.senderId);
         setSession((prev) =>
           prev && prev.status !== 'connected' ? { ...prev, status: 'connected' } : prev
         );
         // Если прямой WebRTC не передаёт звук (например, из-за симметричного NAT) или это групповой звонок — воспроизводим через Web Audio PCM Relay
         if (!webrtcAudioActiveRef.current || activeSess.isGroup) {
-          playRemotePcmChunk(payload.pcm, payload.sr || RELAY_SAMPLE_RATE);
+          playRemotePcmChunk(payload.pcm, payload.sr || RELAY_SAMPLE_RATE, payload.senderId);
         }
+      })
+      .on('broadcast', { event: 'video-frame' }, ({ payload }) => {
+        if (!payload?.frame || (payload?.senderId && payload.senderId === meRef.current?.id)) return;
+        setRemoteRelayFrame(payload.frame);
+        setHasRemoteVideo(true);
       })
       .on('broadcast', { event: 'media-update' }, ({ payload }) => {
         if (payload?.senderId && payload.senderId === meRef.current?.id) return;
         if (typeof payload?.video === 'boolean') {
           setHasRemoteVideo(payload.video);
+          if (!payload.video) {
+            setRemoteRelayFrame(null);
+          }
         }
       })
       .on('broadcast', { event: 'hangup' }, () => {
@@ -1033,49 +1101,51 @@ export function CallManager() {
 
     joinSignalingRoom(newSession, true, localStream);
 
-    // Оповещаем ВСЕХ участников группы: каждому отправляется входящий вызов с мелодией!
-    try {
-      const supabase = getSupabaseClient();
-      const { data: members } = await supabase
-        .from('chat_members')
-        .select('user_id')
-        .eq('chat_id', params.chatId);
+    // Оповещаем всех участников группы входящим вызовом (если это запуск нового звонка, а не тихое подключение к текущему)
+    if (!params.joinOnly) {
+      try {
+        const supabase = getSupabaseClient();
+        const { data: members } = await supabase
+          .from('chat_members')
+          .select('user_id')
+          .eq('chat_id', params.chatId);
 
-      const targetIds = (members ?? [])
-        .map((r: any) => r.user_id)
-        .filter((uid: string) => uid && uid !== currentMe.id);
+        const targetIds = (members ?? [])
+          .map((r: any) => r.user_id)
+          .filter((uid: string) => uid && uid !== currentMe.id);
 
-      for (const uid of targetIds) {
-        const ch = supabase.channel(`pixchats-calls:${uid}`);
-        ch.subscribe((st) => {
-          if (st === 'SUBSCRIBED') {
-            ch.send({
-              type: 'broadcast',
-              event: 'call-invite',
-              payload: {
-                callId,
-                chatId: params.chatId,
-                callerId: currentMe.id,
-                callerName: `🔊 ${params.chatTitle} (${currentMe.display_name})`,
-                callerAvatar: params.chatAvatar || currentMe.avatar_url,
-                mode,
-                isGroup: true,
-                callerIsDeveloper: isDeveloperUser(currentMe),
-              },
-            });
-            setTimeout(() => {
-              supabase.removeChannel(ch);
-            }, 2500);
-          }
-        });
-      }
+        for (const uid of targetIds) {
+          const ch = supabase.channel(`pixchats-calls:${uid}`);
+          ch.subscribe((st) => {
+            if (st === 'SUBSCRIBED') {
+              ch.send({
+                type: 'broadcast',
+                event: 'call-invite',
+                payload: {
+                  callId,
+                  chatId: params.chatId,
+                  callerId: currentMe.id,
+                  callerName: `🔊 ${params.chatTitle} (${currentMe.display_name})`,
+                  callerAvatar: params.chatAvatar || currentMe.avatar_url,
+                  mode,
+                  isGroup: true,
+                  callerIsDeveloper: isDeveloperUser(currentMe),
+                },
+              });
+              setTimeout(() => {
+                supabase.removeChannel(ch);
+              }, 2500);
+            }
+          });
+        }
 
-      // Также отправляем сервисное уведомление в ленту группы
-      sendMessage(
-        params.chatId,
-        `🔊 ${currentMe.display_name} запустил(а) голосовой чат группы — нажмите «🔊 Голосовой чат» в шапке, чтобы присоединиться!`
-      ).catch(() => {});
-    } catch {}
+        // Также отправляем сервисное уведомление в ленту группы
+        sendMessage(
+          params.chatId,
+          `🔊 ${currentMe.display_name} запустил(а) голосовой чат группы — нажмите «🔊 Голосовой чат» в шапке, чтобы присоединиться!`
+        ).catch(() => {});
+      } catch {}
+    }
   }
 
   // Принять входящий звонок
@@ -1201,8 +1271,14 @@ export function CallManager() {
 
       const camTrack = localStreamRef.current?.getVideoTracks()?.[0] || null;
       const sender = pcRef.current?.getSenders().find((s) => s.track?.kind === 'video');
-      if (sender && camTrack) {
+      if (sender && camTrack && cameraEnabled) {
         await sender.replaceTrack(camTrack);
+      } else {
+        roomChannelRef.current?.send({
+          type: 'broadcast',
+          event: 'media-update',
+          payload: { senderId: meRef.current?.id, video: Boolean(cameraEnabled) },
+        });
       }
       return;
     }
@@ -1218,6 +1294,11 @@ export function CallManager() {
       screenTrack.onended = () => {
         setScreenSharing(false);
         screenStreamRef.current = null;
+        roomChannelRef.current?.send({
+          type: 'broadcast',
+          event: 'media-update',
+          payload: { senderId: meRef.current?.id, video: Boolean(cameraEnabled) },
+        });
       };
 
       if (pcRef.current) {
@@ -1588,12 +1669,28 @@ export function CallManager() {
         }}
       >
         {hasRemoteVideo ? (
-          <video
-            ref={remoteVideoRef}
-            autoPlay
-            playsInline
-            style={{ width: '100%', height: '100%', objectFit: 'contain', background: '#000' }}
-          />
+          <div style={{ position: 'relative', width: '100%', height: '100%', background: '#000' }}>
+            <video
+              ref={remoteVideoRef}
+              autoPlay
+              playsInline
+              style={{ width: '100%', height: '100%', objectFit: 'contain', background: '#000' }}
+            />
+            {remoteRelayFrame && (session.isGroup || !remoteStreamRef.current?.getVideoTracks().some((t) => t.readyState === 'live')) && (
+              <img
+                src={remoteRelayFrame}
+                alt="Видеопоток собеседника"
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  width: '100%',
+                  height: '100%',
+                  objectFit: 'contain',
+                  background: '#000',
+                }}
+              />
+            )}
+          </div>
         ) : (
           <div style={{ textAlign: 'center', padding: 24 }}>
             <div
@@ -1634,36 +1731,43 @@ export function CallManager() {
                   justifyContent: 'center',
                 }}
               >
-                {groupParticipants.map((part) => (
-                  <div
-                    key={part.id}
-                    style={{
-                      display: 'flex',
-                      flexDirection: 'column',
-                      alignItems: 'center',
-                      gap: 6,
-                      padding: '10px 14px',
-                      borderRadius: 12,
-                      background: 'var(--bg-secondary)',
-                      border: '1px solid var(--accent)',
-                    }}
-                  >
+                {groupParticipants.map((part) => {
+                  const isSpeaking = Boolean(speakingUsers[part.id]);
+                  return (
                     <div
-                      className={`avatar ${!part.avatar ? 'avatar-fallback' : ''}`}
+                      key={part.id}
                       style={{
-                        width: 44,
-                        height: 44,
-                        fontSize: 16,
-                        backgroundImage: part.avatar ? `url(${part.avatar})` : undefined,
-                        backgroundSize: 'cover',
-                        backgroundPosition: 'center',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        gap: 6,
+                        padding: '10px 14px',
+                        borderRadius: 12,
+                        background: 'var(--bg-secondary)',
+                        border: isSpeaking ? '2px solid #22c55e' : '1px solid var(--accent)',
+                        boxShadow: isSpeaking ? '0 0 16px rgba(34, 197, 94, 0.35)' : undefined,
+                        transition: 'all 0.15s ease',
                       }}
                     >
-                      {!part.avatar && part.name.slice(0, 1).toUpperCase()}
+                      <div
+                        className={`avatar ${!part.avatar ? 'avatar-fallback' : ''}`}
+                        style={{
+                          width: 44,
+                          height: 44,
+                          fontSize: 16,
+                          backgroundImage: part.avatar ? `url(${part.avatar})` : undefined,
+                          backgroundSize: 'cover',
+                          backgroundPosition: 'center',
+                        }}
+                      >
+                        {!part.avatar && part.name.slice(0, 1).toUpperCase()}
+                      </div>
+                      <span style={{ fontSize: 12, fontWeight: 600 }}>
+                        {part.name} {isSpeaking ? '🗣️' : ''}
+                      </span>
                     </div>
-                    <span style={{ fontSize: 12, fontWeight: 600 }}>{part.name}</span>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>

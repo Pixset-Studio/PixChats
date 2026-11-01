@@ -240,17 +240,116 @@ function ChatWindowInner() {
   const [e2eeFingerprint, setE2eeFingerprint] = useState<ChatSafetyFingerprint | null>(null);
   const [customPassInput, setCustomPassInput] = useState('');
 
-  // Пункт 1: Прямой эфир (Live Stream) в каналах с видео и демонстрацией экрана
+  // Пункт 1: Прямой эфир (Live Stream) в каналах с реальным звуком, видео и демонстрацией экрана
   const [liveStreamActive, setLiveStreamActive] = useState(false);
+  const [liveViewerCount, setLiveViewerCount] = useState(1);
   const [raisedHands, setRaisedHands] = useState<{ userId: string; userName: string }[]>([]);
   const [hasRaisedHand, setHasRaisedHand] = useState(false);
   const [inLiveStreamStage, setInLiveStreamStage] = useState(false);
   const [liveStreamMuted, setLiveStreamMuted] = useState(false);
+  const [liveStreamMicMuted, setLiveStreamMicMuted] = useState(false);
   const [allowedSpeakers, setAllowedSpeakers] = useState<string[]>([]);
+  const [liveActiveSpeakerName, setLiveActiveSpeakerName] = useState<string | null>(null);
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [remoteLiveVideo, setRemoteLiveVideo] = useState<{ frame: string; mode: 'camera' | 'screen' } | null>(null);
+
   const liveStreamVideoRef = useRef<HTMLVideoElement | null>(null);
   const liveStreamVideoStreamRef = useRef<MediaStream | null>(null);
+  const liveStreamChannelRef = useRef<any>(null);
+  const liveAudioCtxRef = useRef<AudioContext | null>(null);
+  const liveMicStreamRef = useRef<MediaStream | null>(null);
+  const liveMicSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const liveMicProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const liveNextPlayTimeRef = useRef<Record<string, number>>({});
+  const liveSpeakerTimerRef = useRef<any>(null);
+  const inLiveStreamStageRef = useRef(false);
+  inLiveStreamStageRef.current = inLiveStreamStage;
+  const liveStreamMutedRef = useRef(false);
+  liveStreamMutedRef.current = liveStreamMuted;
+
+  function getLiveAudioContext(): AudioContext | null {
+    if (typeof window === 'undefined') return null;
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return null;
+      if (!liveAudioCtxRef.current || liveAudioCtxRef.current.state === 'closed') {
+        liveAudioCtxRef.current = new AudioCtx();
+      }
+      if (liveAudioCtxRef.current.state === 'suspended') {
+        void liveAudioCtxRef.current.resume().catch(() => {});
+      }
+      return liveAudioCtxRef.current;
+    } catch {
+      return null;
+    }
+  }
+
+  function playLiveStreamPcmChunk(base64Pcm: string, sampleRate: number, senderId?: string, senderName?: string) {
+    if (!inLiveStreamStageRef.current || liveStreamMutedRef.current) return;
+    try {
+      const ctx = getLiveAudioContext();
+      if (!ctx) return;
+
+      const binary = atob(base64Pcm);
+      const len = binary.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      const int16 = new Int16Array(bytes.buffer);
+      if (int16.length === 0) return;
+
+      const rate = sampleRate > 0 ? sampleRate : 10000;
+      const audioBuffer = ctx.createBuffer(1, int16.length, rate);
+      const channelData = audioBuffer.getChannelData(0);
+      for (let i = 0; i < int16.length; i++) {
+        channelData[i] = int16[i] / 32768.0;
+      }
+
+      const key = senderId || 'host';
+      const now = ctx.currentTime;
+      let nextTime = liveNextPlayTimeRef.current[key] || 0;
+      if (nextTime < now || nextTime > now + 0.65) {
+        nextTime = now + 0.04;
+      }
+
+      const source = ctx.createBufferSource();
+      source.buffer = audioBuffer;
+      const gain = ctx.createGain();
+      gain.gain.value = 1.45;
+      source.connect(gain);
+      gain.connect(ctx.destination);
+      source.start(nextTime);
+      liveNextPlayTimeRef.current[key] = nextTime + audioBuffer.duration;
+
+      if (senderName) {
+        setLiveActiveSpeakerName(senderName);
+        if (liveSpeakerTimerRef.current) clearTimeout(liveSpeakerTimerRef.current);
+        liveSpeakerTimerRef.current = setTimeout(() => setLiveActiveSpeakerName(null), 900);
+      }
+    } catch {}
+  }
+
+  function stopLiveMicBroadcast() {
+    if (liveMicProcessorRef.current) {
+      try {
+        liveMicProcessorRef.current.onaudioprocess = null;
+        liveMicProcessorRef.current.disconnect();
+      } catch {}
+      liveMicProcessorRef.current = null;
+    }
+    if (liveMicSourceRef.current) {
+      try {
+        liveMicSourceRef.current.disconnect();
+      } catch {}
+      liveMicSourceRef.current = null;
+    }
+    if (liveMicStreamRef.current) {
+      liveMicStreamRef.current.getTracks().forEach((t) => t.stop());
+      liveMicStreamRef.current = null;
+    }
+  }
 
   function stopLiveVideoMedia() {
     if (liveStreamVideoStreamRef.current) {
@@ -259,6 +358,13 @@ function ChatWindowInner() {
     }
     setIsCameraActive(false);
     setIsScreenSharing(false);
+    try {
+      liveStreamChannelRef.current?.send({
+        type: 'broadcast',
+        event: 'livestream-video-stop',
+        payload: { senderId: me?.id },
+      });
+    } catch {}
   }
 
   async function toggleLiveCamera() {
@@ -272,7 +378,7 @@ function ChatWindowInner() {
       }
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: true,
+        audio: false,
       });
       liveStreamVideoStreamRef.current = stream;
       setIsCameraActive(true);
@@ -299,7 +405,7 @@ function ChatWindowInner() {
       }
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: true,
-        audio: true,
+        audio: false,
       });
       liveStreamVideoStreamRef.current = stream;
       setIsScreenSharing(true);
@@ -318,6 +424,61 @@ function ChatWindowInner() {
       setNotice('Не удалось запустить демонстрацию экрана');
       setTimeout(() => setNotice(null), 2500);
     }
+  }
+
+  function startChannelLiveStream() {
+    getLiveAudioContext();
+    setLiveStreamActive(true);
+    setInLiveStreamStage(true);
+    setLiveStreamMicMuted(false);
+    try {
+      liveStreamChannelRef.current?.track({
+        id: me?.id,
+        name: me?.display_name || 'Ведущий',
+        isHostActive: true,
+        inStage: true,
+        raisedHand: false,
+      });
+      liveStreamChannelRef.current?.send({
+        type: 'broadcast',
+        event: 'livestream-state',
+        payload: { active: true, hostName: me?.display_name || chat?.title || 'Ведущий' },
+      });
+      if (chatId && me) {
+        sendMessage(
+          chatId,
+          `🔴 ${me.display_name} запустил(а) прямой эфир канала — нажмите кнопку ниже или «▶ Открыть эфир» в верхней панели!`
+        ).catch(() => {});
+      }
+    } catch {}
+    setNotice('🔴 Прямой эфир запущен! Подписчики слышат вас и могут поднимать руку ✋');
+    setTimeout(() => setNotice(null), 2200);
+  }
+
+  function stopChannelLiveStream() {
+    stopLiveVideoMedia();
+    stopLiveMicBroadcast();
+    setLiveStreamActive(false);
+    setInLiveStreamStage(false);
+    setRemoteLiveVideo(null);
+    setRaisedHands([]);
+    setAllowedSpeakers([]);
+    try {
+      liveStreamChannelRef.current?.track({
+        id: me?.id,
+        name: me?.display_name || 'Участник',
+        isHostActive: false,
+        inStage: false,
+        raisedHand: false,
+      });
+      liveStreamChannelRef.current?.send({
+        type: 'broadcast',
+        event: 'livestream-state',
+        payload: { active: false },
+      });
+    } catch {}
+    setNotice('Прямой эфир завершён');
+    setTimeout(() => setNotice(null), 1800);
   }
 
   // Пункт 2: Частицы реакций (Reaction Particles)
@@ -995,6 +1156,270 @@ function ChatWindowInner() {
     };
   }, [chatId, me?.id]);
 
+  // Реалтайм-канал прямого эфира (pixchats-livestream): синхронизация эфира, микрофона, видео/экрана и поднятых рук
+  useEffect(() => {
+    if (!chatId || !me || chat?.type !== 'channel') return;
+    const supabase = getSupabaseClient();
+    const liveCh = supabase.channel(`pixchats-livestream:${chatId}`, {
+      config: {
+        presence: { key: me.id },
+        broadcast: { self: false },
+      },
+    });
+    liveStreamChannelRef.current = liveCh;
+
+    liveCh
+      .on('presence', { event: 'sync' }, () => {
+        try {
+          const state = liveCh.presenceState();
+          let anyHostActive = false;
+          let stageCount = 0;
+          const handsFromPresence: { userId: string; userName: string }[] = [];
+
+          Object.values(state).forEach((entries: any) => {
+            if (Array.isArray(entries) && entries[0]) {
+              const entry = entries[0];
+              if (entry.isHostActive) anyHostActive = true;
+              if (entry.inStage || entry.isHostActive) stageCount++;
+              if (entry.raisedHand && entry.id) {
+                handsFromPresence.push({
+                  userId: entry.id,
+                  userName: entry.name || 'Подписчик',
+                });
+              }
+            }
+          });
+
+          if (anyHostActive) {
+            setLiveStreamActive(true);
+          }
+          setLiveViewerCount(Math.max(1, stageCount));
+          if (handsFromPresence.length > 0) {
+            setRaisedHands((prev) => {
+              const map = new Map<string, string>();
+              prev.forEach((h) => map.set(h.userId, h.userName));
+              handsFromPresence.forEach((h) => map.set(h.userId, h.userName));
+              return Array.from(map.entries()).map(([userId, userName]) => ({ userId, userName }));
+            });
+          }
+        } catch {}
+      })
+      .on('broadcast', { event: 'livestream-state' }, ({ payload }) => {
+        if (!payload) return;
+        const active = Boolean(payload.active);
+        setLiveStreamActive(active);
+        if (!active) {
+          setInLiveStreamStage(false);
+          setRemoteLiveVideo(null);
+          setRaisedHands([]);
+          setAllowedSpeakers([]);
+        }
+      })
+      .on('broadcast', { event: 'livestream-audio' }, ({ payload }) => {
+        if (!payload?.pcm || payload.senderId === me.id) return;
+        playLiveStreamPcmChunk(payload.pcm, payload.sr || 10000, payload.senderId, payload.senderName);
+      })
+      .on('broadcast', { event: 'livestream-video-frame' }, ({ payload }) => {
+        if (!payload?.frame || payload.senderId === me.id) return;
+        setRemoteLiveVideo({
+          frame: payload.frame,
+          mode: payload.mode === 'screen' ? 'screen' : 'camera',
+        });
+      })
+      .on('broadcast', { event: 'livestream-video-stop' }, () => {
+        setRemoteLiveVideo(null);
+      })
+      .on('broadcast', { event: 'livestream-hand' }, ({ payload }) => {
+        if (!payload?.userId) return;
+        if (payload.raised) {
+          setRaisedHands((prev) =>
+            prev.some((x) => x.userId === payload.userId)
+              ? prev
+              : [...prev, { userId: payload.userId, userName: payload.userName || 'Подписчик' }]
+          );
+        } else {
+          setRaisedHands((prev) => prev.filter((x) => x.userId !== payload.userId));
+        }
+      })
+      .on('broadcast', { event: 'livestream-speaker' }, ({ payload }) => {
+        if (!payload?.userId) return;
+        if (payload.allowed) {
+          setAllowedSpeakers((prev) => (prev.includes(payload.userId) ? prev : [...prev, payload.userId]));
+          setRaisedHands((prev) => prev.filter((x) => x.userId !== payload.userId));
+          if (payload.userId === me.id) {
+            setHasRaisedHand(false);
+            setLiveStreamMicMuted(false);
+            setNotice('🎙️ Ведущий дал вам слово! Ваш микрофон в эфире включён');
+            setTimeout(() => setNotice(null), 3000);
+          }
+        } else {
+          setAllowedSpeakers((prev) => prev.filter((id) => id !== payload.userId));
+        }
+      })
+      .subscribe((st) => {
+        if (st === 'SUBSCRIBED') {
+          liveCh.track({
+            id: me.id,
+            name: me.display_name,
+            isHostActive: false,
+            inStage: false,
+            raisedHand: false,
+          });
+        }
+      });
+
+    return () => {
+      stopLiveMicBroadcast();
+      stopLiveVideoMedia();
+      supabase.removeChannel(liveCh);
+      liveStreamChannelRef.current = null;
+    };
+  }, [chatId, me?.id, chat?.type]);
+
+  // Синхронизация Presence при входе/выходе зрителя или ведущего в комнату эфира
+  useEffect(() => {
+    if (!liveStreamChannelRef.current || !me || chat?.type !== 'channel') return;
+    try {
+      liveStreamChannelRef.current.track({
+        id: me.id,
+        name: me.display_name,
+        isHostActive: Boolean(canModerate && liveStreamActive),
+        inStage: Boolean(inLiveStreamStage),
+        raisedHand: Boolean(hasRaisedHand),
+      });
+    } catch {}
+  }, [inLiveStreamStage, liveStreamActive, hasRaisedHand, canModerate, me?.id, chat?.type]);
+
+  // Захват и трансляция голоса ведущего (или приглашённого спикера) в прямом эфире канала
+  const canSpeakInLiveStream = Boolean(canModerate || (me && allowedSpeakers.includes(me.id)));
+  useEffect(() => {
+    if (!inLiveStreamStage || !liveStreamActive || !canSpeakInLiveStream || liveStreamMicMuted) {
+      stopLiveMicBroadcast();
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+          video: false,
+        });
+        if (cancelled) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        liveMicStreamRef.current = stream;
+
+        const ctx = getLiveAudioContext();
+        if (!ctx) return;
+
+        const source = ctx.createMediaStreamSource(stream);
+        const processor = ctx.createScriptProcessor(4096, 1, 1);
+        const zeroGain = ctx.createGain();
+        zeroGain.gain.value = 0;
+
+        const targetRate = 10000;
+        const ratio = (ctx.sampleRate || 48000) / targetRate;
+        let pendingSamples: number[] = [];
+        let silenceTail = 0;
+
+        processor.onaudioprocess = (e) => {
+          if (!liveStreamChannelRef.current || !inLiveStreamStageRef.current) return;
+          const input = e.inputBuffer.getChannelData(0);
+          let sumSq = 0;
+          for (let i = 0; i < input.length; i++) sumSq += input[i] * input[i];
+          const rms = Math.sqrt(sumSq / input.length);
+
+          if (rms > 0.0007) {
+            silenceTail = 3;
+          } else if (silenceTail > 0) {
+            silenceTail--;
+          } else {
+            pendingSamples = [];
+            return;
+          }
+
+          const outLen = Math.floor(input.length / ratio);
+          for (let i = 0; i < outLen; i++) {
+            const idx = Math.min(input.length - 1, Math.floor(i * ratio));
+            const s = Math.max(-1, Math.min(1, input[idx]));
+            pendingSamples.push(s < 0 ? s * 0x8000 : s * 0x7fff);
+          }
+
+          if (pendingSamples.length >= 1600) {
+            const int16 = new Int16Array(pendingSamples);
+            pendingSamples = [];
+            const bytes = new Uint8Array(int16.buffer, int16.byteOffset, int16.byteLength);
+            let binary = '';
+            for (let i = 0; i < bytes.length; i++) {
+              binary += String.fromCharCode(bytes[i]);
+            }
+            const b64 = btoa(binary);
+            try {
+              liveStreamChannelRef.current.send({
+                type: 'broadcast',
+                event: 'livestream-audio',
+                payload: {
+                  senderId: me?.id,
+                  senderName: me?.display_name || 'Спикер',
+                  sr: targetRate,
+                  pcm: b64,
+                },
+              });
+            } catch {}
+          }
+        };
+
+        source.connect(processor);
+        processor.connect(zeroGain);
+        zeroGain.connect(ctx.destination);
+        liveMicSourceRef.current = source;
+        liveMicProcessorRef.current = processor;
+      } catch {}
+    })();
+
+    return () => {
+      cancelled = true;
+      stopLiveMicBroadcast();
+    };
+  }, [inLiveStreamStage, liveStreamActive, canSpeakInLiveStream, liveStreamMicMuted, me?.id]);
+
+  // Трансляция кадров камеры или экрана ведущего всем зрителям прямого эфира
+  useEffect(() => {
+    if (!inLiveStreamStage || !liveStreamActive || (!isCameraActive && !isScreenSharing)) return;
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    const timer = setInterval(() => {
+      const vid = liveStreamVideoRef.current;
+      if (!vid || !ctx || !liveStreamChannelRef.current || vid.readyState < 2) return;
+      const vw = vid.videoWidth || 480;
+      const vh = vid.videoHeight || 270;
+      const targetW = Math.min(480, vw);
+      const targetH = Math.max(180, Math.round((vh / vw) * targetW));
+      canvas.width = targetW;
+      canvas.height = targetH;
+      try {
+        ctx.drawImage(vid, 0, 0, targetW, targetH);
+        const frame = canvas.toDataURL('image/jpeg', 0.52);
+        liveStreamChannelRef.current.send({
+          type: 'broadcast',
+          event: 'livestream-video-frame',
+          payload: {
+            senderId: me?.id,
+            frame,
+            mode: isScreenSharing ? 'screen' : 'camera',
+          },
+        });
+      } catch {}
+    }, 240);
+    return () => clearInterval(timer);
+  }, [inLiveStreamStage, liveStreamActive, isCameraActive, isScreenSharing, me?.id]);
+
   async function handleToggleReaction(messageId: string, emoji: string) {
     if (!me) return;
     if (!emoji.startsWith('💬:')) {
@@ -1458,11 +1883,9 @@ function ChatWindowInner() {
               }}
               onClick={() => {
                 if (!liveStreamActive) {
-                  setLiveStreamActive(true);
-                  setInLiveStreamStage(true);
-                  setNotice('🔴 Прямой эфир запущен! Подписчики могут присоединяться и поднимать руку ✋');
-                  setTimeout(() => setNotice(null), 2200);
+                  startChannelLiveStream();
                 } else {
+                  getLiveAudioContext();
                   setInLiveStreamStage(true);
                 }
               }}
@@ -1724,10 +2147,10 @@ function ChatWindowInner() {
             <div>
               <div style={{ fontWeight: 700, color: 'var(--danger)', display: 'flex', alignItems: 'center', gap: 6 }}>
                 <span>🔴 ИДЁТ ПРЯМОЙ ЭФИР КАНАЛА</span>
-                <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>• 👥 {raisedHands.length + (inLiveStreamStage ? 1 : 0)} в эфире</span>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>• 👥 {liveViewerCount} в эфире</span>
               </div>
               <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                Ведущий: {chat.title || 'Канал'}
+                Ведущий: {chat.title || 'Канал'} {liveActiveSpeakerName ? `• 🗣️ Говорит: ${liveActiveSpeakerName}` : ''}
               </div>
             </div>
           </div>
@@ -1737,7 +2160,10 @@ function ChatWindowInner() {
               type="button"
               className="btn btn-primary"
               style={{ width: 'auto', padding: '5px 12px', fontSize: 12, background: 'var(--danger)', borderColor: 'var(--danger)' }}
-              onClick={() => setInLiveStreamStage(true)}
+              onClick={() => {
+                getLiveAudioContext();
+                setInLiveStreamStage(true);
+              }}
             >
               ▶ Открыть эфир
             </button>
@@ -1746,12 +2172,7 @@ function ChatWindowInner() {
                 type="button"
                 className="btn"
                 style={{ width: 'auto', padding: '5px 10px', fontSize: 12 }}
-                onClick={() => {
-                  setLiveStreamActive(false);
-                  setInLiveStreamStage(false);
-                  setNotice('Прямой эфир завершён');
-                  setTimeout(() => setNotice(null), 1800);
-                }}
+                onClick={stopChannelLiveStream}
               >
                 ⏹ Завершить
               </button>
@@ -2119,16 +2540,64 @@ function ChatWindowInner() {
                         📎 {m.text}
                       </a>
                     ) : (
-                      <FormattedMessageText
-                        messageId={m.id}
-                        rawText={displayRawText}
-                        editedAt={m.edited_at}
-                        isDeleted={m.is_deleted}
-                        myUserId={me.id}
-                        reactions={msgReactions}
-                        onVotePollOption={(optIndex) => handleToggleReaction(m.id, `📊${optIndex + 1}`)}
-                        onSelfDestructExpired={handleSelfDestructExpired}
-                      />
+                      <>
+                        <FormattedMessageText
+                          messageId={m.id}
+                          rawText={displayRawText}
+                          editedAt={m.edited_at}
+                          isDeleted={m.is_deleted}
+                          myUserId={me.id}
+                          reactions={msgReactions}
+                          onVotePollOption={(optIndex) => handleToggleReaction(m.id, `📊${optIndex + 1}`)}
+                          onSelfDestructExpired={handleSelfDestructExpired}
+                        />
+                        {!m.is_deleted && m.text?.includes('запустил(а) голосовой чат группы') && chat.type === 'group' && (
+                          <div style={{ marginTop: 8 }}>
+                            <button
+                              type="button"
+                              className="btn btn-primary"
+                              style={{ width: 'auto', padding: '6px 14px', fontSize: 12, fontWeight: 700 }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                startPixChatsGroupCall({
+                                  chatId: chat.id,
+                                  chatTitle: chat.title || 'Группа',
+                                  chatAvatar: chat.avatar_url,
+                                  mode: 'audio',
+                                  joinOnly: true,
+                                });
+                              }}
+                            >
+                              🔊 Войти в голосовой чат
+                            </button>
+                          </div>
+                        )}
+                        {!m.is_deleted && m.text?.includes('запустил(а) прямой эфир канала') && chat.type === 'channel' && (
+                          <div style={{ marginTop: 8 }}>
+                            <button
+                              type="button"
+                              className="btn btn-primary"
+                              style={{
+                                width: 'auto',
+                                padding: '6px 14px',
+                                fontSize: 12,
+                                fontWeight: 700,
+                                background: 'var(--danger)',
+                                borderColor: 'var(--danger)',
+                                color: '#fff',
+                              }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                getLiveAudioContext();
+                                setLiveStreamActive(true);
+                                setInLiveStreamStage(true);
+                              }}
+                            >
+                              🔴 Открыть прямой эфир
+                            </button>
+                          </div>
+                        )}
+                      </>
                     )}
 
                     {m.caption && m.caption !== '__VIDEONOTE__' && m.caption_position === 'below' && (
@@ -3533,8 +4002,8 @@ function ChatWindowInner() {
               </button>
             </div>
 
-            {/* Видео-плеер камеры или демонстрации экрана */}
-            {(isCameraActive || isScreenSharing) ? (
+            {/* Видео-плеер камеры или демонстрации экрана (локальный для ведущего или удалённый поток для зрителей) */}
+            {(isCameraActive || isScreenSharing || remoteLiveVideo) ? (
               <div
                 style={{
                   position: 'relative',
@@ -3547,18 +4016,26 @@ function ChatWindowInner() {
                   border: '1px solid var(--border)',
                 }}
               >
-                <video
-                  ref={(el) => {
-                    liveStreamVideoRef.current = el;
-                    if (el && liveStreamVideoStreamRef.current) {
-                      el.srcObject = liveStreamVideoStreamRef.current;
-                    }
-                  }}
-                  autoPlay
-                  playsInline
-                  muted
-                  style={{ width: '100%', height: '100%', objectFit: 'contain' }}
-                />
+                {(isCameraActive || isScreenSharing) ? (
+                  <video
+                    ref={(el) => {
+                      liveStreamVideoRef.current = el;
+                      if (el && liveStreamVideoStreamRef.current) {
+                        el.srcObject = liveStreamVideoStreamRef.current;
+                      }
+                    }}
+                    autoPlay
+                    playsInline
+                    muted
+                    style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+                  />
+                ) : remoteLiveVideo ? (
+                  <img
+                    src={remoteLiveVideo.frame}
+                    alt="Прямой эфир"
+                    style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+                  />
+                ) : null}
                 <div
                   style={{
                     position: 'absolute',
@@ -3576,7 +4053,11 @@ function ChatWindowInner() {
                   }}
                 >
                   <span className="online-dot-glow" style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--danger)' }} />
-                  <span>{isScreenSharing ? '🖥️ Демонстрация экрана' : '📹 Видео с камеры'}</span>
+                  <span>
+                    {(isScreenSharing || remoteLiveVideo?.mode === 'screen')
+                      ? '🖥️ Демонстрация экрана'
+                      : '📹 Видео с камеры'}
+                  </span>
                 </div>
               </div>
             ) : (
@@ -3594,7 +4075,7 @@ function ChatWindowInner() {
               >
                 <div style={{ position: 'relative', width: 80, height: 80, margin: '0 auto 12px' }}>
                   <div
-                    className="avatar"
+                    className={`avatar ${!chat.avatar_url ? 'avatar-fallback' : ''}`}
                     style={{
                       width: 80,
                       height: 80,
@@ -3602,7 +4083,8 @@ function ChatWindowInner() {
                       backgroundImage: chat.avatar_url ? `url(${chat.avatar_url})` : undefined,
                       backgroundSize: 'cover',
                       backgroundPosition: 'center',
-                      border: '3px solid var(--accent)',
+                      border: liveActiveSpeakerName ? '3px solid #22c55e' : '3px solid var(--accent)',
+                      boxShadow: liveActiveSpeakerName ? '0 0 18px rgba(34, 197, 94, 0.45)' : undefined,
                     }}
                   >
                     {!chat.avatar_url && (chat.title || 'К').slice(0, 1).toUpperCase()}
@@ -3620,12 +4102,14 @@ function ChatWindowInner() {
                       borderRadius: 10,
                     }}
                   >
-                    🎙️ Спикер
+                    🎙️ Эфир
                   </span>
                 </div>
                 <div style={{ fontWeight: 700, fontSize: 16 }}>{chat.title}</div>
                 <div style={{ fontSize: 12, color: 'var(--accent)', marginTop: 4, fontWeight: 600 }}>
-                  🔊 Акустический эфир прямого вещания (HD Stereo)
+                  {liveActiveSpeakerName
+                    ? `🗣️ Сейчас говорит: ${liveActiveSpeakerName}`
+                    : `🔊 Прямой эфир • 👥 Зрителей: ${liveViewerCount}`}
                 </div>
               </div>
             )}
@@ -3665,8 +4149,15 @@ function ChatWindowInner() {
                           className="btn btn-primary"
                           style={{ width: 'auto', padding: '3px 8px', fontSize: 11 }}
                           onClick={() => {
-                            setAllowedSpeakers((prev) => [...prev, rh.userId]);
+                            setAllowedSpeakers((prev) => (prev.includes(rh.userId) ? prev : [...prev, rh.userId]));
                             setRaisedHands((prev) => prev.filter((x) => x.userId !== rh.userId));
+                            try {
+                              liveStreamChannelRef.current?.send({
+                                type: 'broadcast',
+                                event: 'livestream-speaker',
+                                payload: { userId: rh.userId, userName: rh.userName, allowed: true },
+                              });
+                            } catch {}
                             setNotice(`Вы дали слово участнику ${rh.userName} 🎙️`);
                             setTimeout(() => setNotice(null), 2000);
                           }}
@@ -3677,7 +4168,16 @@ function ChatWindowInner() {
                           type="button"
                           className="btn"
                           style={{ width: 'auto', padding: '3px 8px', fontSize: 11 }}
-                          onClick={() => setRaisedHands((prev) => prev.filter((x) => x.userId !== rh.userId))}
+                          onClick={() => {
+                            setRaisedHands((prev) => prev.filter((x) => x.userId !== rh.userId));
+                            try {
+                              liveStreamChannelRef.current?.send({
+                                type: 'broadcast',
+                                event: 'livestream-hand',
+                                payload: { userId: rh.userId, userName: rh.userName, raised: false },
+                              });
+                            } catch {}
+                          }}
                         >
                           Отклонить
                         </button>
@@ -3690,6 +4190,23 @@ function ChatWindowInner() {
 
             {/* Панель управления эфиром */}
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {canSpeakInLiveStream && (
+                <button
+                  type="button"
+                  className="btn"
+                  style={{
+                    flex: 1,
+                    padding: '10px 8px',
+                    fontSize: 13,
+                    borderColor: liveStreamMicMuted ? 'var(--danger)' : 'var(--accent)',
+                    color: liveStreamMicMuted ? 'var(--danger)' : 'var(--accent)',
+                  }}
+                  onClick={() => setLiveStreamMicMuted((v) => !v)}
+                >
+                  {liveStreamMicMuted ? '🔇 Микрофон выкл' : '🎤 Микрофон вкл'}
+                </button>
+              )}
+
               {canModerate && (
                 <>
                   <button
@@ -3698,7 +4215,7 @@ function ChatWindowInner() {
                     style={{ flex: 1, padding: '10px 8px', fontSize: 13 }}
                     onClick={toggleLiveCamera}
                   >
-                    {isCameraActive ? '📹 Выключить камеру' : '📹 Камера'}
+                    {isCameraActive ? '📹 Выкл камеру' : '📹 Камера'}
                   </button>
 
                   <button
@@ -3712,18 +4229,33 @@ function ChatWindowInner() {
                 </>
               )}
 
-              {!canModerate && (
+              {!canModerate && !canSpeakInLiveStream && (
                 <button
                   type="button"
                   className={`btn ${hasRaisedHand ? 'btn-primary' : ''}`}
-                  style={{ flex: 1, padding: '10px' }}
+                  style={{ flex: 1, padding: '10px', fontSize: 13 }}
                   onClick={() => {
                     const next = !hasRaisedHand;
                     setHasRaisedHand(next);
-                    if (next && me) {
-                      setRaisedHands((prev) => [...prev, { userId: me.id, userName: me.display_name }]);
-                      setNotice('Вы подняли руку ✋. Организатор трансляции увидит ваш запрос');
-                      setTimeout(() => setNotice(null), 2000);
+                    if (me) {
+                      if (next) {
+                        setRaisedHands((prev) =>
+                          prev.some((x) => x.userId === me.id)
+                            ? prev
+                            : [...prev, { userId: me.id, userName: me.display_name }]
+                        );
+                        setNotice('Вы подняли руку ✋. Ведущий эфира увидит ваш запрос');
+                        setTimeout(() => setNotice(null), 2000);
+                      } else {
+                        setRaisedHands((prev) => prev.filter((x) => x.userId !== me.id));
+                      }
+                      try {
+                        liveStreamChannelRef.current?.send({
+                          type: 'broadcast',
+                          event: 'livestream-hand',
+                          payload: { userId: me.id, userName: me.display_name, raised: next },
+                        });
+                      } catch {}
                     }
                   }}
                 >
@@ -3737,7 +4269,7 @@ function ChatWindowInner() {
                 style={{ flex: 1, padding: '10px', fontSize: 13 }}
                 onClick={() => setLiveStreamMuted((v) => !v)}
               >
-                {liveStreamMuted ? '🔇 Вкл звук' : '🔊 Выкл звук'}
+                {liveStreamMuted ? '🔇 Звук эфира выкл' : '🔊 Звук эфира вкл'}
               </button>
 
               {canModerate && (
@@ -3745,13 +4277,7 @@ function ChatWindowInner() {
                   type="button"
                   className="btn"
                   style={{ flex: 1, padding: '10px', color: 'var(--danger)', borderColor: 'var(--danger)', fontSize: 13 }}
-                  onClick={() => {
-                    stopLiveVideoMedia();
-                    setLiveStreamActive(false);
-                    setInLiveStreamStage(false);
-                    setNotice('Прямой эфир завершён');
-                    setTimeout(() => setNotice(null), 1800);
-                  }}
+                  onClick={stopChannelLiveStream}
                 >
                   ⏹ Завершить
                 </button>

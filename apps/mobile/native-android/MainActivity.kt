@@ -14,12 +14,14 @@ import android.view.WindowManager
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.getcapacitor.BridgeActivity
+import com.getcapacitor.BridgeWebChromeClient
 
 /**
  * Нативная Android-активность PixChats (Kotlin).
  * - Создаёт системные каналы уведомлений (сообщения + входящие звонки с мелодией вызова)
  * - Разрешает пробуждение экрана и показ входящего звонка поверх блокировки
- * - Автоматически запрашивает системное разрешение POST_NOTIFICATIONS (Android 13+) при запуске
+ * - Автоматически запрашивает системные разрешения POST_NOTIFICATIONS, RECORD_AUDIO, CAMERA
+ * - Разрешает WebRTC-захват микрофона и камеры внутри WebView без блокировок
  * - Подключает нативный Kotlin-мост window.PixChatsAndroid
  */
 class MainActivity : BridgeActivity() {
@@ -31,6 +33,8 @@ class MainActivity : BridgeActivity() {
         const val CALL_CHANNEL_NAME = "Входящие звонки PixChats"
         const val REQ_CODE_NOTIFICATIONS = 1001
     }
+
+    var pendingAutoInstallApk: java.io.File? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -44,9 +48,46 @@ class MainActivity : BridgeActivity() {
             webView.settings.domStorageEnabled = true
             webView.settings.mediaPlaybackRequiresUserGesture = false
             webView.addJavascriptInterface(PixChatsNativeBridge(this), "PixChatsAndroid")
+
+            if (bridge != null) {
+                webView.webChromeClient = object : BridgeWebChromeClient(bridge) {
+                    override fun onPermissionRequest(request: android.webkit.PermissionRequest?) {
+                        if (request == null) return
+                        runOnUiThread {
+                            try {
+                                request.grant(request.resources)
+                            } catch (_: Exception) {
+                                super.onPermissionRequest(request)
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         handleNotificationIntent(intent)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        val apkFile = pendingAutoInstallApk
+        if (apkFile != null && apkFile.exists()) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || packageManager.canRequestPackageInstalls()) {
+                pendingAutoInstallApk = null
+                PixChatsNativeBridge(this).installApkFileWithPackageInstaller(apkFile)
+            }
+        }
+    }
+
+    fun emitUpdateProgress(percent: Int, status: String) {
+        runOnUiThread {
+            try {
+                bridge?.webView?.evaluateJavascript(
+                    "window.dispatchEvent(new CustomEvent('pixchats:update_progress', { detail: { percent: $percent, status: '$status' } }));",
+                    null
+                )
+            } catch (_: Exception) {}
+        }
     }
 
     override fun onNewIntent(intent: Intent) {

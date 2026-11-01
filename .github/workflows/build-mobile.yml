@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 15
 
       - uses: actions/setup-node@v4
         with:
@@ -26,9 +28,6 @@ jobs:
       - name: Установка Android SDK
         uses: android-actions/setup-android@v3
         with:
-          # По умолчанию экшен просит ещё и пакет "tools" — Google недавно убрал его
-          # из репозитория SDK, из-за чего sdkmanager падал с exit code 1 ещё до
-          # начала сборки. platform-tools — всё, что реально нужно здесь.
           packages: 'platform-tools'
 
       - name: Install dependencies (весь монорепозиторий)
@@ -40,7 +39,7 @@ jobs:
           NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL || 'https://kibhezfpafhitcvpkquu.supabase.co' }}
           NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtpYmhlemZwYWZoaXRjdnBrcXV1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQxOTI4NjUsImV4cCI6MjA5OTc2ODg2NX0.HO1uskn4k7AWmFNFpFXd2vdgO8BKYz_bb8lpj2znSoI' }}
           NEXT_PUBLIC_BASE_PATH: ''
-          NEXT_PUBLIC_APP_VERSION: 0.1.${{ github.run_number }}
+          NEXT_PUBLIC_APP_VERSION: 0.2.${{ github.run_number }}
           NEXT_PUBLIC_BUILD_SHA: ${{ github.sha }}
         run: npm run build
 
@@ -56,13 +55,16 @@ jobs:
         working-directory: apps/mobile
         run: npx capacitor-assets generate --android
 
-      - name: Синхронизировать веб-код и встроить нативный Android-мост (уведомления POST_NOTIFICATIONS + PixChatsAndroid)
+      - name: Синхронизировать веб-код, постоянный ключ подписи и нативный Android-мост
         working-directory: apps/mobile
+        env:
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+          NEXT_PUBLIC_APP_VERSION: 0.2.${{ github.run_number }}
         run: |
           npx cap sync android
           node configure-android-native.js
 
-      - name: Собрать нативный .apk
+      - name: Собрать нативный .apk (с постоянной подписью для обновления поверх старого APK)
         working-directory: apps/mobile/android
         run: ./gradlew assembleDebug
 
@@ -89,6 +91,8 @@ jobs:
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 15
 
       - name: Скачать собранный .apk артефакт
         uses: actions/download-artifact@v4
@@ -96,7 +100,7 @@ jobs:
           name: PixChats-Android-apk
           path: release-assets
 
-      - name: Удалить старый Release "Lastest Version" и опубликовать новый с .exe и .apk
+      - name: Удалить старый Release и опубликовать новую версию с «Что нового», .exe и .apk
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -105,35 +109,48 @@ jobs:
         run: |
           mkdir -p release-assets
 
-          # 1. Сохраняем .exe из текущего релиза "Lastest Version" (чтобы в релизе всегда были и .exe, и .apk)
-          EXISTING_TAGS=$(gh api "repos/$REPO/releases" --jq '.[] | select(.name == "Lastest Version" or .name == "Latest Version" or .tag_name == "lastest-version" or .tag_name == "latest") | .tag_name' || true)
+          # 1. Сохраняем .exe из предыдущего актуального релиза (чтобы в релизе всегда были и .exe, и .apk)
+          EXISTING_TAGS=$(gh api "repos/$REPO/releases" --jq '.[].tag_name' || true)
           for TAG in $EXISTING_TAGS; do
-            gh release download "$TAG" --repo "$REPO" --pattern "*.exe" --dir release-assets --clobber || true
+            gh release download "$TAG" --repo "$REPO" --pattern "*.exe" --dir release-assets --clobber && break || true
           done
 
-          # 2. Удаляем все старые релизы "Lastest Version" и старый тег
-          OLD_IDS=$(gh api "repos/$REPO/releases" --jq '.[] | select(.name == "Lastest Version" or .name == "Latest Version" or .tag_name == "lastest-version" or .tag_name == "latest") | .id' || true)
+          # 2. Удаляем все старые релизы и старые теги, чтобы в репозитории оставался только актуальный релиз
+          OLD_IDS=$(gh api "repos/$REPO/releases" --jq '.[].id' || true)
           for ID in $OLD_IDS; do
             gh api -X DELETE "repos/$REPO/releases/$ID" || true
+          done
+          for TAG in $EXISTING_TAGS; do
+            git push origin ":refs/tags/$TAG" 2>/dev/null || true
           done
           git push origin :refs/tags/lastest-version 2>/dev/null || true
           git push origin :refs/tags/latest 2>/dev/null || true
 
-          # 3. Создаём новый Release "Lastest Version" с .apk (и .exe, если уже собран)
+          # 3. Формируем список «Что нового» из последних коммитов + ключевых обновлений релиза
+          VERSION_STR="0.2.${RUN_NUM}"
+          TAG_NAME="v${VERSION_STR}"
+          RELEASE_TITLE="PixChats v${VERSION_STR}"
           BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          NOTES=$(cat <<EOF
-          Актуальная сборка мессенджера PixChats для Windows (.exe) и Android (.apk).
+          RECENT_COMMITS=$(git log -n 6 --pretty=format:"• %s" 2>/dev/null || echo "• Улучшение стабильности и производительности")
 
-          - Версия: v0.1.${RUN_NUM}
+          NOTES=$(cat <<EOF
+          ### ✨ Что нового в PixChats v${VERSION_STR}:
+          ${RECENT_COMMITS}
+          • Стабильная передача звука и видео в личных звонках, голосовых чатах групп и прямых эфирах каналов
+          • Обновление Android (.apk) устанавливается поверх текущей версии без удаления приложения (единый ключ подписи и авто-инкремент versionCode)
+          • Система автообновления с подробным списком изменений для Windows (.exe) и Android (.apk)
+
+          ---
+          📦 **Техническая информация сборки:**
+          - Версия: v${VERSION_STR}
           - Commit: ${SHA}
           - Build-Time: ${BUILD_TIME}
           EOF
           )
 
-          gh release create "lastest-version" release-assets/* \
+          gh release create "$TAG_NAME" release-assets/* \
             --repo "$REPO" \
             --target "$SHA" \
-            --title "Lastest Version" \
+            --title "$RELEASE_TITLE" \
             --notes "$NOTES" \
             --latest
-
