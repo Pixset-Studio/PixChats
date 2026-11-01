@@ -33,7 +33,7 @@ export const MAX_REACTIONS_PER_STORY_USER = 3;
 
 const STORIES_STORAGE_KEY = 'pixchats:stories:v2';
 const STORIES_VIEWED_KEY = 'pixchats:stories_viewed:v1';
-const STORIES_BUCKET = 'message-media';
+const STORIES_BUCKET = 'avatars';
 const STORIES_REMOTE_PATH = 'stories/active_stories.json';
 const STORIES_LEGACY_PATH = 'stories/active_stories_v1.json';
 const STORIES_ITEMS_FOLDER = 'stories/items';
@@ -146,7 +146,7 @@ export function getCachedStories(): StoryItem[] {
   }
 }
 
-function saveCachedStories(items: StoryItem[]): StoryItem[] {
+export function saveCachedStories(items: StoryItem[]): StoryItem[] {
   const active = filterActive(items);
   if (typeof window !== 'undefined') {
     try {
@@ -185,10 +185,12 @@ export function markStoryViewedLocal(storyId: string): void {
 async function saveSingleStoryItemToCloud(story: StoryItem): Promise<void> {
   try {
     const supabase = getSupabaseClient();
+    const authorUid = story.authorUserId || story.userId;
+    if (!authorUid || authorUid.startsWith('channel:')) return;
     const blob = new Blob([JSON.stringify(story)], { type: 'application/json' });
     await supabase.storage
-      .from(STORIES_BUCKET)
-      .upload(`${STORIES_ITEMS_FOLDER}/${story.id}.json`, blob, {
+      .from('avatars')
+      .upload(`${authorUid}/stories/${story.id}.json`, blob, {
         upsert: true,
         contentType: 'application/json',
         cacheControl: '0',
@@ -204,57 +206,29 @@ export async function loadActiveStories(): Promise<StoryItem[]> {
     const supabase = getSupabaseClient();
     const cacheBust = Date.now();
 
-    // 1. Load individual story objects in stories/items/*.json so stories from ALL users & channels
-    // are always visible without being blocked by single-file RLS overwrite limits.
-    const itemsFolderPromise = supabase.storage
-      .from(STORIES_BUCKET)
-      .list(STORIES_ITEMS_FOLDER, {
-        limit: 100,
-        sortBy: { column: 'created_at', order: 'desc' },
-      })
-      .then(async ({ data: files }) => {
-        if (!files || files.length === 0) return [];
-        const jsonFiles = files.filter((f) => f.name && f.name.endsWith('.json')).slice(0, 80);
-        const loaded = await Promise.all(
-          jsonFiles.map(async (f) => {
-            try {
-              const { data } = supabase.storage
-                .from(STORIES_BUCKET)
-                .getPublicUrl(`${STORIES_ITEMS_FOLDER}/${f.name}`);
-              if (!data?.publicUrl) return null;
-              const res = await fetch(`${data.publicUrl}?t=${cacheBust}`, { cache: 'no-store' });
-              if (!res.ok) return null;
-              return await res.json();
-            } catch {
-              return null;
-            }
-          })
-        );
-        return loaded.filter(Boolean);
-      })
-      .catch(() => []);
+    // 1. Загружаем активные истории всех недавних пользователей из avatars/{userId}/stories/active_stories.json
+    const { data: profiles } = await supabase
+      .from('profiles')
+      .select('id')
+      .limit(60);
 
-    // 2. Load shared index files (active_stories.json and active_stories_v1.json)
-    const fetchIndexFile = async (path: string) => {
+    const profilePromises = (profiles || []).map(async (p: { id: string }) => {
       try {
-        const { data } = supabase.storage.from(STORIES_BUCKET).getPublicUrl(path);
+        const { data } = supabase.storage.from('avatars').getPublicUrl(`${p.id}/stories/active_stories.json`);
         if (!data?.publicUrl) return [];
-        const resp = await fetch(`${data.publicUrl}?t=${cacheBust}`, { cache: 'no-store' });
-        if (!resp.ok) return [];
-        const json = await resp.json();
+        const res = await fetch(`${data.publicUrl}?t=${cacheBust}`, { cache: 'no-store' });
+        if (!res.ok) return [];
+        const json = await res.json();
         return Array.isArray(json) ? json : [];
       } catch {
         return [];
       }
-    };
+    });
 
-    const [fromFolder, fromMainIndex, fromLegacyIndex] = await Promise.all([
-      itemsFolderPromise,
-      fetchIndexFile(STORIES_REMOTE_PATH),
-      fetchIndexFile(STORIES_LEGACY_PATH),
-    ]);
+    const results = await Promise.all(profilePromises);
+    const flattened = results.flat();
 
-    const merged = filterActive([...local, ...fromLegacyIndex, ...fromMainIndex, ...fromFolder]);
+    const merged = filterActive([...local, ...flattened]);
     return saveCachedStories(merged);
   } catch {
     return local;
@@ -265,12 +239,16 @@ async function persistStoriesToCloud(stories: StoryItem[]): Promise<void> {
   const active = saveCachedStories(stories);
   try {
     const supabase = getSupabaseClient();
-    const blob = new Blob([JSON.stringify(active)], { type: 'application/json' });
-    await supabase.storage.from(STORIES_BUCKET).upload(STORIES_REMOTE_PATH, blob, {
-      upsert: true,
-      contentType: 'application/json',
-      cacheControl: '0',
-    });
+    const { data: { user } } = await supabase.auth.getUser();
+    if (user?.id) {
+      const myActive = active.filter((s) => s.authorUserId === user.id || s.userId === user.id);
+      const blob = new Blob([JSON.stringify(myActive)], { type: 'application/json' });
+      await supabase.storage.from('avatars').upload(`${user.id}/stories/active_stories.json`, blob, {
+        upsert: true,
+        contentType: 'application/json',
+        cacheControl: '0',
+      });
+    }
 
     const channel = supabase.channel('pixchats-stories-global');
     channel.subscribe((status) => {

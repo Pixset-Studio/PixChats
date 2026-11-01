@@ -291,59 +291,80 @@ export function ChatListPanel() {
     if (!profile) return;
     const supabase = getSupabaseClient();
 
+    const handledListMsgIds = new Set<string>();
+
+    const processNewMessage = async (row: any) => {
+      if (!row || row.is_deleted || !row.id || !row.chat_id) return;
+      if (handledListMsgIds.has(row.id)) return;
+      handledListMsgIds.add(row.id);
+      if (handledListMsgIds.size > 200) {
+        const first = handledListMsgIds.values().next().value;
+        if (first) handledListMsgIds.delete(first);
+      }
+
+      const decryptedText = row.ciphertext
+        ? await decryptMessageE2EE(row.chat_id, row.ciphertext)
+        : row.text || '';
+
+      setPreviews((prev) => ({
+        ...prev,
+        [row.chat_id]: {
+          id: row.id,
+          chat_id: row.chat_id,
+          sender_id: row.sender_id,
+          text: decryptedText,
+          message_type: row.message_type,
+          media_path: row.media_path,
+          caption: row.caption,
+          caption_position: row.caption_position ?? 'below',
+          sent_at: row.sent_at,
+          reply_to_id: row.reply_to_id,
+          edited_at: row.edited_at,
+          is_deleted: row.is_deleted,
+          forwarded_from_chat_id: row.forwarded_from_chat_id,
+        },
+      }));
+
+      if (row.sender_id !== profile.id) {
+        setFlashIds((prev) => new Set(prev).add(row.chat_id));
+        setTimeout(() => {
+          setFlashIds((prev) => {
+            const next = new Set(prev);
+            next.delete(row.chat_id);
+            return next;
+          });
+        }, 1400);
+
+        const currentOpenChatId =
+          typeof window !== 'undefined' && /\/chat(\/|$)/.test(window.location.pathname)
+            ? new URLSearchParams(window.location.search).get('id')
+            : null;
+        const isCurrentlyOpenChat = Boolean(
+          currentOpenChatId && String(currentOpenChatId) === String(row.chat_id)
+        );
+
+        if (!isCurrentlyOpenChat) {
+          setUnreadCounts((prev) => ({ ...prev, [row.chat_id]: (prev[row.chat_id] ?? 0) + 1 }));
+        } else {
+          setUnreadCounts((prev) => (prev[row.chat_id] ? { ...prev, [row.chat_id]: 0 } : prev));
+          clearUnreadInChatListCache(row.chat_id);
+          void markChatAsRead(profile.id, row.chat_id, row.sent_at);
+        }
+      }
+    };
+
+    const globalMsgChannel = supabase
+      .channel('pixchats-messages-global')
+      .on('broadcast', { event: 'new-message' }, (data: any) => {
+        const msg = data?.payload?.message || data?.payload;
+        if (msg) void processNewMessage(msg);
+      })
+      .subscribe();
+
     const messagesChannel = supabase
       .channel('chat-list-messages')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, async (payload: any) => {
-        const row = payload.new;
-        if (!row || row.is_deleted) return;
-
-        const decryptedText = await decryptMessageE2EE(row.chat_id, row.ciphertext);
-
-        setPreviews((prev) => ({
-          ...prev,
-          [row.chat_id]: {
-            id: row.id,
-            chat_id: row.chat_id,
-            sender_id: row.sender_id,
-            text: decryptedText,
-            message_type: row.message_type,
-            media_path: row.media_path,
-            caption: row.caption,
-            caption_position: row.caption_position ?? 'below',
-            sent_at: row.sent_at,
-            reply_to_id: row.reply_to_id,
-            edited_at: row.edited_at,
-            is_deleted: row.is_deleted,
-            forwarded_from_chat_id: row.forwarded_from_chat_id,
-          },
-        }));
-
-        if (row.sender_id !== profile.id) {
-          setFlashIds((prev) => new Set(prev).add(row.chat_id));
-          setTimeout(() => {
-            setFlashIds((prev) => {
-              const next = new Set(prev);
-              next.delete(row.chat_id);
-              return next;
-            });
-          }, 1400);
-
-          const currentOpenChatId =
-            typeof window !== 'undefined' && /\/chat(\/|$)/.test(window.location.pathname)
-              ? new URLSearchParams(window.location.search).get('id')
-              : null;
-          const isCurrentlyOpenChat = Boolean(
-            currentOpenChatId && String(currentOpenChatId) === String(row.chat_id)
-          );
-
-          if (!isCurrentlyOpenChat) {
-            setUnreadCounts((prev) => ({ ...prev, [row.chat_id]: (prev[row.chat_id] ?? 0) + 1 }));
-          } else {
-            setUnreadCounts((prev) => (prev[row.chat_id] ? { ...prev, [row.chat_id]: 0 } : prev));
-            clearUnreadInChatListCache(row.chat_id);
-            void markChatAsRead(profile.id, row.chat_id, row.sent_at);
-          }
-        }
+        void processNewMessage(payload.new);
       })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages' }, async (payload: any) => {
         const row = payload.new;
@@ -437,6 +458,7 @@ export function ChatListPanel() {
     return () => {
       window.removeEventListener('pixchats:message_deleted', onLocalMessageDeleted);
       supabase.removeChannel(messagesChannel);
+      supabase.removeChannel(globalMsgChannel);
       supabase.removeChannel(readStateChannel);
       supabase.removeChannel(membersChannel);
       supabase.removeChannel(typingGlobalChannel);

@@ -121,17 +121,50 @@ export async function sendMessage(chatId: string, text: string, options: SendMes
 
   const ciphertext = await encryptMessageE2EE(chatId, text);
 
-  const { error } = await supabase.from('messages').insert({
-    chat_id: chatId,
-    sender_id: senderId,
-    ciphertext,
-    message_type: options.messageType ?? 'text',
-    media_path: options.mediaPath ?? null,
-    reply_to_id: options.replyToId ?? null,
-    caption: options.caption ?? null,
-    caption_position: options.captionPosition ?? 'below',
-  });
+  const { data: insertedRow, error } = await supabase
+    .from('messages')
+    .insert({
+      chat_id: chatId,
+      sender_id: senderId,
+      ciphertext,
+      message_type: options.messageType ?? 'text',
+      media_path: options.mediaPath ?? null,
+      reply_to_id: options.replyToId ?? null,
+      caption: options.caption ?? null,
+      caption_position: options.captionPosition ?? 'below',
+    })
+    .select(SELECT_FIELDS)
+    .single();
+
   if (error) throw error;
+
+  // Рассылаем мгновенный Realtime broadcast для моментального появления сообщения и срабатывания уведомлений
+  try {
+    const mapped = await mapRowAsync(insertedRow);
+    const chatCh = supabase.channel(`messages:${chatId}`);
+    chatCh.subscribe((status) => {
+      if (status === 'SUBSCRIBED') {
+        chatCh.send({
+          type: 'broadcast',
+          event: 'new-message',
+          payload: { message: mapped, row: insertedRow },
+        });
+      }
+    });
+
+    const globalMsgCh = supabase.channel('pixchats-messages-global');
+    globalMsgCh.subscribe((status) => {
+      if (status === 'SUBSCRIBED') {
+        globalMsgCh.send({
+          type: 'broadcast',
+          event: 'new-message',
+          payload: { message: mapped, row: insertedRow },
+        });
+      }
+    });
+  } catch {
+    // broadcast failure should not block message send
+  }
 }
 
 export async function getMessages(chatId: string, limit = 200): Promise<Message[]> {
@@ -415,6 +448,12 @@ export function subscribeToMessages(
         onInsert(msg);
       }
     )
+    .on('broadcast', { event: 'new-message' }, async (payload: any) => {
+      const msg = payload.payload?.message;
+      if (msg && !msg.is_deleted && !isMessageDeletedForMe(msg.id)) {
+        onInsert(msg);
+      }
+    })
     .on(
       'postgres_changes',
       { event: 'UPDATE', schema: 'public', table: 'messages', filter: `chat_id=eq.${chatId}` },

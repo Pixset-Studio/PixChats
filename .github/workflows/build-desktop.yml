@@ -29,6 +29,9 @@ jobs:
 
       - name: Install dependencies (весь монорепозиторий)
         shell: bash
+        env:
+          ELECTRON_MIRROR: "https://npmmirror.com/mirrors/electron/"
+          ELECTRON_BUILDER_BINARIES_MIRROR: "https://npmmirror.com/mirrors/electron-builder-binaries/"
         run: |
           npm config set fetch-retries 5
           npm config set fetch-retry-mintimeout 20000

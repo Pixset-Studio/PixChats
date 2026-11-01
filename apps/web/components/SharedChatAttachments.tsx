@@ -345,20 +345,24 @@ export function SharedChatAttachments({
       )}
 
       {/* Переключатель вкладок */}
+      {/* Переключатель вкладок — адаптивный скролл на мобильных устройствах */}
       <div
+        className="attachments-tabs-bar"
         style={{
-          display: 'grid',
-          gridTemplateColumns:
-            relevantStories.length > 0 ? 'repeat(5, 1fr)' : 'repeat(4, 1fr)',
+          display: 'flex',
+          overflowX: 'auto',
           gap: 6,
           marginBottom: 12,
+          paddingBottom: 4,
+          scrollbarWidth: 'none',
+          WebkitOverflowScrolling: 'touch',
         }}
       >
         {relevantStories.length > 0 && (
           <button
             type="button"
             className={`btn btn-compact ${tab === 'stories' ? 'btn-primary' : ''}`}
-            style={{ padding: '7px 6px', fontSize: 12 }}
+            style={{ padding: '7px 10px', fontSize: 12, flexShrink: 0, width: 'auto', whiteSpace: 'nowrap' }}
             onClick={() => setTab('stories')}
           >
             ✨ Истории ({relevantStories.length})
@@ -367,7 +371,7 @@ export function SharedChatAttachments({
         <button
           type="button"
           className={`btn btn-compact ${tab === 'media' ? 'btn-primary' : ''}`}
-          style={{ padding: '7px 6px', fontSize: 12 }}
+          style={{ padding: '7px 10px', fontSize: 12, flexShrink: 0, width: 'auto', whiteSpace: 'nowrap' }}
           onClick={() => setTab('media')}
         >
           🖼️ Медиа ({mediaItems.length})
@@ -375,7 +379,7 @@ export function SharedChatAttachments({
         <button
           type="button"
           className={`btn btn-compact ${tab === 'files' ? 'btn-primary' : ''}`}
-          style={{ padding: '7px 6px', fontSize: 12 }}
+          style={{ padding: '7px 10px', fontSize: 12, flexShrink: 0, width: 'auto', whiteSpace: 'nowrap' }}
           onClick={() => setTab('files')}
         >
           📎 Файлы ({fileItems.length})
@@ -383,7 +387,7 @@ export function SharedChatAttachments({
         <button
           type="button"
           className={`btn btn-compact ${tab === 'voice' ? 'btn-primary' : ''}`}
-          style={{ padding: '7px 6px', fontSize: 12 }}
+          style={{ padding: '7px 10px', fontSize: 12, flexShrink: 0, width: 'auto', whiteSpace: 'nowrap' }}
           onClick={() => setTab('voice')}
         >
           🎤 Аудио ({voiceItems.length})
@@ -391,7 +395,7 @@ export function SharedChatAttachments({
         <button
           type="button"
           className={`btn btn-compact ${tab === 'links' ? 'btn-primary' : ''}`}
-          style={{ padding: '7px 6px', fontSize: 12 }}
+          style={{ padding: '7px 10px', fontSize: 12, flexShrink: 0, width: 'auto', whiteSpace: 'nowrap' }}
           onClick={() => setTab('links')}
         >
           🔗 Ссылки ({linkItems.length})

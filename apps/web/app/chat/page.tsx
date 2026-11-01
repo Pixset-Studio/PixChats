@@ -9,6 +9,7 @@ import { DesktopShell } from '../../components/DesktopShell';
 import { buildAppUrl } from '../../lib/url';
 import { VerifiedBadge } from '../../components/VerifiedBadge';
 import { NameWithBadges } from '../../components/NameBadges';
+import { EmojiOrFlag } from '../../components/EmojiOrFlag';
 import { startPixChatsCall, startPixChatsGroupCall } from '../../components/CallManager';
 import {
   getSupabaseClient,
@@ -2997,7 +2998,7 @@ function ChatWindowInner() {
                             }}
                             title={hasReacted ? 'Нажмите, чтобы снять реакцию' : 'Нажмите, чтобы отреагировать'}
                           >
-                            <span>{emoji}</span>
+                            <EmojiOrFlag char={emoji} size={15} />
                             <span className="reaction-count">{userIds.length}</span>
                           </button>
                         );
@@ -3020,7 +3021,7 @@ function ChatWindowInner() {
                             }}
                             title={emoji}
                           >
-                            {emoji}
+                            <EmojiOrFlag char={emoji} size={20} />
                           </button>
                         );
                       })}

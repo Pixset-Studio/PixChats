@@ -3,6 +3,9 @@
 import React, { useEffect, useState } from 'react';
 import type { UserRole } from '@pixchats/core';
 import { getUserEmojiStatus, syncAllEmojiStatusesFromCloud } from '../lib/emojiStatus';
+import { EmojiOrFlag } from './EmojiOrFlag';
+
+const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH || '';
 
 interface NameWithBadgesProps {
   name: string;
@@ -16,11 +19,17 @@ interface NameWithBadgesProps {
   emojiStatus?: string | null;
 }
 
-const ROLE_META: Record<Exclude<UserRole, 'user'>, { label: string; icon: string; className: string }> = {
-  moderator: { label: 'Модератор', icon: '🛡️', className: 'role-badge role-moderator' },
-  admin: { label: 'Админ', icon: '⚡', className: 'role-badge role-admin' },
-  developer: { label: 'Разработчик', icon: '👑', className: 'role-badge role-developer' },
-  partner: { label: 'Партнёр', icon: '🤝', className: 'role-badge role-partner' },
+interface RoleBadgeConfig {
+  label: string;
+  badgeFile: string;
+  className: string;
+}
+
+const ROLE_BADGE_MAP: Record<Exclude<UserRole, 'user'>, RoleBadgeConfig> = {
+  developer: { label: 'Разработчик Pixset', badgeFile: 'developer.png', className: 'role-badge-img role-developer' },
+  partner: { label: 'Официальный партнёр', badgeFile: 'partner.png', className: 'role-badge-img role-partner' },
+  admin: { label: 'Администратор', badgeFile: 'shield.png', className: 'role-badge-img role-admin' },
+  moderator: { label: 'Модератор', badgeFile: 'shield.png', className: 'role-badge-img role-moderator' },
 };
 
 export function NameWithBadges({
@@ -55,7 +64,7 @@ export function NameWithBadges({
     }
   }, [userId, username, name, emojiStatus]);
 
-  const roleMeta = role !== 'user' ? ROLE_META[role] : null;
+  const roleMeta = role !== 'user' ? ROLE_BADGE_MAP[role] : null;
 
   function toggleTip(nextTip: string) {
     if (!isInteractive) return;
@@ -63,7 +72,7 @@ export function NameWithBadges({
   }
 
   return (
-    <span className="name-with-badges">
+    <span className="name-with-badges" style={{ display: 'inline-flex', alignItems: 'center', flexWrap: 'wrap', gap: 3, position: 'relative' }}>
       <span>{name}</span>
 
       {resolvedEmoji && (
@@ -74,7 +83,7 @@ export function NameWithBadges({
             isInteractive
               ? (e) => {
                   e.stopPropagation();
-                  toggleTip(`Эмодзи-статус ${resolvedEmoji}`);
+                  toggleTip(`Эмодзи-статус: ${resolvedEmoji}`);
                 }
               : undefined
           }
@@ -82,42 +91,80 @@ export function NameWithBadges({
             display: 'inline-flex',
             alignItems: 'center',
             justifyContent: 'center',
-            fontSize: '1.02em',
-            lineHeight: 1,
-            marginLeft: 3,
+            marginLeft: 2,
             padding: '1px 4px',
             borderRadius: 6,
-            background: 'rgba(255, 212, 0, 0.1)',
-            border: '1px solid rgba(255, 212, 0, 0.24)',
+            background: 'rgba(255, 212, 0, 0.12)',
+            border: '1px solid rgba(255, 212, 0, 0.28)',
             cursor: isInteractive ? 'pointer' : 'default',
             userSelect: 'none',
           }}
         >
-          {resolvedEmoji}
+          <EmojiOrFlag char={resolvedEmoji} size={15} />
         </span>
       )}
 
-      {isVerified && (
-        <span
-          className="verified-badge"
-          role={isInteractive ? 'button' : undefined}
-          tabIndex={isInteractive ? 0 : undefined}
-          onClick={isInteractive ? () => toggleTip('Верифицированный аккаунт') : undefined}
-          title="Верифицированный аккаунт"
-        >
-          ✓
-        </span>
+      {isPixsetEmployee && (
+        <img
+          src={`${BASE_PATH}/badges/employee.png`}
+          alt="Сотрудник Pixset"
+          title="Сотрудник Pixset Studio"
+          className="role-badge-png employee-badge-png"
+          onClick={isInteractive ? () => toggleTip('Сотрудник Pixset Studio') : undefined}
+          style={{
+            width: 17,
+            height: 17,
+            objectFit: 'contain',
+            verticalAlign: 'middle',
+            cursor: isInteractive ? 'pointer' : 'default',
+            filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.25))',
+          }}
+        />
       )}
 
       {roleMeta && (
-        <span
-          className={roleMeta.className}
-          role={isInteractive ? 'button' : undefined}
-          tabIndex={isInteractive ? 0 : undefined}
-          onClick={isInteractive ? () => toggleTip(roleMeta.label) : undefined}
+        <img
+          src={`${BASE_PATH}/badges/${roleMeta.badgeFile}`}
+          alt={roleMeta.label}
           title={roleMeta.label}
+          className={`role-badge-png ${roleMeta.className}`}
+          onClick={isInteractive ? () => toggleTip(roleMeta.label) : undefined}
+          style={{
+            width: 17,
+            height: 17,
+            objectFit: 'contain',
+            verticalAlign: 'middle',
+            cursor: isInteractive ? 'pointer' : 'default',
+            filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.25))',
+          }}
+        />
+      )}
+
+      {isVerified && (
+        <img
+          src={`${BASE_PATH}/badges/verified.png`}
+          alt="Верифицирован"
+          title="Верифицированный профиль PixChats"
+          className="role-badge-png verified-badge-png"
+          onClick={isInteractive ? () => toggleTip('Верифицированный профиль') : undefined}
+          style={{
+            width: 16,
+            height: 16,
+            objectFit: 'contain',
+            verticalAlign: 'middle',
+            cursor: isInteractive ? 'pointer' : 'default',
+            filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.25))',
+          }}
+        />
+      )}
+
+      {isFrozen && (
+        <span
+          className="frozen-badge"
+          title="Аккаунт временно заморожен"
+          style={{ fontSize: 13, verticalAlign: 'middle' }}
         >
-          {roleMeta.icon}
+          ❄️
         </span>
       )}
 

@@ -14,6 +14,7 @@ interface AdminChannelOption {
 import {
   loadActiveStories,
   getCachedStories,
+  saveCachedStories,
   publishNewStory,
   deleteStoryById,
   toggleStoryReaction,
@@ -26,6 +27,7 @@ import {
 import { compressImageToDataUrl } from '../lib/fileStorage';
 import { VerifiedBadge } from './VerifiedBadge';
 import { EmojiPicker } from './EmojiPicker';
+import { EmojiOrFlag } from './EmojiOrFlag';
 import {
   getPreferredAudioConstraints,
   getPreferredVideoConstraints,
@@ -189,10 +191,36 @@ export function StoriesBar({ profile }: StoriesBarProps) {
     const supabase = getSupabaseClient();
     const channel = supabase
       .channel('pixchats-stories-global')
-      .on('broadcast', { event: 'stories-sync' }, () => {
-        refreshStories();
+      .on('broadcast', { event: 'stories-sync' }, (data: any) => {
+        if (data?.payload?.stories && Array.isArray(data.payload.stories)) {
+          const merged = saveCachedStories(data.payload.stories);
+          if (mounted) {
+            setStories(merged);
+            setViewedIds(getViewedStoryIds());
+          }
+        } else {
+          refreshStories();
+        }
       })
-      .subscribe();
+      .on('broadcast', { event: 'stories-request-sync' }, () => {
+        const cached = getCachedStories();
+        if (cached.length > 0) {
+          void channel.send({
+            type: 'broadcast',
+            event: 'stories-sync',
+            payload: { stories: cached },
+          });
+        }
+      })
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          void channel.send({
+            type: 'broadcast',
+            event: 'stories-request-sync',
+            payload: {},
+          });
+        }
+      });
 
     return () => {
       mounted = false;
@@ -1909,7 +1937,7 @@ export function StoriesBar({ profile }: StoriesBarProps) {
                         gap: 4,
                       }}
                     >
-                      <span>{emoji}</span>
+                      <EmojiOrFlag char={emoji} size={15} />
                       {users.length > 0 && (
                         <span style={{ fontSize: 11, fontWeight: 700 }}>{users.length}</span>
                       )}

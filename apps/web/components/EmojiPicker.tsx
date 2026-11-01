@@ -2,6 +2,7 @@
 
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { getAllStickers, type StickerItem } from '../lib/stickers';
+import { EmojiOrFlag } from './EmojiOrFlag';
 
 export interface EmojiPickerProps {
   onSelect: (emoji: string) => void;
@@ -344,7 +345,7 @@ export function EmojiPicker({
                   onClick={() => setActiveTab(cat.id)}
                   title={cat.name}
                 >
-                  <span>{cat.icon}</span>
+                  <EmojiOrFlag char={cat.icon} size={20} />
                 </button>
               ))}
             </div>
@@ -357,8 +358,9 @@ export function EmojiPicker({
                 type="button"
                 className="emoji-picker-item"
                 onClick={() => onSelect(emoji)}
+                title={emoji}
               >
-                {emoji}
+                <EmojiOrFlag char={emoji} size={22} />
               </button>
             ))}
             {filteredEmojis.length === 0 && (

@@ -93,6 +93,85 @@ export function NotificationListener() {
     }, 5000);
   }
 
+  const handledMessageIdsRef = useRef<Set<string>>(new Set());
+
+  async function handleIncomingMessage(row: any, senderProfile?: any) {
+    if (!row || !row.id || !meRef.current) return;
+    if (row.sender_id === meRef.current.id) return;
+    if (handledMessageIdsRef.current.has(row.id)) return;
+    handledMessageIdsRef.current.add(row.id);
+    if (handledMessageIdsRef.current.size > 200) {
+      const first = handledMessageIdsRef.current.values().next().value;
+      if (first) handledMessageIdsRef.current.delete(first);
+    }
+
+    const prefs = getNotificationPrefs();
+    if (!prefs.enabled) return;
+
+    try {
+      const mutes = await getMuteStates([row.chat_id], meRef.current.id);
+      if (mutes[row.chat_id]?.muted) return;
+    } catch {
+      // ignore
+    }
+
+    // Не показывать уведомление, если пользователь прямо сейчас смотрит этот чат в активном окне
+    if (
+      typeof document !== 'undefined' &&
+      document.visibilityState === 'visible' &&
+      window.location.pathname.includes('/chat') &&
+      window.location.search.includes(String(row.chat_id))
+    ) {
+      return;
+    }
+
+    const supabase = getSupabaseClient();
+    const [{ data: sender }, { data: chatRow }] = await Promise.all([
+      senderProfile
+        ? Promise.resolve({ data: senderProfile })
+        : supabase
+            .from('profiles')
+            .select('display_name, username')
+            .eq('id', row.sender_id)
+            .maybeSingle(),
+      supabase
+        .from('chats')
+        .select('type, title')
+        .eq('id', row.chat_id)
+        .maybeSingle(),
+    ]);
+
+    const decrypted = row.ciphertext
+      ? await decryptMessageE2EE(row.chat_id, row.ciphertext)
+      : row.text || '';
+    const text =
+      row.message_type !== 'text' && MEDIA_LABELS[row.message_type]
+        ? MEDIA_LABELS[row.message_type]
+        : decrypted;
+
+    const me = meRef.current;
+    const isMention = Boolean(me?.username && text.includes(`@${me.username}`));
+    const isDirect = !chatRow || chatRow.type === 'direct';
+
+    if (isMention) {
+      if (!prefs.mentions && !(isDirect ? prefs.directMessages : prefs.groupMessages)) {
+        return;
+      }
+    } else if (isDirect) {
+      if (!prefs.directMessages) return;
+    } else {
+      if (!prefs.groupMessages) return;
+    }
+
+    const title = isMention
+      ? `📣 ${sender?.display_name ?? 'Кто-то'} упомянул вас`
+      : isDirect
+        ? (sender?.display_name ?? 'Новое сообщение')
+        : `${chatRow?.title ?? 'Группа'}: ${sender?.display_name ?? 'Сообщение'}`;
+
+    pushAlert(title, text, `/chat/?id=${row.chat_id}`, '💬');
+  }
+
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
@@ -117,6 +196,7 @@ export function NotificationListener() {
     window.addEventListener('pixchats:native_navigate', onAndroidNavigate);
 
     let channel: ReturnType<ReturnType<typeof getSupabaseClient>['channel']> | null = null;
+    let globalMsgChannel: ReturnType<ReturnType<typeof getSupabaseClient>['channel']> | null = null;
     let stopDeviceMonitor: (() => void) | null = null;
 
     (async () => {
@@ -129,77 +209,32 @@ export function NotificationListener() {
       });
 
       const supabase = getSupabaseClient();
+
+      // Слушаем глобальный Realtime broadcast новых сообщений (работает 100% без задержек)
+      globalMsgChannel = supabase
+        .channel('pixchats-messages-global')
+        .on('broadcast', { event: 'new-message' }, (data: any) => {
+          const msg = data?.payload?.message || data?.payload;
+          const sender = data?.payload?.sender;
+          if (msg) void handleIncomingMessage(msg, sender);
+        })
+        .subscribe();
+
       channel = supabase
         .channel('pixchats-omniscient-notifications')
-        // 1. Новые входящие сообщения
+        // 1. Новые входящие сообщения (Postgres changes)
         .on(
           'postgres_changes',
           { event: 'INSERT', schema: 'public', table: 'messages' },
-          async (payload: any) => {
-            const row = payload.new;
-            if (!row || row.sender_id === me.id) return;
-
-            const prefs = getNotificationPrefs();
-            if (!prefs.enabled) return;
-
-            try {
-              const mutes = await getMuteStates([row.chat_id], me.id);
-              if (mutes[row.chat_id]?.muted) return;
-            } catch {
-              return;
-            }
-
-            // Не показывать, если пользователь прямо сейчас смотрит этот чат в активном окне
-            if (
-              document.visibilityState === 'visible' &&
-              window.location.pathname.includes('/chat') &&
-              window.location.search.includes(String(row.chat_id))
-            ) {
-              return;
-            }
-
-            const [{ data: sender }, { data: chatRow }] = await Promise.all([
-              supabase
-                .from('profiles')
-                .select('display_name, username')
-                .eq('id', row.sender_id)
-                .maybeSingle(),
-              supabase
-                .from('chats')
-                .select('type, title')
-                .eq('id', row.chat_id)
-                .maybeSingle(),
-            ]);
-
-            const decrypted = await decryptMessageE2EE(row.chat_id, row.ciphertext);
-            const text =
-              row.message_type !== 'text' && MEDIA_LABELS[row.message_type]
-                ? MEDIA_LABELS[row.message_type]
-                : decrypted;
-
-            const isMention = Boolean(me.username && text.includes(`@${me.username}`));
-            const isDirect = !chatRow || chatRow.type === 'direct';
-
-            // Проверяем настройки разделов уведомлений
-            if (isMention) {
-              if (!prefs.mentions && !(isDirect ? prefs.directMessages : prefs.groupMessages)) {
-                return;
-              }
-            } else if (isDirect) {
-              if (!prefs.directMessages) return;
-            } else {
-              if (!prefs.groupMessages) return;
-            }
-
-            const title = isMention
-              ? `📣 ${sender?.display_name ?? 'Кто-то'} упомянул вас`
-              : isDirect
-                ? (sender?.display_name ?? 'Новое сообщение')
-                : `${chatRow?.title ?? 'Группа'}: ${sender?.display_name ?? 'Сообщение'}`;
-
-            pushAlert(title, text, `/chat/?id=${row.chat_id}`, '💬');
+          (payload: any) => {
+            void handleIncomingMessage(payload.new);
           }
         )
+        .on('broadcast', { event: 'new-message' }, (data: any) => {
+          const msg = data?.payload?.message || data?.payload;
+          const sender = data?.payload?.sender;
+          if (msg) void handleIncomingMessage(msg, sender);
+        })
         // 2. Дружба: новые входящие заявки и принятые запросы
         .on(
           'postgres_changes',
@@ -313,6 +348,7 @@ export function NotificationListener() {
       if (stopDeviceMonitor) stopDeviceMonitor();
       window.removeEventListener('pixchats:native_navigate', onAndroidNavigate);
       if (channel) getSupabaseClient().removeChannel(channel);
+      if (globalMsgChannel) getSupabaseClient().removeChannel(globalMsgChannel);
     };
   }, [router]);
 
