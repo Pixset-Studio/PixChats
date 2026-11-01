@@ -39,7 +39,18 @@ jobs:
           echo "version=0.2.${COMMIT_COUNT}" >> $GITHUB_OUTPUT
 
       - name: Install dependencies (весь монорепозиторий)
-        run: npm install
+        env:
+          # Для сборки Android APK бинарник Electron не нужен — пропускаем его скачивание, чтобы избежать ECONNRESET
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+        run: |
+          npm config set fetch-retries 5
+          npm config set fetch-retry-mintimeout 20000
+          npm config set fetch-retry-maxtimeout 120000
+          for i in 1 2 3; do
+            npm install --no-audit --no-fund && break
+            echo "Попытка $i не удалась, повтор через 10 секунд..."
+            sleep 10
+          done
 
       - name: Собрать веб-версию (без basePath — упаковывается прямо в APK)
         working-directory: apps/web
@@ -144,9 +155,9 @@ jobs:
           NOTES=$(cat <<EOF
           ### ✨ Что нового в PixChats v${VERSION_STR}:
           ${RECENT_COMMITS}
-          • Управление активными устройствами и сеансами в настройках («Устройства») с мгновенным завершением сессий
-          • Полное удаление сообщений («Удалить у меня» и «Удалить у всех») без заглушки «Сообщение удалено»
-          • Автоматическая фоновая самоустановка обновлений на ПК (.exe) и Android (.apk) поверх текущей версии
+          • Быстрый вход по QR-коду с телефона без ввода пароля и управление активными сессиями («Устройства»)
+          • Истории (Stories) на 24 часа над списком чатов и глобальный мини-плеер для голосовых и аудиофайлов
+          • Кнопка «Скачать» в веб-версии с выбором платформы (Windows .exe / Android .apk) и автообновление поверх текущей версии
 
           ---
           📦 **Техническая информация сборки:**

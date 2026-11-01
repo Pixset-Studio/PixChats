@@ -19,13 +19,34 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
           node-version: 20
 
+      - name: Вычислить единую версию сборки по номеру коммита
+        id: ver
+        shell: bash
+        run: |
+          COMMIT_COUNT=$(git rev-list --count HEAD)
+          echo "version=0.2.${COMMIT_COUNT}" >> $GITHUB_OUTPUT
+
       - name: Install dependencies
-        run: npm install
+        env:
+          # Для веб-сборки бинарник Electron (~100 МБ) не нужен — его скачивание из GitHub Releases
+          # в postinstall часто обрывается с ошибкой RequestError: read ECONNRESET
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+        run: |
+          npm config set fetch-retries 5
+          npm config set fetch-retry-mintimeout 20000
+          npm config set fetch-retry-maxtimeout 120000
+          for i in 1 2 3; do
+            npm install --no-audit --no-fund && break
+            echo "Попытка $i не удалась, повтор через 10 секунд..."
+            sleep 10
+          done
 
       - name: Build (static export)
         env:
@@ -35,6 +56,8 @@ jobs:
           NEXT_PUBLIC_SUPABASE_ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtpYmhlemZwYWZoaXRjdnBrcXV1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQxOTI4NjUsImV4cCI6MjA5OTc2ODg2NX0.HO1uskn4k7AWmFNFpFXd2vdgO8BKYz_bb8lpj2znSoI
           # Имя репозитория подставляется автоматически — правьте, если репозиторий назвали иначе
           NEXT_PUBLIC_BASE_PATH: /${{ github.event.repository.name }}
+          NEXT_PUBLIC_APP_VERSION: ${{ steps.ver.outputs.version }}
+          NEXT_PUBLIC_BUILD_SHA: ${{ github.sha }}
         run: npm run build --workspace=apps/web
 
       - name: Add .nojekyll (иначе GitHub Pages игнорирует папки, начинающиеся с _)
