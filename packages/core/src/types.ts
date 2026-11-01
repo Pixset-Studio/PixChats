@@ -20,6 +20,49 @@ export interface Profile {
   banned_until: string | null;
   banned_permanently: boolean;
   frozen: boolean;
+  frozen_at?: string | null;
+  last_ip?: string | null;
+}
+
+export interface ChatMute {
+  id: string;
+  user_id: string;
+  chat_id: string;
+  muted_until: string | null;
+  reason: string | null;
+  muted_by: string | null;
+  created_at: string;
+  chat_title?: string;
+  user_name?: string;
+  user_username?: string;
+}
+
+export interface BannedIp {
+  id: string;
+  ip_address: string;
+  reason: string | null;
+  banned_by: string | null;
+  created_at: string;
+}
+
+export type AppealPenaltyType = 'mute' | 'freeze' | 'ban_account' | 'ban_ip';
+export type AppealStatus = 'pending' | 'approved' | 'rejected';
+
+export interface AppealItem {
+  id: string;
+  user_id: string;
+  penalty_type: AppealPenaltyType;
+  chat_id: string | null;
+  reason: string;
+  status: AppealStatus;
+  admin_notes: string | null;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  created_at: string;
+  user_name?: string;
+  user_username?: string;
+  user_avatar?: string | null;
+  chat_title?: string;
 }
 
 export type FriendshipStatus = 'pending' | 'accepted';

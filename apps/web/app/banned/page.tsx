@@ -6,6 +6,8 @@ import { getCurrentProfile, hasActiveSession, signOut } from '@pixchats/core';
 import { isBanned } from '../../lib/ban';
 import { clearChatListCache } from '../../lib/chatListCache';
 
+import Link from 'next/link';
+
 function formatRemaining(ms: number): string {
   if (ms <= 0) return '0с';
   const totalSeconds = Math.floor(ms / 1000);
@@ -102,17 +104,22 @@ export default function BannedPage() {
           </>
         )}
 
-        <button
-          className="btn"
-          style={{ width: 'auto', marginTop: 16 }}
-          onClick={async () => {
-            clearChatListCache();
-            await signOut();
-            router.push('/login');
-          }}
-        >
-          Выйти из аккаунта
-        </button>
+        <div style={{ display: 'flex', gap: 10, justifyContent: 'center', marginTop: 20 }}>
+          <Link href="/appeals" className="btn btn-primary" style={{ width: 'auto' }}>
+            ⚖️ Подать апелляцию
+          </Link>
+          <button
+            className="btn"
+            style={{ width: 'auto' }}
+            onClick={async () => {
+              clearChatListCache();
+              await signOut();
+              router.push('/login');
+            }}
+          >
+            Выйти из аккаунта
+          </button>
+        </div>
       </div>
     </main>
   );

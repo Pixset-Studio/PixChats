@@ -117,6 +117,17 @@ export async function sendMessage(chatId: string, text: string, options: SendMes
   const supabase = getSupabaseClient();
   const { data: sessionData } = await supabase.auth.getSession();
   const senderId = sessionData.session?.user.id;
+  if (senderId) {
+    const { getUserChatMute } = await import('./admin');
+    const mute = await getUserChatMute(senderId, chatId);
+    if (mute) {
+      const untilStr = mute.muted_until
+        ? `до ${new Date(mute.muted_until).toLocaleString('ru-RU')}`
+        : 'бессрочно';
+      throw new Error(`🔇 Вы замучены в этом чате ${untilStr}. Причина: ${mute.reason || 'Нарушение правил'}`);
+    }
+  }
+
   // 0. Автомодерация для публичных чатов, групп и каналов
   try {
     const { data: chatRow } = await supabase
@@ -126,17 +137,23 @@ export async function sendMessage(chatId: string, text: string, options: SendMes
       .maybeSingle();
 
     if (senderId && chatRow && (chatRow.visibility === 'public' || chatRow.type === 'channel' || chatRow.type === 'group')) {
-      const { checkAutoModerationViolation, notifyAdminsAboutFreeze } = await import('./admin');
+      const { checkAutoModerationViolation, notifyAdminsAboutFreeze, muteUserInChat } = await import('./admin');
       const modResult = checkAutoModerationViolation(text);
       if (modResult.violated) {
-        // Автоматически замораживаем аккаунт нарушителя
-        await supabase.from('profiles').update({ frozen: true }).eq('id', senderId);
-        await notifyAdminsAboutFreeze(senderId, `Автомодерация в чате "${chatRow.title || 'Публичный'}": ${modResult.reason || 'Запрещённые выражения'}`);
-        throw new Error(`⚠️ ${modResult.reason || 'Нарушение правил общения'}. Ваш аккаунт автоматически заморожен.`);
+        if (modResult.severity === 'light') {
+          // Лёгкое нарушение = Мьют только в этом чате на 24 часа
+          await muteUserInChat({ userId: senderId, chatId, durationHours: 24, reason: modResult.reason });
+          throw new Error(`🔇 Вы получили автоматический мьют в этом чате на 24 часа. Причина: ${modResult.reason}`);
+        } else {
+          // Тяжёлое нарушение = Автозаморозка аккаунта
+          await supabase.from('profiles').update({ frozen: true, frozen_at: new Date().toISOString() }).eq('id', senderId);
+          await notifyAdminsAboutFreeze(senderId, `Автомодерация в чате "${chatRow.title || 'Публичный'}": ${modResult.reason || 'Запрещённые выражения'}`);
+          throw new Error(`⚠️ ${modResult.reason || 'Нарушение правил общения'}. Ваш аккаунт автоматически заморожен.`);
+        }
       }
     }
   } catch (err: any) {
-    if (err.message?.includes('автоматически заморожен')) {
+    if (err.message?.includes('автоматически заморожен') || err.message?.includes('автоматический мьют')) {
       throw err;
     }
   }

@@ -24,6 +24,12 @@ import {
   unbanUsername,
   listBannedUsernames,
   getMessageReportsForAdmin,
+  listAppealsForAdmin,
+  reviewAppeal,
+  cleanupExpiredFrozenAccounts,
+  listBannedIps,
+  banIpAddress,
+  unbanIpAddress,
 } from '@pixchats/core';
 import type {
   Profile,
@@ -35,6 +41,8 @@ import type {
   AdminUserFilter,
   AdminAuditLogRow,
   MessageReport,
+  AppealItem,
+  BannedIp,
 } from '@pixchats/core';
 import { NameWithBadges } from '../../components/NameBadges';
 import { BottomNav } from '../../components/BottomNav';
@@ -58,7 +66,7 @@ import {
   PRESET_EMOJI_STATUSES,
 } from '../../lib/emojiStatus';
 
-type AdminTab = 'overview' | 'users' | 'chats' | 'stories' | 'moderation' | 'content';
+type AdminTab = 'users' | 'chats' | 'stories' | 'moderation' | 'appeals' | 'banned_ips' | 'content' | 'overview';
 
 const USER_FILTER_OPTIONS: { id: AdminUserFilter; label: string }[] = [
   { id: 'all', label: 'Все' },
@@ -98,9 +106,40 @@ export default function AdminPage() {
   // Активные истории
   const [activeStories, setActiveStories] = useState<StoryItem[]>([]);
   const [loadingStories, setLoadingStories] = useState(false);
+
   // Жалобы и Модерация
   const [messageReports, setMessageReports] = useState<MessageReport[]>([]);
   const [loadingReports, setLoadingReports] = useState(false);
+
+  // Апелляции
+  const [appealsList, setAppealsList] = useState<AppealItem[]>([]);
+  const [loadingAppeals, setLoadingAppeals] = useState(false);
+
+  // Заблокированные IP
+  const [bannedIpsList, setBannedIpsList] = useState<BannedIp[]>([]);
+  const [newIpAddress, setNewIpAddress] = useState('');
+  const [newIpReason, setNewIpReason] = useState('');
+
+  const refreshAppeals = useCallback(async () => {
+    setLoadingAppeals(true);
+    try {
+      const items = await listAppealsForAdmin();
+      setAppealsList(items);
+    } catch {
+      // ignore
+    } finally {
+      setLoadingAppeals(false);
+    }
+  }, []);
+
+  const refreshBannedIps = useCallback(async () => {
+    try {
+      const items = await listBannedIps();
+      setBannedIpsList(items);
+    } catch {
+      // ignore
+    }
+  }, []);
 
   const refreshMessageReports = useCallback(async () => {
     setLoadingReports(true);
@@ -191,6 +230,14 @@ export default function AdminPage() {
       loadChatsList('');
       refreshStoriesModeration();
       refreshMessageReports();
+      refreshAppeals();
+      refreshBannedIps();
+
+      try {
+        await cleanupExpiredFrozenAccounts();
+      } catch {
+        // ignore
+      }
 
       try {
         setStats(await getAdminStats());
@@ -452,9 +499,11 @@ export default function AdminPage() {
               { id: 'users', label: `👥 Пользователи (${results.length})` },
               { id: 'chats', label: `📢 Группы и Каналы (${managedChats.length})` },
               { id: 'stories', label: `✨ Истории (${activeStories.length})` },
-              { id: 'moderation', label: `🚨 Жалобы и Модерация (${messageReports.length})` },
-              { id: 'overview', label: '📊 Системы и Аудит' },
+              { id: 'moderation', label: `🚨 Жалобы (${messageReports.length})` },
+              { id: 'appeals', label: `⚖️ Апелляции (${appealsList.length})` },
+              { id: 'banned_ips', label: `🌐 Заблокированные IP (${bannedIpsList.length})` },
               { id: 'content', label: `🎨 Стикеры и Стоп-лист` },
+              { id: 'overview', label: `⚙️ Панель администратора` },
             ] as { id: AdminTab; label: string }[]
           ).map((tab) => (
             <button
@@ -779,49 +828,37 @@ export default function AdminPage() {
                       {/* Санкции: Бан / Заморозка / Удаление */}
                       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                         {isBannedNow ? (
-                          <button
-                            className="btn"
-                            style={{ width: 'auto', padding: '5px 10px', fontSize: 12 }}
-                            onClick={() => handleUnban(user.id)}
-                          >
-                            Разбанить
-                          </button>
-                        ) : (
                           <>
                             <button
                               className="btn"
                               style={{ width: 'auto', padding: '5px 10px', fontSize: 12 }}
-                              onClick={() => handleBan(user.id, 1)}
+                              onClick={() => handleUnban(user.id)}
                             >
-                              Бан 1 дн.
+                              Разбанить
                             </button>
-                            <button
+                            <Link
+                              href={`/admin/ban?id=${encodeURIComponent(user.id)}`}
                               className="btn"
                               style={{ width: 'auto', padding: '5px 10px', fontSize: 12 }}
-                              onClick={() => handleBan(user.id, 7)}
                             >
-                              7 дн.
-                            </button>
-                            <button
-                              className="btn"
-                              style={{ width: 'auto', padding: '5px 10px', fontSize: 12 }}
-                              onClick={() => handleBan(user.id, 30)}
-                            >
-                              30 дн.
-                            </button>
-                            <button
-                              className="btn"
-                              style={{
-                                width: 'auto',
-                                padding: '5px 10px',
-                                fontSize: 12,
-                                color: 'var(--danger)',
-                              }}
-                              onClick={() => handleBan(user.id, 'forever')}
-                            >
-                              Навсегда
-                            </button>
+                              ⚙️ Настроить бан
+                            </Link>
                           </>
+                        ) : (
+                          <Link
+                            href={`/admin/ban?id=${encodeURIComponent(user.id)}`}
+                            className="btn"
+                            style={{
+                              width: 'auto',
+                              padding: '5px 12px',
+                              fontSize: 12,
+                              background: 'var(--danger)',
+                              color: '#fff',
+                              border: 'none',
+                            }}
+                          >
+                            ⛔ Забанить
+                          </Link>
                         )}
                         <button
                           className="btn"
@@ -1202,6 +1239,273 @@ export default function AdminPage() {
                         </div>
                       )}
                     </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        )}
+
+        {/* ВКЛАДКА: АПЕЛЛЯЦИИ */}
+        {activeTab === 'appeals' && (
+          <section>
+            <div className="section-title" style={{ marginTop: 0 }}>
+              ⚖️ Поступившие апелляции и обжалования ({appealsList.length})
+            </div>
+
+            {loadingAppeals ? (
+              <div className="empty-state">Загрузка апелляций…</div>
+            ) : appealsList.length === 0 ? (
+              <div className="empty-state">Пока нет обращений на рассмотрение</div>
+            ) : (
+              <ul className="list-plain">
+                {appealsList.map((appeal) => (
+                  <li
+                    key={appeal.id}
+                    className="list-row"
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 12,
+                      padding: 16,
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <div
+                          style={{
+                            width: 36,
+                            height: 36,
+                            borderRadius: '50%',
+                            background: 'var(--accent)',
+                            display: 'grid',
+                            placeItems: 'center',
+                            fontWeight: 700,
+                            color: '#fff',
+                            overflow: 'hidden',
+                          }}
+                        >
+                          {appeal.user_avatar ? (
+                            <img src={appeal.user_avatar} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                          ) : (
+                            (appeal.user_name || '?').slice(0, 1).toUpperCase()
+                          )}
+                        </div>
+                        <div>
+                          <div style={{ fontWeight: 700, fontSize: 14 }}>
+                            {appeal.user_name}{' '}
+                            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                              (@{appeal.user_username})
+                            </span>
+                          </div>
+                          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                            Тип наказания:{' '}
+                            <strong style={{ color: 'var(--accent)' }}>
+                              {appeal.penalty_type === 'mute'
+                                ? `🔇 Мьют (${appeal.chat_title || 'Чат'})`
+                                : appeal.penalty_type === 'freeze'
+                                ? '❄️ Заморозка'
+                                : appeal.penalty_type === 'ban_account'
+                                ? '⛔ Бан аккаунта'
+                                : '🌐 Бан по IP'}
+                            </strong>{' '}
+                            • {new Date(appeal.created_at).toLocaleString('ru-RU')}
+                          </div>
+                        </div>
+                      </div>
+
+                      <span
+                        style={{
+                          fontSize: 12,
+                          fontWeight: 700,
+                          padding: '4px 10px',
+                          borderRadius: 8,
+                          background:
+                            appeal.status === 'approved'
+                              ? 'rgba(34, 197, 94, 0.2)'
+                              : appeal.status === 'rejected'
+                              ? 'rgba(239, 68, 68, 0.2)'
+                              : 'rgba(245, 158, 11, 0.2)',
+                          color:
+                            appeal.status === 'approved'
+                              ? '#22c55e'
+                              : appeal.status === 'rejected'
+                              ? '#ef4444'
+                              : 'var(--accent)',
+                        }}
+                      >
+                        {appeal.status === 'approved'
+                          ? '✅ Одобрено (Наказание снято)'
+                          : appeal.status === 'rejected'
+                          ? '❌ Отклонено'
+                          : '⏳ На рассмотрении'}
+                      </span>
+                    </div>
+
+                    <div
+                      style={{
+                        padding: 12,
+                        borderRadius: 10,
+                        background: 'var(--bg)',
+                        border: '1px solid var(--border)',
+                        fontSize: 13,
+                      }}
+                    >
+                      <strong>Объяснение пользователя:</strong>
+                      <div style={{ marginTop: 4, whiteSpace: 'pre-wrap' }}>«{appeal.reason}»</div>
+                    </div>
+
+                    {appeal.status === 'pending' && (
+                      <div style={{ display: 'flex', gap: 10 }}>
+                        <button
+                          type="button"
+                          className="btn"
+                          style={{
+                            flex: 1,
+                            padding: '8px 14px',
+                            fontSize: 13,
+                            background: '#22c55e',
+                            color: '#fff',
+                            border: 'none',
+                            fontWeight: 700,
+                          }}
+                          onClick={async () => {
+                            try {
+                              await reviewAppeal({
+                                appealId: appeal.id,
+                                status: 'approved',
+                                actingProfile: me,
+                              });
+                              setNotice('✅ Апелляция одобрена. Наказание автоматически снято!');
+                              refreshAppeals();
+                              loadUsersList(userFilter, query);
+                            } catch (err: any) {
+                              setNotice(err.message);
+                            }
+                          }}
+                        >
+                          ✅ Одобрить и снять наказание
+                        </button>
+                        <button
+                          type="button"
+                          className="btn"
+                          style={{
+                            flex: 1,
+                            padding: '8px 14px',
+                            fontSize: 13,
+                            background: 'rgba(239, 68, 68, 0.15)',
+                            color: '#ef4444',
+                            borderColor: '#ef4444',
+                            fontWeight: 600,
+                          }}
+                          onClick={async () => {
+                            try {
+                              await reviewAppeal({
+                                appealId: appeal.id,
+                                status: 'rejected',
+                                actingProfile: me,
+                              });
+                              setNotice('❌ Апелляция отклонена');
+                              refreshAppeals();
+                            } catch (err: any) {
+                              setNotice(err.message);
+                            }
+                          }}
+                        >
+                          ❌ Отклонить
+                        </button>
+                      </div>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        )}
+
+        {/* ВКЛАДКА: ЗАБЛОКИРОВАННЫЕ IP */}
+        {activeTab === 'banned_ips' && (
+          <section>
+            <div className="section-title" style={{ marginTop: 0 }}>
+              🌐 Управление блокировками по IP-адресам
+            </div>
+
+            <div className="card" style={{ marginBottom: 16, padding: 16 }}>
+              <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 10 }}>
+                Заблокировать новый IP-адрес
+              </div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <input
+                  className="input"
+                  style={{ flex: 1, minWidth: 180 }}
+                  placeholder="IP адрес (напр. 192.168.1.1)"
+                  value={newIpAddress}
+                  onChange={(e) => setNewIpAddress(e.target.value)}
+                />
+                <input
+                  className="input"
+                  style={{ flex: 1, minWidth: 200 }}
+                  placeholder="Причина блокировки"
+                  value={newIpReason}
+                  onChange={(e) => setNewIpReason(e.target.value)}
+                />
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  style={{ width: 'auto' }}
+                  onClick={async () => {
+                    if (!newIpAddress.trim()) return;
+                    try {
+                      await banIpAddress(newIpAddress.trim(), newIpReason.trim(), me);
+                      setNotice(`IP ${newIpAddress} внесен в черный список`);
+                      setNewIpAddress('');
+                      setNewIpReason('');
+                      refreshBannedIps();
+                    } catch (err: any) {
+                      setNotice(err.message);
+                    }
+                  }}
+                >
+                  Заблокировать IP
+                </button>
+              </div>
+            </div>
+
+            {bannedIpsList.length === 0 ? (
+              <div className="empty-state">Список заблокированных IP пуст</div>
+            ) : (
+              <ul className="list-plain">
+                {bannedIpsList.map((ipRow) => (
+                  <li
+                    key={ipRow.id}
+                    className="list-row"
+                    style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+                  >
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: 14, color: 'var(--danger)' }}>
+                        🌐 {ipRow.ip_address}
+                      </div>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                        Причина: {ipRow.reason || 'Не указана'} •{' '}
+                        {new Date(ipRow.created_at).toLocaleString('ru-RU')}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn"
+                      style={{ width: 'auto', padding: '5px 12px', fontSize: 12 }}
+                      onClick={async () => {
+                        try {
+                          await unbanIpAddress(ipRow.ip_address, me);
+                          setNotice(`IP ${ipRow.ip_address} разблокирован`);
+                          refreshBannedIps();
+                        } catch (err: any) {
+                          setNotice(err.message);
+                        }
+                      }}
+                    >
+                      Разблокировать IP
+                    </button>
                   </li>
                 ))}
               </ul>

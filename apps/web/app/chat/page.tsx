@@ -41,8 +41,9 @@ import {
   getOrCreateSavedMessagesChat,
   isSavedMessagesChat,
   updateChatInfo,
+  getUserChatMute,
 } from '@pixchats/core';
-import type { Message, Chat, Profile, ChatSafetyFingerprint } from '@pixchats/core';
+import type { Message, Chat, Profile, ChatSafetyFingerprint, ChatMute } from '@pixchats/core';
 import { clearUnreadInChatListCache } from '../../lib/chatListCache';
 import { Loading } from '../../components/Loading';
 import { EmojiPicker } from '../../components/EmojiPicker';
@@ -225,6 +226,7 @@ function ChatWindowInner() {
   const [myChats, setMyChats] = useState<Chat[]>([]);
   const [forwardPartners, setForwardPartners] = useState<Record<string, Profile>>({});
   const [notice, setNotice] = useState<string | null>(null);
+  const [currentMute, setCurrentMute] = useState<ChatMute | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [showEmoji, setShowEmoji] = useState(false);
@@ -577,6 +579,16 @@ function ChatWindowInner() {
     window.addEventListener('pixchats:hashtag_click', handleHashtag);
     return () => window.removeEventListener('pixchats:hashtag_click', handleHashtag);
   }, []);
+
+  useEffect(() => {
+    if (!chatId || !me) {
+      setCurrentMute(null);
+      return;
+    }
+    getUserChatMute(me.id, chatId)
+      .then((m) => setCurrentMute(m))
+      .catch(() => setCurrentMute(null));
+  }, [chatId, me]);
 
   function insertEmoji(emoji: string) {
     setDraft((prev) => prev + emoji);
@@ -3688,89 +3700,123 @@ function ChatWindowInner() {
             )}
 
             {/* Оптимизированная широкая панель ввода: только 1 кнопка «+» слева, огромное текстовое поле по центру и эмодзи + отправка/запись справа */}
-            <form onSubmit={handleSend} className="chat-composer-unified-bar">
-              <button
-                type="button"
-                className={`composer-inner-btn ${showToolsMenu || ttlSeconds > 0 ? 'active' : ''}`}
-                onClick={() => {
-                  setShowEmoji(false);
-                  setShowTimerPopover(false);
-                  setShowToolsMenu((v) => !v);
+            {currentMute && (!currentMute.muted_until || new Date(currentMute.muted_until) > new Date()) ? (
+              <div
+                style={{
+                  padding: '12px 16px',
+                  background: 'rgba(239, 68, 68, 0.12)',
+                  border: '1px solid var(--danger)',
+                  borderRadius: 12,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  margin: '8px 12px',
+                  gap: 12,
                 }}
-                disabled={uploading}
-                title="Вложения, опросы, кружочки, таймер и инструменты"
               >
-                {ttlSeconds > 0 ? <span style={{ fontSize: 15 }}>🔥</span> : <PaperclipIcon size={18} />}
-              </button>
-              <input ref={fileInputRef} type="file" style={{ display: 'none' }} onChange={handleFileSelected} />
-
-              <textarea
-                className="composer-unified-textarea"
-                value={draft}
-                onChange={(e) => handleDraftChange(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    handleSend(e as any);
-                  }
-                }}
-                placeholder={
-                  pendingFile
-                    ? 'Подпись к файлу…'
-                    : ttlSeconds > 0
-                      ? `🔥 Исчезающее сообщение (${ttlSeconds}с)…`
-                      : channelGroupCfg.structureMode === 'topics' && activeTopicId !== 'all'
-                        ? `Сообщение в #${channelGroupCfg.topics.find((t) => t.id === activeTopicId)?.title || 'тему'}…`
-                        : 'Написать сообщение…'
-                }
-                rows={1}
-              />
-
-              <button
-                type="button"
-                className={`composer-inner-btn ${showEmoji ? 'active' : ''}`}
-                onClick={() => {
-                  setShowToolsMenu(false);
-                  setShowTimerPopover(false);
-                  setShowEmoji((v) => !v);
-                }}
-                title="Эмодзи, стикеры и GIF"
-              >
-                <SmileIcon size={18} />
-              </button>
-
-              {draft.trim() || editingMessage || pendingFile ? (
-                <button
-                  type="submit"
-                  className="composer-send-btn"
-                  title={editingMessage ? 'Сохранить' : 'Отправить'}
+                <div style={{ fontSize: 13, color: 'var(--text)' }}>
+                  <strong style={{ color: 'var(--danger)' }}>🔒 Вы замьючены в этом чате</strong>{' '}
+                  {currentMute.muted_until
+                    ? `до ${new Date(currentMute.muted_until).toLocaleString('ru-RU')}`
+                    : 'бессрочно'}
+                  .
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+                    Причина: {currentMute.reason || 'Нарушение правил общения'}
+                  </div>
+                </div>
+                <Link
+                  href="/appeals"
+                  className="btn btn-primary"
+                  style={{ width: 'auto', padding: '6px 14px', fontSize: 12, whiteSpace: 'nowrap', flexShrink: 0 }}
                 >
-                  <SendIcon size={16} />
+                  ⚖️ Подать апелляцию
+                </Link>
+              </div>
+            ) : (
+              <form onSubmit={handleSend} className="chat-composer-unified-bar">
+                <button
+                  type="button"
+                  className={`composer-inner-btn ${showToolsMenu || ttlSeconds > 0 ? 'active' : ''}`}
+                  onClick={() => {
+                    setShowEmoji(false);
+                    setShowTimerPopover(false);
+                    setShowToolsMenu((v) => !v);
+                  }}
+                  disabled={uploading}
+                  title="Вложения, опросы, кружочки, таймер и инструменты"
+                >
+                  {ttlSeconds > 0 ? <span style={{ fontSize: 15 }}>🔥</span> : <PaperclipIcon size={18} />}
                 </button>
-              ) : (
-                <>
+                <input ref={fileInputRef} type="file" style={{ display: 'none' }} onChange={handleFileSelected} />
+
+                <textarea
+                  className="composer-unified-textarea"
+                  value={draft}
+                  onChange={(e) => handleDraftChange(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      handleSend(e as any);
+                    }
+                  }}
+                  placeholder={
+                    pendingFile
+                      ? 'Подпись к файлу…'
+                      : ttlSeconds > 0
+                        ? `🔥 Исчезающее сообщение (${ttlSeconds}с)…`
+                        : channelGroupCfg.structureMode === 'topics' && activeTopicId !== 'all'
+                          ? `Сообщение в #${channelGroupCfg.topics.find((t) => t.id === activeTopicId)?.title || 'тему'}…`
+                          : 'Написать сообщение…'
+                  }
+                  rows={1}
+                />
+
+                <button
+                  type="button"
+                  className={`composer-inner-btn ${showEmoji ? 'active' : ''}`}
+                  onClick={() => {
+                    setShowToolsMenu(false);
+                    setShowTimerPopover(false);
+                    setShowEmoji((v) => !v);
+                  }}
+                  title="Эмодзи, стикеры и GIF"
+                >
+                  <SmileIcon size={18} />
+                </button>
+
+                {draft.trim() || editingMessage || pendingFile ? (
                   <button
-                    type="button"
-                    className="composer-inner-btn"
-                    onClick={() => void openVideoNoteRecorder()}
-                    disabled={uploading || isRecording}
-                    title="Записать круглое видеосообщение (кружочек)"
-                    style={{ fontSize: 15 }}
+                    type="submit"
+                    className="composer-send-btn"
+                    title={editingMessage ? 'Сохранить' : 'Отправить'}
                   >
-                    🎥
+                    <SendIcon size={16} />
                   </button>
-                  <button
-                    type="button"
-                    className={`composer-inner-btn ${isRecording ? 'recording' : ''}`}
-                    onClick={isRecording ? stopRecording : startRecording}
-                    disabled={uploading}
-                    title={isRecording ? 'Остановить запись' : 'Голосовое сообщение'}
-                  >
-                    {isRecording ? <StopIcon size={18} /> : <MicIcon size={18} />}
-                  </button>
-                </>
-              )}
-            </form>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      className="composer-inner-btn"
+                      onClick={() => void openVideoNoteRecorder()}
+                      disabled={uploading || isRecording}
+                      title="Записать круглое видеосообщение (кружочек)"
+                      style={{ fontSize: 15 }}
+                    >
+                      🎥
+                    </button>
+                    <button
+                      type="button"
+                      className={`composer-inner-btn ${isRecording ? 'recording' : ''}`}
+                      onClick={isRecording ? stopRecording : startRecording}
+                      disabled={uploading}
+                      title={isRecording ? 'Остановить запись' : 'Голосовое сообщение'}
+                    >
+                      {isRecording ? <StopIcon size={18} /> : <MicIcon size={18} />}
+                    </button>
+                  </>
+                )}
+              </form>
+            )}
           </div>
         </>
       ) : (
