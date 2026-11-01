@@ -73,6 +73,8 @@ import {
   extractTopicFromText,
   encodePostCommentPayload,
   extractPostCommentsFromReactions,
+  getJoinRequests,
+  saveJoinRequest,
   DEFAULT_CHANNEL_GROUP_CONFIG,
   type ChannelGroupConfig,
 } from '../../lib/channelConfig';
@@ -228,18 +230,94 @@ function ChatWindowInner() {
   const [lightboxZoom, setLightboxZoom] = useState<number>(1);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
 
+  // Вход по заявкам для приватных каналов/групп
+  const [joinRequestNote, setJoinRequestNote] = useState('');
+  const [joinRequestSubmitted, setJoinRequestSubmitted] = useState(false);
+
   // Сквозное шифрование (E2EE)
   const [showE2EEModal, setShowE2EEModal] = useState(false);
   const [e2eeFingerprint, setE2eeFingerprint] = useState<ChatSafetyFingerprint | null>(null);
   const [customPassInput, setCustomPassInput] = useState('');
 
-  // Пункт 1: Прямой эфир (Live Stream) в каналах с функцией «Поднять руку ✋»
+  // Пункт 1: Прямой эфир (Live Stream) в каналах с видео и демонстрацией экрана
   const [liveStreamActive, setLiveStreamActive] = useState(false);
   const [raisedHands, setRaisedHands] = useState<{ userId: string; userName: string }[]>([]);
   const [hasRaisedHand, setHasRaisedHand] = useState(false);
   const [inLiveStreamStage, setInLiveStreamStage] = useState(false);
   const [liveStreamMuted, setLiveStreamMuted] = useState(false);
   const [allowedSpeakers, setAllowedSpeakers] = useState<string[]>([]);
+  const [isCameraActive, setIsCameraActive] = useState(false);
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const liveStreamVideoRef = useRef<HTMLVideoElement | null>(null);
+  const liveStreamVideoStreamRef = useRef<MediaStream | null>(null);
+
+  function stopLiveVideoMedia() {
+    if (liveStreamVideoStreamRef.current) {
+      liveStreamVideoStreamRef.current.getTracks().forEach((t) => t.stop());
+      liveStreamVideoStreamRef.current = null;
+    }
+    setIsCameraActive(false);
+    setIsScreenSharing(false);
+  }
+
+  async function toggleLiveCamera() {
+    if (isCameraActive) {
+      stopLiveVideoMedia();
+      return;
+    }
+    try {
+      if (liveStreamVideoStreamRef.current) {
+        liveStreamVideoStreamRef.current.getTracks().forEach((t) => t.stop());
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: true,
+      });
+      liveStreamVideoStreamRef.current = stream;
+      setIsCameraActive(true);
+      setIsScreenSharing(false);
+      setTimeout(() => {
+        if (liveStreamVideoRef.current) {
+          liveStreamVideoRef.current.srcObject = stream;
+        }
+      }, 100);
+    } catch {
+      setNotice('Не удалось включить камеру (нет разрешения или устройства)');
+      setTimeout(() => setNotice(null), 2500);
+    }
+  }
+
+  async function toggleLiveScreenShare() {
+    if (isScreenSharing) {
+      stopLiveVideoMedia();
+      return;
+    }
+    try {
+      if (liveStreamVideoStreamRef.current) {
+        liveStreamVideoStreamRef.current.getTracks().forEach((t) => t.stop());
+      }
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: true,
+      });
+      liveStreamVideoStreamRef.current = stream;
+      setIsScreenSharing(true);
+      setIsCameraActive(false);
+
+      stream.getVideoTracks()[0]?.addEventListener('ended', () => {
+        stopLiveVideoMedia();
+      });
+
+      setTimeout(() => {
+        if (liveStreamVideoRef.current) {
+          liveStreamVideoRef.current.srcObject = stream;
+        }
+      }, 100);
+    } catch {
+      setNotice('Не удалось запустить демонстрацию экрана');
+      setTimeout(() => setNotice(null), 2500);
+    }
+  }
 
   // Пункт 2: Частицы реакций (Reaction Particles)
   const [particleMsgId, setParticleMsgId] = useState<string | null>(null);
@@ -741,8 +819,12 @@ function ChatWindowInner() {
         .eq('user_id', profile.id)
         .maybeSingle();
       setMyRole(memberRow?.member_role ?? null);
-      setCanWrite(memberRow?.member_role !== 'subscriber');
+      setCanWrite(memberRow?.member_role ? memberRow.member_role !== 'subscriber' : false);
       setCanModerate(memberRow?.member_role === 'owner' || memberRow?.member_role === 'admin');
+
+      if (!memberRow?.member_role) {
+        setJoinRequestSubmitted(getJoinRequests(chatId).some((r) => r.userId === profile.id));
+      }
 
       let loadedMessages: Message[] = [];
       try {
@@ -1183,93 +1265,111 @@ function ChatWindowInner() {
       )}
 
       <header className="chat-header">
-        <Link
-          href="/chats/"
-          style={{ color: 'var(--text-muted)', fontSize: 13, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 6 }}
-        >
-          <BackIcon size={18} />
-          <span>Назад</span>
-        </Link>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, flex: 1 }}>
+          <Link
+            href="/chats/"
+            style={{
+              color: 'var(--text-muted)',
+              fontSize: 13,
+              textDecoration: 'none',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 4,
+              flexShrink: 0,
+              padding: '6px 4px',
+            }}
+          >
+            <BackIcon size={18} />
+          </Link>
 
-        {isSavedChat ? (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <div
-              className="avatar avatar-fallback"
-              style={{ width: 40, height: 40, fontSize: 18, flexShrink: 0 }}
+          {isSavedChat ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, overflow: 'hidden' }}>
+              <div
+                className="avatar avatar-fallback"
+                style={{ width: 40, height: 40, fontSize: 18, flexShrink: 0 }}
+              >
+                ⭐
+              </div>
+              <div style={{ minWidth: 0, overflow: 'hidden' }}>
+                <h2 style={{ fontSize: 15, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  Избранное
+                </h2>
+                <div style={{ fontSize: 11.5, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  Сохранённые сообщения и заметки
+                </div>
+              </div>
+            </div>
+          ) : chat.type === 'direct' && otherProfile ? (
+            <Link
+              href={`/user/?id=${otherProfile.id}`}
+              style={{ display: 'flex', alignItems: 'center', gap: 10, color: 'inherit', textDecoration: 'none', minWidth: 0, overflow: 'hidden' }}
             >
-              ⭐
-            </div>
-            <div>
-              <h2 style={{ fontSize: 15, margin: 0 }}>Избранное</h2>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                Сохранённые сообщения и личные заметки
+              <AvatarWithStatus
+                avatarUrl={blockedEitherWay ? null : otherProfile.avatar_url}
+                name={otherProfile.display_name}
+                size={40}
+                statusType={otherLastSeen?.includes('в сети') || Boolean(liveHeaderActivity) ? 'online' : 'none'}
+              />
+              <div style={{ minWidth: 0, overflow: 'hidden' }}>
+                <h2 style={{ fontSize: 15, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <NameWithBadges
+                    name={otherProfile.display_name}
+                    role={otherProfile.role}
+                    isVerified={otherProfile.is_verified}
+                    isPixsetEmployee={otherProfile.is_pixset_employee}
+                    isFrozen={otherProfile.frozen}
+                  />
+                </h2>
+                <div
+                  style={{
+                    fontSize: 11.5,
+                    color: liveHeaderActivity ? 'var(--accent)' : 'var(--text-muted)',
+                    fontWeight: liveHeaderActivity ? 600 : 400,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {liveHeaderActivity ? `✍️ ${liveHeaderActivity}` : otherLastSeen}
+                </div>
               </div>
-            </div>
-          </div>
-        ) : chat.type === 'direct' && otherProfile ? (
-          <Link
-            href={`/user/?id=${otherProfile.id}`}
-            style={{ display: 'flex', alignItems: 'center', gap: 10, color: 'inherit', textDecoration: 'none' }}
-          >
-            <AvatarWithStatus
-              avatarUrl={blockedEitherWay ? null : otherProfile.avatar_url}
-              name={otherProfile.display_name}
-              size={40}
-              statusType={otherLastSeen?.includes('в сети') || Boolean(liveHeaderActivity) ? 'online' : 'none'}
-            />
-            <div>
-              <h2 style={{ fontSize: 15 }}>
-                <NameWithBadges
-                  name={otherProfile.display_name}
-                  role={otherProfile.role}
-                  isVerified={otherProfile.is_verified}
-                  isPixsetEmployee={otherProfile.is_pixset_employee}
-                  isFrozen={otherProfile.frozen}
-                />
-              </h2>
-              <div
-                style={{
-                  fontSize: 12,
-                  color: liveHeaderActivity ? 'var(--accent)' : 'var(--text-muted)',
-                  fontWeight: liveHeaderActivity ? 600 : 400,
-                }}
-              >
-                {liveHeaderActivity ? `✍️ ${liveHeaderActivity}` : otherLastSeen}
+            </Link>
+          ) : (
+            <Link
+              href={`/chat-info/?id=${chat.id}`}
+              style={{ display: 'flex', alignItems: 'center', gap: 10, color: 'inherit', textDecoration: 'none', minWidth: 0, overflow: 'hidden' }}
+            >
+              <AvatarWithStatus
+                avatarUrl={chat.avatar_url}
+                name={chat.title || 'Чат'}
+                size={40}
+                statusType={chat.type === 'channel' && liveStreamActive ? 'live' : 'none'}
+              />
+              <div style={{ minWidth: 0, overflow: 'hidden' }}>
+                <h2 style={{ fontSize: 15, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {chat.title ?? 'Чат'}
+                  {chat.is_verified && <VerifiedBadge size={14} />}
+                </h2>
+                <div
+                  style={{
+                    fontSize: 11.5,
+                    color: liveHeaderActivity ? 'var(--accent)' : 'var(--text-muted)',
+                    fontWeight: liveHeaderActivity ? 600 : 400,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {liveHeaderActivity
+                    ? `✍️ ${liveHeaderActivity}`
+                    : `${memberCount} ${chat.type === 'channel' ? 'подписчиков' : 'участников'}`}
+                </div>
               </div>
-            </div>
-          </Link>
-        ) : (
-          <Link
-            href={`/chat-info/?id=${chat.id}`}
-            style={{ display: 'flex', alignItems: 'center', gap: 10, color: 'inherit', textDecoration: 'none' }}
-          >
-            <AvatarWithStatus
-              avatarUrl={chat.avatar_url}
-              name={chat.title || 'Чат'}
-              size={40}
-              statusType={chat.type === 'channel' && liveStreamActive ? 'live' : 'none'}
-            />
-            <div>
-              <h2 style={{ fontSize: 15 }}>
-                {chat.title ?? 'Чат'}
-                {chat.is_verified && <VerifiedBadge size={14} />}
-              </h2>
-              <div
-                style={{
-                  fontSize: 12,
-                  color: liveHeaderActivity ? 'var(--accent)' : 'var(--text-muted)',
-                  fontWeight: liveHeaderActivity ? 600 : 400,
-                }}
-              >
-                {liveHeaderActivity
-                  ? `✍️ ${liveHeaderActivity}`
-                  : `${memberCount} ${chat.type === 'channel' ? 'подписчиков' : 'участников'}`}
-              </div>
-            </div>
-          </Link>
-        )}
+            </Link>
+          )}
+        </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, position: 'relative' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, position: 'relative' }}>
           {/* Обычный звонок — ровно 40x40px как аватарка, слева от трёх точек */}
           {chat.type === 'direct' && otherProfile && !isSavedChat && !blockedEitherWay && (
             <button
@@ -1623,7 +1723,7 @@ function ChatWindowInner() {
             <div>
               <div style={{ fontWeight: 700, color: 'var(--danger)', display: 'flex', alignItems: 'center', gap: 6 }}>
                 <span>🔴 ИДЁТ ПРЯМОЙ ЭФИР КАНАЛА</span>
-                <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>• 👥 {8 + raisedHands.length} слушают</span>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>• 👥 {raisedHands.length + (inLiveStreamStage ? 1 : 0)} в эфире</span>
               </div>
               <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
                 Ведущий: {chat.title || 'Канал'}
@@ -1735,6 +1835,10 @@ function ChatWindowInner() {
               {showDateDivider && <div className="date-divider">{formatDateDivider(m.sent_at)}</div>}
               <div
                 className={`bubble-row ${isMine ? 'mine' : ''} ${initialIdsRef.current.has(m.id) ? '' : 'is-new'}`}
+                style={{
+                  position: 'relative',
+                  zIndex: openMenuId === m.id || activeReactionPickerMsgId === m.id || fullEmojiPickerMsgId === m.id ? 200 : 1,
+                }}
                 ref={(el) => {
                   messageRefs.current[m.id] = el;
                 }}
@@ -1758,7 +1862,7 @@ function ChatWindowInner() {
                 ) : (
                   isGroupOrChannel && !isMine && <div style={{ width: 32, flexShrink: 0 }} />
                 )}
-                <div style={{ position: 'relative', maxWidth: '72%' }}>
+                <div style={{ position: 'relative', maxWidth: '72%', zIndex: openMenuId === m.id || activeReactionPickerMsgId === m.id || fullEmojiPickerMsgId === m.id ? 201 : 'auto' }}>
                   {/* Пункт 2: Анимированный всплеск микро-частиц реакции */}
                   <ReactionParticles
                     emoji={particleEmoji}
@@ -2229,6 +2333,76 @@ function ChatWindowInner() {
         </p>
       ) : blockedEitherWay ? (
         <p className="subscriber-notice error">Вы не можете писать этому пользователю — общение заблокировано</p>
+      ) : myRole === null && chat.type !== 'direct' ? (
+        <div className="subscriber-notice" style={{ flexDirection: 'column', gap: 12, padding: 18, textAlign: 'center' }}>
+          {channelGroupCfg.requireJoinApproval ? (
+            <>
+              <div style={{ fontWeight: 700, fontSize: 14, color: 'var(--accent)' }}>
+                🔒 Вход в {chat.type === 'channel' ? 'канал' : 'группу'} по заявкам
+              </div>
+              <p style={{ fontSize: 12.5, color: 'var(--text-muted)', margin: 0 }}>
+                Чтобы читать сообщения и участвовать, отправьте заявку на рассмотрение администратору.
+              </p>
+              {joinRequestSubmitted ? (
+                <div style={{ padding: '8px 14px', borderRadius: 8, background: 'rgba(245, 158, 11, 0.15)', color: 'var(--accent)', fontWeight: 600, fontSize: 13 }}>
+                  📩 Ваша заявка находится на рассмотрении у администраторов
+                </div>
+              ) : (
+                <div style={{ display: 'flex', gap: 8, width: '100%', maxWidth: 440, marginTop: 4 }}>
+                  <input
+                    type="text"
+                    className="input"
+                    placeholder="Примечание для админа (необязательно)..."
+                    value={joinRequestNote}
+                    onChange={(e) => setJoinRequestNote(e.target.value)}
+                    style={{ fontSize: 12.5, flex: 1 }}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    style={{ width: 'auto', padding: '0 16px', fontSize: 12.5, whiteSpace: 'nowrap' }}
+                    onClick={() => {
+                      if (!me) return;
+                      saveJoinRequest({
+                        id: `req-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                        chatId: chat.id,
+                        userId: me.id,
+                        userName: me.display_name || 'Пользователь',
+                        userAvatar: me.avatar_url || undefined,
+                        message: joinRequestNote.trim() || undefined,
+                        createdAt: new Date().toISOString(),
+                      });
+                      setJoinRequestSubmitted(true);
+                      setNotice('Заявка на вступление отправлена! 📩');
+                      setTimeout(() => setNotice(null), 2500);
+                    }}
+                  >
+                    Подать заявку 📩
+                  </button>
+                </div>
+              )}
+            </>
+          ) : (
+            <button
+              type="button"
+              className="btn btn-primary"
+              style={{ width: 'auto', padding: '8px 24px' }}
+              onClick={async () => {
+                if (!me) return;
+                const supabase = getSupabaseClient();
+                await supabase.from('chat_members').insert({
+                  chat_id: chat.id,
+                  user_id: me.id,
+                  member_role: chat.type === 'channel' ? 'subscriber' : 'member',
+                });
+                setMyRole(chat.type === 'channel' ? 'subscriber' : 'member');
+                setMemberCount((prev) => prev + 1);
+              }}
+            >
+              {chat.type === 'channel' ? 'Подписаться на канал' : 'Вступить в группу'}
+            </button>
+          )}
+        </div>
       ) : canWrite ? (
         <>
           {scheduledMessages.length > 0 && (
@@ -3359,54 +3533,102 @@ function ChatWindowInner() {
               </button>
             </div>
 
-            {/* Ведущий / Сцена */}
-            <div
-              style={{
-                background: 'var(--bg)',
-                borderRadius: 16,
-                padding: 24,
-                textAlign: 'center',
-                marginBottom: 16,
-                border: '1px solid var(--border)',
-                position: 'relative',
-              }}
-            >
-              <div style={{ position: 'relative', width: 80, height: 80, margin: '0 auto 12px' }}>
-                <div
-                  className="avatar"
-                  style={{
-                    width: 80,
-                    height: 80,
-                    fontSize: 32,
-                    backgroundImage: chat.avatar_url ? `url(${chat.avatar_url})` : undefined,
-                    backgroundSize: 'cover',
-                    backgroundPosition: 'center',
-                    border: '3px solid var(--accent)',
+            {/* Видео-плеер камеры или демонстрации экрана */}
+            {(isCameraActive || isScreenSharing) ? (
+              <div
+                style={{
+                  position: 'relative',
+                  width: '100%',
+                  height: 250,
+                  borderRadius: 16,
+                  overflow: 'hidden',
+                  background: '#000',
+                  marginBottom: 16,
+                  border: '1px solid var(--border)',
+                }}
+              >
+                <video
+                  ref={(el) => {
+                    liveStreamVideoRef.current = el;
+                    if (el && liveStreamVideoStreamRef.current) {
+                      el.srcObject = liveStreamVideoStreamRef.current;
+                    }
                   }}
-                >
-                  {!chat.avatar_url && (chat.title || 'К').slice(0, 1).toUpperCase()}
-                </div>
-                <span
+                  autoPlay
+                  playsInline
+                  muted
+                  style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+                />
+                <div
                   style={{
                     position: 'absolute',
-                    bottom: -2,
-                    right: -2,
-                    background: 'var(--accent)',
-                    color: '#000',
-                    fontSize: 11,
-                    fontWeight: 800,
-                    padding: '2px 6px',
-                    borderRadius: 10,
+                    top: 10,
+                    left: 10,
+                    background: 'rgba(0,0,0,0.8)',
+                    color: '#fff',
+                    padding: '4px 10px',
+                    borderRadius: 8,
+                    fontSize: 12,
+                    fontWeight: 700,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
                   }}
                 >
-                  🎙️ Спикер
-                </span>
+                  <span className="online-dot-glow" style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--danger)' }} />
+                  <span>{isScreenSharing ? '🖥️ Демонстрация экрана' : '📹 Видео с камеры'}</span>
+                </div>
               </div>
-              <div style={{ fontWeight: 700, fontSize: 16 }}>{chat.title}</div>
-              <div style={{ fontSize: 12, color: 'var(--accent)', marginTop: 4, fontWeight: 600 }}>
-                🔊 Акустический эфир прямого вещания (HD Stereo)
+            ) : (
+              /* Ведущий / Сцена (Аудио режим) */
+              <div
+                style={{
+                  background: 'var(--bg)',
+                  borderRadius: 16,
+                  padding: 24,
+                  textAlign: 'center',
+                  marginBottom: 16,
+                  border: '1px solid var(--border)',
+                  position: 'relative',
+                }}
+              >
+                <div style={{ position: 'relative', width: 80, height: 80, margin: '0 auto 12px' }}>
+                  <div
+                    className="avatar"
+                    style={{
+                      width: 80,
+                      height: 80,
+                      fontSize: 32,
+                      backgroundImage: chat.avatar_url ? `url(${chat.avatar_url})` : undefined,
+                      backgroundSize: 'cover',
+                      backgroundPosition: 'center',
+                      border: '3px solid var(--accent)',
+                    }}
+                  >
+                    {!chat.avatar_url && (chat.title || 'К').slice(0, 1).toUpperCase()}
+                  </div>
+                  <span
+                    style={{
+                      position: 'absolute',
+                      bottom: -2,
+                      right: -2,
+                      background: 'var(--accent)',
+                      color: '#000',
+                      fontSize: 11,
+                      fontWeight: 800,
+                      padding: '2px 6px',
+                      borderRadius: 10,
+                    }}
+                  >
+                    🎙️ Спикер
+                  </span>
+                </div>
+                <div style={{ fontWeight: 700, fontSize: 16 }}>{chat.title}</div>
+                <div style={{ fontSize: 12, color: 'var(--accent)', marginTop: 4, fontWeight: 600 }}>
+                  🔊 Акустический эфир прямого вещания (HD Stereo)
+                </div>
               </div>
-            </div>
+            )}
 
             {/* Поднятые руки (для администратора) */}
             {canModerate && raisedHands.length > 0 && (
@@ -3466,8 +3688,30 @@ function ChatWindowInner() {
               </div>
             )}
 
-            {/* Управление для участника */}
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            {/* Панель управления эфиром */}
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {canModerate && (
+                <>
+                  <button
+                    type="button"
+                    className={`btn ${isCameraActive ? 'btn-primary' : ''}`}
+                    style={{ flex: 1, padding: '10px 8px', fontSize: 13 }}
+                    onClick={toggleLiveCamera}
+                  >
+                    {isCameraActive ? '📹 Выключить камеру' : '📹 Камера'}
+                  </button>
+
+                  <button
+                    type="button"
+                    className={`btn ${isScreenSharing ? 'btn-primary' : ''}`}
+                    style={{ flex: 1, padding: '10px 8px', fontSize: 13 }}
+                    onClick={toggleLiveScreenShare}
+                  >
+                    {isScreenSharing ? '🖥️ Стоп экран' : '🖥️ Экран'}
+                  </button>
+                </>
+              )}
+
               {!canModerate && (
                 <button
                   type="button"
@@ -3490,25 +3734,26 @@ function ChatWindowInner() {
               <button
                 type="button"
                 className="btn"
-                style={{ flex: 1, padding: '10px' }}
+                style={{ flex: 1, padding: '10px', fontSize: 13 }}
                 onClick={() => setLiveStreamMuted((v) => !v)}
               >
-                {liveStreamMuted ? '🔇 Включить звук' : '🔊 Выключить звук'}
+                {liveStreamMuted ? '🔇 Вкл звук' : '🔊 Выкл звук'}
               </button>
 
               {canModerate && (
                 <button
                   type="button"
                   className="btn"
-                  style={{ flex: 1, padding: '10px', color: 'var(--danger)', borderColor: 'var(--danger)' }}
+                  style={{ flex: 1, padding: '10px', color: 'var(--danger)', borderColor: 'var(--danger)', fontSize: 13 }}
                   onClick={() => {
+                    stopLiveVideoMedia();
                     setLiveStreamActive(false);
                     setInLiveStreamStage(false);
                     setNotice('Прямой эфир завершён');
                     setTimeout(() => setNotice(null), 1800);
                   }}
                 >
-                  ⏹ Завершить эфир
+                  ⏹ Завершить
                 </button>
               )}
             </div>

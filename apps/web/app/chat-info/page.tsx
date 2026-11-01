@@ -34,6 +34,9 @@ import {
 import {
   parseChatDescriptionAndConfig,
   encodeChatDescriptionWithConfig,
+  getJoinRequests,
+  removeJoinRequest,
+  type JoinRequestItem,
   DEFAULT_TOPICS,
   type ChatTopicItem,
 } from '../../lib/channelConfig';
@@ -72,6 +75,8 @@ function ChatInfoInner() {
 
   // Пункт 8: Настройки создателя (Комментарии к постам и Темы)
   const [commentsEnabled, setCommentsEnabled] = useState(true);
+  const [requireJoinApproval, setRequireJoinApproval] = useState(false);
+  const [joinRequests, setJoinRequests] = useState<JoinRequestItem[]>([]);
   const [structureMode, setStructureMode] = useState<'standard' | 'topics'>('standard');
   const [topics, setTopics] = useState<ChatTopicItem[]>(DEFAULT_TOPICS);
   const [newTopicTitle, setNewTopicTitle] = useState('');
@@ -159,9 +164,11 @@ function ChatInfoInner() {
       const parsedCfg = parseChatDescriptionAndConfig(chatRow?.description);
       setDescription(parsedCfg.cleanDescription);
       setCommentsEnabled(parsedCfg.config.commentsEnabled);
+      setRequireJoinApproval(parsedCfg.config.requireJoinApproval ?? false);
       setStructureMode(parsedCfg.config.structureMode);
       setTopics(parsedCfg.config.topics);
       setUsername(chatRow?.username ?? '');
+      setJoinRequests(getJoinRequests(chatId));
 
       setMemberCount(await getChatMemberCount(chatId));
       const role = await getMyChatRole(chatId, profile.id);
@@ -213,12 +220,47 @@ function ChatInfoInner() {
     setTopics((prev) => prev.filter((t) => t.id !== id));
   }
 
+  useEffect(() => {
+    if (!chatId) return;
+    const handleReqChange = () => setJoinRequests(getJoinRequests(chatId));
+    window.addEventListener('pixchats:join_requests_changed', handleReqChange);
+    return () => window.removeEventListener('pixchats:join_requests_changed', handleReqChange);
+  }, [chatId]);
+
+  async function handleApproveRequest(req: JoinRequestItem) {
+    if (!chat) return;
+    try {
+      const supabase = getSupabaseClient();
+      await supabase.from('chat_members').insert({
+        chat_id: chat.id,
+        user_id: req.userId,
+        member_role: chat.type === 'channel' ? 'subscriber' : 'member',
+      });
+      removeJoinRequest(chat.id, req.userId);
+      setJoinRequests(getJoinRequests(chat.id));
+      setMemberCount((prev) => prev + 1);
+      setNotice(`Заявка пользователя ${req.userName} одобрена!`);
+      setTimeout(() => setNotice(null), 2500);
+    } catch (err: any) {
+      setError(err?.message || 'Не удалось одобрить заявку');
+    }
+  }
+
+  function handleRejectRequest(req: JoinRequestItem) {
+    if (!chat) return;
+    removeJoinRequest(chat.id, req.userId);
+    setJoinRequests(getJoinRequests(chat.id));
+    setNotice(`Заявка пользователя ${req.userName} отклонена`);
+    setTimeout(() => setNotice(null), 2000);
+  }
+
   async function handleSave() {
     if (!chat) return;
     setError(null);
     try {
       const encodedDescription = encodeChatDescriptionWithConfig(description, {
         commentsEnabled,
+        requireJoinApproval,
         structureMode,
         topics,
       });
@@ -502,7 +544,7 @@ function ChatInfoInner() {
                 borderRadius: 10,
                 background: 'var(--bg-secondary)',
                 border: `1px solid ${commentsEnabled ? 'var(--accent)' : 'var(--border)'}`,
-                marginBottom: 16,
+                marginBottom: 12,
                 cursor: 'pointer',
               }}
             >
@@ -521,6 +563,34 @@ function ChatInfoInner() {
             </label>
           )}
 
+          <label
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 12,
+              padding: '10px 12px',
+              borderRadius: 10,
+              background: 'var(--bg-secondary)',
+              border: `1px solid ${requireJoinApproval ? 'var(--accent)' : 'var(--border)'}`,
+              marginBottom: 16,
+              cursor: 'pointer',
+            }}
+          >
+            <div>
+              <div style={{ fontWeight: 600, fontSize: 13.5 }}>📩 Вход только по заявкам</div>
+              <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>
+                Новые участники отправляют заявку, которую рассматривают администраторы
+              </div>
+            </div>
+            <input
+              type="checkbox"
+              checked={requireJoinApproval}
+              onChange={(e) => setRequireJoinApproval(e.target.checked)}
+              style={{ width: 18, height: 18, accentColor: 'var(--accent)' }}
+            />
+          </label>
+
           <div className="btn-row" style={{ flexDirection: 'row' }}>
             <button className="btn btn-primary" onClick={handleSave}>
               Сохранить
@@ -531,6 +601,62 @@ function ChatInfoInner() {
           </div>
         </div>
       ) : null}
+
+      {canEdit && joinRequests.length > 0 && (
+        <div className="card" style={{ maxWidth: 420, margin: '0 auto 16px' }}>
+          <h3 style={{ margin: '0 0 12px', fontSize: 15, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span>📩 Заявки на вступление</span>
+            <span style={{ fontSize: 12, background: 'var(--accent)', color: '#000', padding: '2px 8px', borderRadius: 999, fontWeight: 700 }}>
+              {joinRequests.length}
+            </span>
+          </h3>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {joinRequests.map((req) => (
+              <div
+                key={req.id}
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 8,
+                  padding: 10,
+                  borderRadius: 10,
+                  background: 'var(--bg-secondary)',
+                  border: '1px solid var(--border)',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div style={{ fontWeight: 600, fontSize: 13.5 }}>{req.userName}</div>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                    {new Date(req.createdAt).toLocaleDateString('ru-RU', { hour: '2-digit', minute: '2-digit' })}
+                  </div>
+                </div>
+                {req.message && (
+                  <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', background: 'var(--surface-raised)', padding: '6px 10px', borderRadius: 6, fontStyle: 'italic' }}>
+                    «{req.message}»
+                  </div>
+                )}
+                <div style={{ display: 'flex', gap: 8, marginTop: 2 }}>
+                  <button
+                    className="btn btn-primary"
+                    style={{ flex: 1, height: 32, fontSize: 12, padding: 0 }}
+                    onClick={() => handleApproveRequest(req)}
+                  >
+                    Одобрить ✓
+                  </button>
+                  <button
+                    className="btn"
+                    style={{ flex: 1, height: 32, fontSize: 12, padding: 0, color: 'var(--danger)' }}
+                    onClick={() => handleRejectRequest(req)}
+                  >
+                    Отклонить ✕
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {cleanDescription && (
         <div className="card" style={{ maxWidth: 420, margin: '0 auto 16px' }}>

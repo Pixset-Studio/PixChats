@@ -682,7 +682,23 @@ export function ChatListPanel() {
                           {displayName}
                           {isVerified && <VerifiedBadge size={14} />}
                         </span>
-                        {preview && <span className="chat-item-time">{formatTime(preview.sent_at)}</span>}
+                        {preview && (
+                          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                            {preview.sender_id === profile.id && (
+                              <span
+                                style={{
+                                  fontSize: 13,
+                                  fontWeight: 700,
+                                  color: (unreadCounts[chat.id] ?? 0) === 0 ? 'var(--accent)' : 'var(--text-muted)',
+                                  lineHeight: 1,
+                                }}
+                              >
+                                {(unreadCounts[chat.id] ?? 0) === 0 ? '✓✓' : '✓'}
+                              </span>
+                            )}
+                            <span className="chat-item-time">{formatTime(preview.sent_at)}</span>
+                          </div>
+                        )}
                       </div>
                       <div className="chat-item-preview-text">
                         {preview
@@ -817,8 +833,25 @@ export function ChatListPanel() {
                       <span>{displayName}</span>
                       {isVerified && <VerifiedBadge size={14} />}
                     </span>
-                    <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
-                      {preview && <span className="chat-item-time">{formatTime(preview.sent_at)}</span>}
+                    <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
+                      {preview && (
+                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                          {preview.sender_id === profile.id && (
+                            <span
+                              style={{
+                                fontSize: 13,
+                                fontWeight: 700,
+                                color: (unreadCounts[chat.id] ?? 0) === 0 ? 'var(--accent)' : 'var(--text-muted)',
+                                lineHeight: 1,
+                              }}
+                              title={(unreadCounts[chat.id] ?? 0) === 0 ? 'Прочитано' : 'Отправлено'}
+                            >
+                              {(unreadCounts[chat.id] ?? 0) === 0 ? '✓✓' : '✓'}
+                            </span>
+                          )}
+                          <span className="chat-item-time">{formatTime(preview.sent_at)}</span>
+                        </div>
+                      )}
                       {unreadCounts[chat.id] > 0 && (
                         <span
                           key={unreadCounts[chat.id]}

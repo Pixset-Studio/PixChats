@@ -21,18 +21,31 @@ export const metadata = {
   },
 };
 
+export const viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
+  viewportFit: 'cover',
+  themeColor: '#09090b',
+};
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="ru" suppressHydrationWarning>
       <head>
         <link rel="icon" href={`${BASE_PATH}/logo/icon.png`} />
+        <meta name="mobile-web-app-capable" content="yes" />
+        <meta name="apple-mobile-web-app-capable" content="yes" />
+        <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+        <meta name="apple-mobile-web-app-title" content="PixChats" />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
         <link
           href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Press+Start+2P&family=Rajdhani:wght@400;500;600;700&family=Share+Tech+Mono&family=Space+Mono:wght@400;700&display=swap"
           rel="stylesheet"
         />
-        {/* Применяем сохранённую тему до первой отрисовки — иначе будет вспышка дефолтной темы */}
+        {/* Применяем сохранённую тему и включаем авто-полноэкранный режим на смартфонах */}
         <script
           dangerouslySetInnerHTML={{
             __html: `
@@ -41,6 +54,14 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   var theme = localStorage.getItem('pixchats:theme') || 'pixchats';
                   document.documentElement.setAttribute('data-theme', theme);
                 } catch (e) {}
+
+                function tryMobileFullscreen() {
+                  if (window.innerWidth <= 768 && document.documentElement.requestFullscreen && !document.fullscreenElement) {
+                    document.documentElement.requestFullscreen().catch(function(){});
+                  }
+                }
+                window.addEventListener('touchstart', tryMobileFullscreen, { once: true, passive: true });
+                window.addEventListener('click', tryMobileFullscreen, { once: true });
               })();
             `,
           }}

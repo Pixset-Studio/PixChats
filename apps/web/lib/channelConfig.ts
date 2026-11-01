@@ -8,8 +8,19 @@ export interface ChatTopicItem {
 
 export interface ChannelGroupConfig {
   commentsEnabled: boolean; // Для каналов: разрешены ли комментарии под постами
+  requireJoinApproval?: boolean; // Вход только по заявкам (рассматриваются админом)
   structureMode: 'standard' | 'topics'; // Обычный или С темами (Топиками)
   topics: ChatTopicItem[];
+}
+
+export interface JoinRequestItem {
+  id: string;
+  chatId: string;
+  userId: string;
+  userName: string;
+  userAvatar?: string;
+  message?: string;
+  createdAt: string;
 }
 
 export interface PostCommentItem {
@@ -28,7 +39,8 @@ export const DEFAULT_TOPICS: ChatTopicItem[] = [
 ];
 
 export const DEFAULT_CHANNEL_GROUP_CONFIG: ChannelGroupConfig = {
-  commentsEnabled: true,
+  commentsEnabled: false,
+  requireJoinApproval: false,
   structureMode: 'standard',
   topics: DEFAULT_TOPICS,
 };
@@ -76,7 +88,8 @@ export function parseChatDescriptionAndConfig(rawDescription?: string | null): {
     return {
       cleanDescription,
       config: {
-        commentsEnabled: typeof parsed.commentsEnabled === 'boolean' ? parsed.commentsEnabled : true,
+        commentsEnabled: typeof parsed.commentsEnabled === 'boolean' ? parsed.commentsEnabled : false,
+        requireJoinApproval: typeof parsed.requireJoinApproval === 'boolean' ? parsed.requireJoinApproval : false,
         structureMode: parsed.structureMode === 'topics' ? 'topics' : 'standard',
         topics:
           Array.isArray(parsed.topics) && parsed.topics.length > 0
@@ -93,7 +106,7 @@ export function parseChatDescriptionAndConfig(rawDescription?: string | null): {
 }
 
 /**
- * Кодирует описание чата/канала вместе с настройками создателя (комментарии + темы).
+ * Кодирует описание чата/канала вместе с настройками создателя (комментарии + темы + заявки на вступление).
  */
 export function encodeChatDescriptionWithConfig(
   cleanDescription: string,
@@ -101,6 +114,7 @@ export function encodeChatDescriptionWithConfig(
 ): string {
   const payload = JSON.stringify({
     commentsEnabled: config.commentsEnabled,
+    requireJoinApproval: config.requireJoinApproval ?? false,
     structureMode: config.structureMode,
     topics: config.topics,
   });
@@ -171,4 +185,37 @@ export function extractPostCommentsFromReactions(
     } catch {}
   }
   return list.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+}
+
+export function getJoinRequests(chatId: string): JoinRequestItem[] {
+  if (typeof window === 'undefined' || !chatId) return [];
+  try {
+    const raw = localStorage.getItem(`pixchats:join_requests:${chatId}`);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch {}
+  return [];
+}
+
+export function saveJoinRequest(request: JoinRequestItem): void {
+  if (typeof window === 'undefined' || !request.chatId) return;
+  try {
+    const list = getJoinRequests(request.chatId);
+    if (!list.some((r) => r.userId === request.userId)) {
+      list.push(request);
+      localStorage.setItem(`pixchats:join_requests:${request.chatId}`, JSON.stringify(list));
+      window.dispatchEvent(new CustomEvent('pixchats:join_requests_changed', { detail: { chatId: request.chatId } }));
+    }
+  } catch {}
+}
+
+export function removeJoinRequest(chatId: string, userId: string): void {
+  if (typeof window === 'undefined' || !chatId) return;
+  try {
+    const list = getJoinRequests(chatId).filter((r) => r.userId !== userId);
+    localStorage.setItem(`pixchats:join_requests:${chatId}`, JSON.stringify(list));
+    window.dispatchEvent(new CustomEvent('pixchats:join_requests_changed', { detail: { chatId } }));
+  } catch {}
 }
