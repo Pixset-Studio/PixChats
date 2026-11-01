@@ -138,26 +138,25 @@ export async function transcribeMediaMessage(params: {
       }
 
       const cleanMsg = (params.messageText || '')
-        .replace('__VIDEONOTE__:', '')
-        .replace('__VIDEONOTE__', '')
+        .replace(/__VIDEONOTE__:?/g, '')
+        .replace(/__TRANSCRIPT__:?/g, '')
         .replace('Голосовое сообщение', '')
         .replace('Видеосообщение', '')
         .trim();
 
-      if (cleanMsg) {
+      if (cleanMsg && !cleanMsg.startsWith('🎙️')) {
         saveVoiceTranscript(params.messageId, cleanMsg);
         return cleanMsg;
       }
 
       const estWords = Math.max(1, Math.round(syllables / 2.2));
-      const summary = `🎙️ Распознана голосовая речь (${durationSec} сек., ~${estWords} сл.). Для дословной стенограммы при записи используйте микрофон в браузере с поддержкой Speech API.`;
+      const summary = `🗣️ Голосовое сообщение (${durationSec} сек. · ~${estWords} сл.)`;
       saveVoiceTranscript(params.messageId, summary);
       return summary;
     }
   } catch {}
 
-  const fallback =
-    '🎙️ Аудиодорожка проанализирована (прямая речь без текстовой стенограммы).';
+  const fallback = '🗣️ Аудиозапись сообщений';
   saveVoiceTranscript(params.messageId, fallback);
   return fallback;
 }

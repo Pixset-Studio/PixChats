@@ -39,6 +39,8 @@ import {
 } from '../../lib/chatFolders';
 import { isChatHidden, toggleHiddenChat } from '../../lib/appLock';
 
+import { loadActiveStories, type StoryItem, STORY_GRADIENTS } from '../../lib/stories';
+
 function UserProfileInner() {
   const searchParams = useSearchParams();
   const userId = searchParams.get('id') ?? '';
@@ -46,6 +48,8 @@ function UserProfileInner() {
 
   const [me, setMe] = useState<Profile | null>(null);
   const [user, setUser] = useState<Profile | null>(null);
+  const [userStories, setUserStories] = useState<StoryItem[]>([]);
+  const [activeStoryIndex, setActiveStoryIndex] = useState<number | null>(null);
   const [userNotFound, setUserNotFound] = useState(false);
   const [isFriend, setIsFriend] = useState(false);
   const [isBlocked, setIsBlocked] = useState(false);
@@ -160,6 +164,10 @@ function UserProfileInner() {
         setLastSeenLabel(await resolveLastSeenLabel(userRow, profile.id));
         setIsBlocked(await isUserBlockedByMe(profile.id, userRow.id));
 
+        const stories = await loadActiveStories();
+        const userActive = stories.filter((s) => s.userId === userRow.id || s.authorUserId === userRow.id);
+        setUserStories(userActive);
+
         const chatId = await getExistingDirectChatId(profile.id, userRow.id);
         setExistingChatId(chatId);
         if (chatId) {
@@ -249,16 +257,43 @@ function UserProfileInner() {
       </Link>
 
       <div className="profile-hero">
-        <div
-          className={`avatar ${!user.avatar_url ? 'avatar-fallback' : ''}`}
-          style={{
-            backgroundImage: user.avatar_url ? `url(${user.avatar_url})` : undefined,
-            backgroundSize: 'cover',
-            backgroundPosition: 'center',
-          }}
-        >
-          {!user.avatar_url && user.display_name.slice(0, 1).toUpperCase()}
+        <div style={{ position: 'relative', display: 'inline-block' }}>
+          <div
+            className={`avatar ${!user.avatar_url ? 'avatar-fallback' : ''}`}
+            style={{
+              backgroundImage: user.avatar_url ? `url(${user.avatar_url})` : undefined,
+              backgroundSize: 'cover',
+              backgroundPosition: 'center',
+              cursor: userStories.length > 0 ? 'pointer' : 'default',
+              border: userStories.length > 0 ? '3.5px solid var(--accent)' : undefined,
+              boxShadow: userStories.length > 0 ? '0 0 16px rgba(255, 212, 0, 0.45)' : undefined,
+            }}
+            onClick={() => {
+              if (userStories.length > 0) setActiveStoryIndex(0);
+            }}
+            title={userStories.length > 0 ? 'Смотреть историю пользователя' : undefined}
+          >
+            {!user.avatar_url && user.display_name.slice(0, 1).toUpperCase()}
+          </div>
         </div>
+
+        {userStories.length > 0 && (
+          <div style={{ marginTop: 8 }}>
+            <button
+              type="button"
+              className="btn btn-compact"
+              style={{
+                borderColor: 'var(--accent)',
+                color: 'var(--accent)',
+                fontSize: 12,
+                fontWeight: 700,
+              }}
+              onClick={() => setActiveStoryIndex(0)}
+            >
+              📜 Смотреть историю ({userStories.length})
+            </button>
+          </div>
+        )}
         <h2>
           <NameWithBadges
             name={user.display_name}
@@ -402,6 +437,138 @@ function UserProfileInner() {
           badgeText="PixChats Профиль"
           onClose={() => setShowQrModal(false)}
         />
+      )}
+
+      {activeStoryIndex !== null && userStories[activeStoryIndex] && (
+        <div
+          className="modal-overlay story-viewer-overlay"
+          style={{ zIndex: 9999, background: 'rgba(5, 5, 7, 0.96)' }}
+          onClick={() => setActiveStoryIndex(null)}
+        >
+          <div
+            className="story-viewer-dialog"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: userStories[activeStoryIndex].bgGradient || STORY_GRADIENTS[0].css,
+              border: '1px solid var(--border)',
+            }}
+          >
+            <div style={{ position: 'relative', zIndex: 10, padding: 'calc(14px + env(safe-area-inset-top, 0px)) 16px 0' }}>
+              <div style={{ display: 'flex', gap: 4, marginBottom: 10 }}>
+                {userStories.map((st, idx) => (
+                  <div
+                    key={st.id}
+                    style={{
+                      flex: 1,
+                      height: 3,
+                      borderRadius: 999,
+                      background: 'rgba(255,255,255,0.26)',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: idx < activeStoryIndex ? '100%' : idx === activeStoryIndex ? '100%' : '0%',
+                        height: '100%',
+                        background: '#ffd400',
+                      }}
+                    />
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div
+                    className={`avatar ${!user.avatar_url ? 'avatar-fallback' : ''}`}
+                    style={{
+                      width: 36,
+                      height: 36,
+                      fontSize: 14,
+                      backgroundImage: user.avatar_url ? `url(${user.avatar_url})` : undefined,
+                      backgroundSize: 'cover',
+                      backgroundPosition: 'center',
+                      border: '1.5px solid var(--accent)',
+                    }}
+                  >
+                    {!user.avatar_url && user.display_name.slice(0, 1).toUpperCase()}
+                  </div>
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 13.5, color: '#fff' }}>{user.display_name}</div>
+                    <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.72)' }}>История 24 часа</div>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  style={{ width: 'auto', padding: '4px 8px', color: '#fff', fontSize: 16 }}
+                  onClick={() => setActiveStoryIndex(null)}
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            {userStories[activeStoryIndex].mediaUrl && (
+              <img
+                src={userStories[activeStoryIndex].mediaUrl!}
+                alt="История"
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  width: '100%',
+                  height: '100%',
+                  objectFit: 'contain',
+                  background: '#000',
+                  zIndex: 1,
+                }}
+              />
+            )}
+
+            {userStories[activeStoryIndex].text && (
+              <div
+                style={{
+                  position: 'relative',
+                  zIndex: 4,
+                  margin: 'auto 20px 24px',
+                  padding: '12px 16px',
+                  borderRadius: 14,
+                  background: 'rgba(0,0,0,0.68)',
+                  color: '#fff',
+                  fontWeight: 700,
+                  fontSize: 18,
+                  textAlign: 'center',
+                }}
+              >
+                {userStories[activeStoryIndex].text}
+              </div>
+            )}
+
+            <div
+              style={{
+                position: 'relative',
+                zIndex: 10,
+                padding: '10px 16px calc(14px + env(safe-area-inset-bottom, 0px))',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              }}
+            >
+              <button
+                type="button"
+                className="btn btn-primary"
+                style={{ width: '100%', padding: '10px 14px' }}
+                onClick={() => {
+                  setActiveStoryIndex(null);
+                  handleMessage();
+                }}
+              >
+                💬 Написать сообщение
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </main>
   );

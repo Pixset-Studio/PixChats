@@ -126,6 +126,7 @@ export function StoriesBar({ profile }: StoriesBarProps) {
   // Каналы, где пользователь владелец или администратор (для публикации историй от имени канала)
   const [adminChannels, setAdminChannels] = useState<AdminChannelOption[]>([]);
   const [selectedPublisherChannelId, setSelectedPublisherChannelId] = useState<string>(''); // '' = личный профиль
+  const [chatPartnerUserIds, setChatPartnerUserIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     let mounted = true;
@@ -142,6 +143,24 @@ export function StoriesBar({ profile }: StoriesBarProps) {
     (async () => {
       try {
         const supabase = getSupabaseClient();
+        const { data: myMemberships } = await supabase
+          .from('chat_members')
+          .select('chat_id')
+          .eq('user_id', profile.id);
+
+        if (myMemberships && myMemberships.length > 0) {
+          const myChatIds = myMemberships.map((m: any) => m.chat_id);
+          const { data: partners } = await supabase
+            .from('chat_members')
+            .select('user_id')
+            .in('chat_id', myChatIds)
+            .neq('user_id', profile.id);
+
+          if (partners && mounted) {
+            setChatPartnerUserIds(new Set(partners.map((p: any) => p.user_id)));
+          }
+        }
+
         const { data: memberRows } = await supabase
           .from('chat_members')
           .select('chat_id, member_role')
@@ -229,7 +248,7 @@ export function StoriesBar({ profile }: StoriesBarProps) {
       window.removeEventListener('pixchats:open_story_studio', onOpenChannelStudio);
       supabase.removeChannel(channel);
     };
-  }, []);
+  }, [profile.id]);
 
   // Группируем истории по пользователям
   const groups: UserStoryGroup[] = React.useMemo(() => {
@@ -242,6 +261,15 @@ export function StoriesBar({ profile }: StoriesBarProps) {
 
     const result: UserStoryGroup[] = [];
     map.forEach((userStories, uid) => {
+      const isMine = uid === profile.id;
+      const isChatPartner = chatPartnerUserIds.has(uid);
+      const isChannel = uid.startsWith('channel:');
+
+      // По требованию: истории в общей ленте видны ТОЛЬКО если это вы, ваш собеседник по чату или канал
+      if (!isMine && !isChatPartner && !isChannel) {
+        return;
+      }
+
       const sortedAsc = [...userStories].sort(
         (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
       );
@@ -274,7 +302,7 @@ export function StoriesBar({ profile }: StoriesBarProps) {
     });
 
     return result;
-  }, [stories, viewedIds, profile]);
+  }, [stories, viewedIds, profile, chatPartnerUserIds]);
 
   const activeGroup = groups.find((g) => g.userId === activeGroupUserId) || null;
   const activeStory = activeGroup?.stories[activeStoryIndex] || null;

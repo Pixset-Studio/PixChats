@@ -117,7 +117,29 @@ export async function sendMessage(chatId: string, text: string, options: SendMes
   const supabase = getSupabaseClient();
   const { data: sessionData } = await supabase.auth.getSession();
   const senderId = sessionData.session?.user.id;
-  if (!senderId) throw new Error('Нужно войти в аккаунт');
+  // 0. Автомодерация для публичных чатов, групп и каналов
+  try {
+    const { data: chatRow } = await supabase
+      .from('chats')
+      .select('type, visibility, title')
+      .eq('id', chatId)
+      .maybeSingle();
+
+    if (senderId && chatRow && (chatRow.visibility === 'public' || chatRow.type === 'channel' || chatRow.type === 'group')) {
+      const { checkAutoModerationViolation, notifyAdminsAboutFreeze } = await import('./admin');
+      const modResult = checkAutoModerationViolation(text);
+      if (modResult.violated) {
+        // Автоматически замораживаем аккаунт нарушителя
+        await supabase.from('profiles').update({ frozen: true }).eq('id', senderId);
+        await notifyAdminsAboutFreeze(senderId, `Автомодерация в чате "${chatRow.title || 'Публичный'}": ${modResult.reason || 'Запрещённые выражения'}`);
+        throw new Error(`⚠️ ${modResult.reason || 'Нарушение правил общения'}. Ваш аккаунт автоматически заморожен.`);
+      }
+    }
+  } catch (err: any) {
+    if (err.message?.includes('автоматически заморожен')) {
+      throw err;
+    }
+  }
 
   const ciphertext = await encryptMessageE2EE(chatId, text);
 

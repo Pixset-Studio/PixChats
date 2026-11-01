@@ -324,3 +324,181 @@ export async function setChatVerification(chatId: string, verified: boolean, act
   if (error) throw error;
   await logAdminAction(verified ? 'grant_verification' : 'revoke_verification', 'chat', chatId);
 }
+
+export interface MessageReport {
+  id: string;
+  message_id: string;
+  reporter_id: string;
+  reported_user_id: string;
+  chat_id: string | null;
+  reason: string;
+  details: string | null;
+  created_at: string;
+  reporter_name?: string;
+  reported_user_name?: string;
+  reported_username?: string;
+  message_text?: string;
+  chat_title?: string;
+  reported_user?: Profile;
+  reporter?: Profile;
+}
+
+/** Отправляет сигнал-уведомление администраторам и разработчикам о заморозке аккаунта */
+export async function notifyAdminsAboutFreeze(reportedUserId: string, reasonText: string): Promise<void> {
+  try {
+    const supabase = getSupabaseClient();
+    const { data: user } = await supabase
+      .from('profiles')
+      .select('display_name, username')
+      .eq('id', reportedUserId)
+      .maybeSingle();
+
+    const userName = user?.display_name || user?.username || reportedUserId;
+
+    // Рассылаем по каналу omniscient / admin-broadcast
+    const broadcastCh = supabase.channel('pixchats-admin-alerts');
+    broadcastCh.subscribe((status) => {
+      if (status === 'SUBSCRIBED') {
+        void broadcastCh.send({
+          type: 'broadcast',
+          event: 'account-frozen-alert',
+          payload: {
+            reportedUserId,
+            userName,
+            reason: reasonText,
+            timestamp: new Date().toISOString(),
+          },
+        });
+      }
+    });
+  } catch {}
+}
+
+/**
+ * Подать жалобу на сообщение.
+ * Если на пользователя набирается >= 3 жалоб от РАЗНЫХ людей, аккаунт автоматически замораживается (`frozen = true`),
+ * а админам приходит уведомление.
+ */
+export async function reportMessage(params: {
+  messageId: string;
+  reportedUserId: string;
+  chatId?: string;
+  reason: string;
+  details?: string;
+}): Promise<{ autoFrozen: boolean }> {
+  const supabase = getSupabaseClient();
+  const { data: sessionData } = await supabase.auth.getSession();
+  const reporterId = sessionData.session?.user.id;
+  if (!reporterId) throw new Error('Нужно войти в аккаунт');
+
+  if (reporterId === params.reportedUserId) {
+    throw new Error('Нельзя пожаловаться на своё собственное сообщение');
+  }
+
+  // 1. Вставляем запись жалобы
+  const { error } = await supabase.from('message_reports').insert({
+    message_id: params.messageId,
+    reporter_id: reporterId,
+    reported_user_id: params.reportedUserId,
+    chat_id: params.chatId || null,
+    reason: params.reason,
+    details: params.details || null,
+  });
+
+  if (error && !error.message.includes('unique')) {
+    throw error;
+  }
+
+  // 2. Проверяем количество УНИКАЛЬНЫХ пожаловавшихся пользователей на данного нарушителя
+  const { data: reports } = await supabase
+    .from('message_reports')
+    .select('reporter_id')
+    .eq('reported_user_id', params.reportedUserId);
+
+  const uniqueReporters = new Set((reports || []).map((r) => r.reporter_id));
+  let autoFrozen = false;
+
+  if (uniqueReporters.size >= 3) {
+    autoFrozen = true;
+    await supabase
+      .from('profiles')
+      .update({ frozen: true })
+      .eq('id', params.reportedUserId);
+
+    await notifyAdminsAboutFreeze(
+      params.reportedUserId,
+      `Накоплено ${uniqueReporters.size} жалоб от разных пользователей (последняя: ${params.reason})`
+    );
+  }
+
+  return { autoFrozen };
+}
+
+/** Получение всех жалоб для раздела модерации в админ-панели */
+export async function getMessageReportsForAdmin(): Promise<MessageReport[]> {
+  const supabase = getSupabaseClient();
+  const { data: reports, error } = await supabase
+    .from('message_reports')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(100);
+
+  if (error) return [];
+
+  if (!reports || reports.length === 0) return [];
+
+  // Собираем связанные профили, сообщения и чаты
+  const userIds = Array.from(
+    new Set([
+      ...reports.map((r) => r.reporter_id),
+      ...reports.map((r) => r.reported_user_id),
+    ])
+  );
+  const msgIds = Array.from(new Set(reports.map((r) => r.message_id)));
+  const chatIds = Array.from(new Set(reports.map((r) => r.chat_id).filter(Boolean))) as string[];
+
+  const [{ data: profiles }, { data: messages }, { data: chats }] = await Promise.all([
+    supabase.from('profiles').select('*').in('id', userIds),
+    supabase.from('messages').select('id, ciphertext, text').in('id', msgIds),
+    chatIds.length > 0 ? supabase.from('chats').select('id, title').in('id', chatIds) : Promise.resolve({ data: [] }),
+  ]);
+
+  const profileMap = new Map((profiles || []).map((p) => [p.id, p as Profile]));
+  const msgMap = new Map((messages || []).map((m) => [m.id, m.text || m.ciphertext || '']));
+  const chatMap = new Map((chats || []).map((c) => [c.id, c.title || 'Чат']));
+
+  return reports.map((r) => {
+    const reporter = profileMap.get(r.reporter_id);
+    const reported = profileMap.get(r.reported_user_id);
+    return {
+      ...r,
+      reporter,
+      reported_user: reported,
+      reporter_name: reporter?.display_name || reporter?.username || r.reporter_id,
+      reported_user_name: reported?.display_name || reported?.username || r.reported_user_id,
+      reported_username: reported?.username || 'user',
+      message_text: msgMap.get(r.message_id) || 'Текст сообщения',
+      chat_title: r.chat_id ? chatMap.get(r.chat_id) || 'Чат' : 'Чат',
+    };
+  });
+}
+
+/** Список вредоносных / незаконных / спам-слов для автомодерации публичных чатов и каналов */
+const BAD_WORDS_REGEX =
+  /(терракт|терроризм|наркотик|наркота|гидра|мефедрон|амфетамин|продам паспорт|купить слив|взлом аккаунт|казино 1000|заработок без вложений|убью тебя|взрывчатка|оружие сбыт|сбыт карт|кардинг)/i;
+
+/** Проверяет текст сообщения на автомодерацию */
+export function checkAutoModerationViolation(text: string): { violated: boolean; reason?: string } {
+  if (!text || typeof text !== 'string') return { violated: false };
+
+  if (BAD_WORDS_REGEX.test(text)) {
+    const match = text.match(BAD_WORDS_REGEX);
+    return {
+      violated: true,
+      reason: `Запрещённая фраза/слово: "${match?.[0] || 'нарушение правил'}"`,
+    };
+  }
+
+  return { violated: false };
+}
+

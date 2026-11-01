@@ -121,6 +121,7 @@ import {
   getPreferredAudioConstraints,
   getPreferredVideoConstraints,
 } from '../../lib/mediaDevicesStore';
+import { ReportMessageModal } from '../../components/ReportMessageModal';
 
 interface ScheduledMessageItem {
   id: string;
@@ -220,6 +221,7 @@ function ChatWindowInner() {
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const [editingMessage, setEditingMessage] = useState<Message | null>(null);
   const [forwardTarget, setForwardTarget] = useState<Message | null>(null);
+  const [reportingMessage, setReportingMessage] = useState<Message | null>(null);
   const [myChats, setMyChats] = useState<Chat[]>([]);
   const [forwardPartners, setForwardPartners] = useState<Record<string, Profile>>({});
   const [notice, setNotice] = useState<string | null>(null);
@@ -3137,6 +3139,17 @@ function ChatWindowInner() {
                           <EditIcon size={15} /> Изменить
                         </button>
                       )}
+                      {!isMine && (
+                        <button
+                          className="danger"
+                          onClick={() => {
+                            setReportingMessage(m);
+                            setOpenMenuId(null);
+                          }}
+                        >
+                          🚨 Пожаловаться
+                        </button>
+                      )}
                       <button className="danger" onClick={() => handleDeleteForMe(m)}>
                         <TrashIcon size={15} /> Удалить у меня
                       </button>
@@ -4658,6 +4671,19 @@ function ChatWindowInner() {
             </div>
           </div>
         </div>
+      )}
+
+      {reportingMessage && me && (
+        <ReportMessageModal
+          messageId={reportingMessage.id}
+          reportedUserId={reportingMessage.sender_id}
+          chatId={chat.id}
+          onClose={() => setReportingMessage(null)}
+          onReported={() => {
+            setNotice('Жалоба успешно отправлена модераторам');
+            setTimeout(() => setNotice(null), 2500);
+          }}
+        />
       )}
     </main>
   );

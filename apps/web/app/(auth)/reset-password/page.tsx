@@ -189,7 +189,9 @@ export default function ResetPasswordPage() {
                   type="button"
                   className="btn-ghost"
                   style={{ width: 'auto', fontSize: 12.5 }}
-                  onClick={() => {
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
                     setError(null);
                     setStep('verify');
                   }}

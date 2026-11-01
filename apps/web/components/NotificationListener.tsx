@@ -294,6 +294,7 @@ export function NotificationListener() {
     let channel: ReturnType<ReturnType<typeof getSupabaseClient>['channel']> | null = null;
     let globalMsgChannel: ReturnType<ReturnType<typeof getSupabaseClient>['channel']> | null = null;
     let personalChannel: ReturnType<ReturnType<typeof getSupabaseClient>['channel']> | null = null;
+    let adminAlertsChannel: ReturnType<ReturnType<typeof getSupabaseClient>['channel']> | null = null;
     let stopDeviceMonitor: (() => void) | null = null;
 
     (async () => {
@@ -452,6 +453,24 @@ export function NotificationListener() {
           }
         )
         .subscribe();
+
+      // 0. Канал экстренных уведомлений для модераторов и администраторов
+      if (me.role === 'admin' || me.role === 'developer' || me.role === 'moderator') {
+        adminAlertsChannel = supabase
+          .channel('pixchats-admin-alerts')
+          .on('broadcast', { event: 'account-frozen-alert' }, (data: any) => {
+            const payload = data?.payload;
+            if (payload?.userName && payload?.reason) {
+              pushAlert(
+                '🚨 Автозаморозка аккаунта',
+                `Пользователь @${payload.userName} был заморожен. Причина: ${payload.reason}`,
+                '/admin',
+                '🚨'
+              );
+            }
+          })
+          .subscribe();
+      }
     })();
 
     return () => {
@@ -461,6 +480,7 @@ export function NotificationListener() {
       if (channel) getSupabaseClient().removeChannel(channel);
       if (globalMsgChannel) getSupabaseClient().removeChannel(globalMsgChannel);
       if (personalChannel) getSupabaseClient().removeChannel(personalChannel);
+      if (adminAlertsChannel) getSupabaseClient().removeChannel(adminAlertsChannel);
     };
   }, [router]);
 

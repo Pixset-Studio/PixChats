@@ -23,6 +23,7 @@ import {
   banUsername,
   unbanUsername,
   listBannedUsernames,
+  getMessageReportsForAdmin,
 } from '@pixchats/core';
 import type {
   Profile,
@@ -33,6 +34,7 @@ import type {
   UserRole,
   AdminUserFilter,
   AdminAuditLogRow,
+  MessageReport,
 } from '@pixchats/core';
 import { NameWithBadges } from '../../components/NameBadges';
 import { BottomNav } from '../../components/BottomNav';
@@ -56,7 +58,7 @@ import {
   PRESET_EMOJI_STATUSES,
 } from '../../lib/emojiStatus';
 
-type AdminTab = 'overview' | 'users' | 'chats' | 'stories' | 'content';
+type AdminTab = 'overview' | 'users' | 'chats' | 'stories' | 'moderation' | 'content';
 
 const USER_FILTER_OPTIONS: { id: AdminUserFilter; label: string }[] = [
   { id: 'all', label: 'Все' },
@@ -96,6 +98,21 @@ export default function AdminPage() {
   // Активные истории
   const [activeStories, setActiveStories] = useState<StoryItem[]>([]);
   const [loadingStories, setLoadingStories] = useState(false);
+  // Жалобы и Модерация
+  const [messageReports, setMessageReports] = useState<MessageReport[]>([]);
+  const [loadingReports, setLoadingReports] = useState(false);
+
+  const refreshMessageReports = useCallback(async () => {
+    setLoadingReports(true);
+    try {
+      const reports = await getMessageReportsForAdmin();
+      setMessageReports(reports);
+    } catch {
+      // ignore
+    } finally {
+      setLoadingReports(false);
+    }
+  }, []);
 
   // Системное объявление
   const [announcementText, setAnnouncementText] = useState('');
@@ -173,6 +190,7 @@ export default function AdminPage() {
       loadUsersList('all', '');
       loadChatsList('');
       refreshStoriesModeration();
+      refreshMessageReports();
 
       try {
         setStats(await getAdminStats());
@@ -434,6 +452,7 @@ export default function AdminPage() {
               { id: 'users', label: `👥 Пользователи (${results.length})` },
               { id: 'chats', label: `📢 Группы и Каналы (${managedChats.length})` },
               { id: 'stories', label: `✨ Истории (${activeStories.length})` },
+              { id: 'moderation', label: `🚨 Жалобы и Модерация (${messageReports.length})` },
               { id: 'overview', label: '📊 Системы и Аудит' },
               { id: 'content', label: `🎨 Стикеры и Стоп-лист` },
             ] as { id: AdminTab; label: string }[]
@@ -1072,6 +1091,120 @@ export default function AdminPage() {
                   </div>
                 ))}
               </div>
+            )}
+          </section>
+        )}
+
+        {/* ВКЛАДКА 3.5: МОДЕРАЦИЯ И ЖАЛОБЫ */}
+        {activeTab === 'moderation' && (
+          <section>
+            <div
+              className="section-title"
+              style={{
+                marginTop: 0,
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+              }}
+            >
+              <span>🚨 Жалобы пользователей и замороженные аккаунты ({messageReports.length})</span>
+              <button
+                type="button"
+                className="btn"
+                style={{ width: 'auto', padding: '5px 12px', fontSize: 12 }}
+                onClick={refreshMessageReports}
+              >
+                🔄 Обновить
+              </button>
+            </div>
+
+            <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16 }}>
+              При получении 3+ жалоб от разных людей или при срабатывании автомодерации в публичных каналах аккаунт пользователя автоматически замораживается. На этой панели администратор видит причину жалоб и принимает решение: разморозить или забанить навсегда.
+            </p>
+
+            {loadingReports ? (
+              <div className="empty-state">Загрузка жалоб модерации…</div>
+            ) : messageReports.length === 0 ? (
+              <div className="empty-state">Пока нет активных жалоб от пользователей или автоблокировок</div>
+            ) : (
+              <ul className="list-plain">
+                {messageReports.map((report) => (
+                  <li
+                    key={report.id}
+                    className="list-row"
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 10,
+                      padding: 16,
+                      background: 'var(--surface)',
+                      border: '1px solid var(--border)',
+                      borderRadius: 14,
+                      marginBottom: 12,
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 8 }}>
+                      <div>
+                        <div style={{ fontWeight: 700, fontSize: 15, display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <span>🚨 Нарушитель:</span>
+                          <span style={{ color: 'var(--accent)' }}>
+                            {report.reported_user?.display_name || 'Пользователь'} (@{report.reported_user?.username || 'user'})
+                          </span>
+                          {report.reported_user?.frozen && (
+                            <span style={{ fontSize: 11, background: 'rgba(56, 189, 248, 0.2)', color: '#38bdf8', padding: '2px 8px', borderRadius: 6, fontWeight: 700 }}>
+                              ❄️ ЗАМОРОЖЕН
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>
+                          📩 Жалобу подал(а): <strong>{report.reporter?.display_name || 'Заявитель'}</strong> (@{report.reporter?.username || 'user'}) · {new Date(report.created_at).toLocaleString('ru-RU')}
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                        {report.reported_user?.frozen ? (
+                          <button
+                            type="button"
+                            className="btn btn-primary"
+                            style={{ width: 'auto', padding: '6px 12px', fontSize: 12, background: '#16a34a', borderColor: '#22c55e' }}
+                            onClick={() => handleToggleFreeze(report.reported_user_id, false)}
+                          >
+                            ☀️ Разморозить аккаунт
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="btn"
+                            style={{ width: 'auto', padding: '6px 12px', fontSize: 12 }}
+                            onClick={() => handleToggleFreeze(report.reported_user_id, true)}
+                          >
+                            ❄️ Заморозить аккаунт
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="btn"
+                          style={{ width: 'auto', padding: '6px 12px', fontSize: 12, background: '#dc2626', color: '#fff', fontWeight: 700 }}
+                          onClick={() => handleBan(report.reported_user_id, 'forever')}
+                        >
+                          ⛔ Забанить навсегда
+                        </button>
+                      </div>
+                    </div>
+
+                    <div style={{ padding: '10px 14px', borderRadius: 10, background: 'var(--bg)', border: '1px solid var(--border)', fontSize: 13 }}>
+                      <div style={{ fontWeight: 700, color: 'var(--danger)', marginBottom: 4 }}>
+                        Категория жалобы: {report.reason}
+                      </div>
+                      {report.details && (
+                        <div style={{ color: 'var(--text)', whiteSpace: 'pre-wrap' }}>
+                          «{report.details}»
+                        </div>
+                      )}
+                    </div>
+                  </li>
+                ))}
+              </ul>
             )}
           </section>
         )}

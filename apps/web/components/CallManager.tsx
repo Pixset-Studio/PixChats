@@ -216,6 +216,7 @@ export function CallManager() {
   const [groupParticipants, setGroupParticipants] = useState<CallParticipant[]>([]);
   const [speakingUsers, setSpeakingUsers] = useState<Record<string, boolean>>({});
   const [callNotice, setCallNotice] = useState<string | null>(null);
+  const [speakerphoneActive, setSpeakerphoneActive] = useState<boolean>(true);
 
   const meRef = useRef<Profile | null>(me);
   meRef.current = me;
@@ -973,6 +974,13 @@ export function CallManager() {
     const handleConnectedState = () => {
       const state = pc.connectionState;
       const iceState = pc.iceConnectionState;
+
+      if (iceState === 'disconnected' || iceState === 'failed' || state === 'failed') {
+        try {
+          pc.restartIce();
+        } catch {}
+      }
+
       if (state === 'connected' || iceState === 'connected' || iceState === 'completed') {
         stopRingtone();
         stopInviteRetryLoop();
@@ -1430,6 +1438,35 @@ export function CallManager() {
     });
     micMutedRef.current = nextMuted;
     setMicMuted(nextMuted);
+  }
+
+  function handleToggleSpeakerphone() {
+    const nextState = !speakerphoneActive;
+    setSpeakerphoneActive(nextState);
+    if (typeof window !== 'undefined' && (window as any).PixChatsAndroid?.setSpeakerphoneOn) {
+      try {
+        (window as any).PixChatsAndroid.setSpeakerphoneOn(nextState);
+      } catch {}
+    }
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.volume = nextState ? 1.0 : 0.45;
+    }
+    showTransientCallNotice(
+      nextState ? '🔊 Громкая связь включена' : '🔈 Разговорный динамик'
+    );
+  }
+
+  function handleReconnectCall() {
+    showTransientCallNotice('🔄 Восстановление WebRTC соединения…');
+    if (pcRef.current) {
+      try {
+        pcRef.current.restartIce();
+      } catch {}
+    }
+    unlockAudioElements();
+    if (remoteStreamRef.current) {
+      syncRemoteAudioPlayback();
+    }
   }
 
   async function handleToggleCamera() {
@@ -2177,6 +2214,34 @@ export function CallManager() {
             onClick={handleToggleCamera}
           >
             {cameraEnabled ? '📷 Камера вкл' : '📷 Включить камеру'}
+          </button>
+
+          <button
+            type="button"
+            className="btn"
+            style={{
+              width: 'auto',
+              padding: '11px 18px',
+              borderColor: speakerphoneActive ? 'var(--accent)' : undefined,
+              color: speakerphoneActive ? 'var(--accent)' : undefined,
+              background: speakerphoneActive ? 'rgba(255, 212, 0, 0.12)' : undefined,
+            }}
+            onClick={handleToggleSpeakerphone}
+          >
+            {speakerphoneActive ? '🔊 Громкая связь: Вкл' : '🔈 Разговорный динамик'}
+          </button>
+
+          <button
+            type="button"
+            className="btn"
+            style={{
+              width: 'auto',
+              padding: '11px 16px',
+            }}
+            onClick={handleReconnectCall}
+            title="Перезапустить аудиопоток при разрыве или задержках"
+          >
+            🔄 Восстановить связь
           </button>
 
           <button
