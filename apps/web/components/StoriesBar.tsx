@@ -3,6 +3,14 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { getSupabaseClient, uploadMessageFile } from '@pixchats/core';
 import type { Profile } from '@pixchats/core';
+
+interface AdminChannelOption {
+  id: string;
+  title: string;
+  username: string | null;
+  avatarUrl: string | null;
+  isVerified: boolean;
+}
 import {
   loadActiveStories,
   getCachedStories,
@@ -17,6 +25,11 @@ import {
 } from '../lib/stories';
 import { compressImageToDataUrl } from '../lib/fileStorage';
 import { VerifiedBadge } from './VerifiedBadge';
+import { EmojiPicker } from './EmojiPicker';
+import {
+  getPreferredAudioConstraints,
+  getPreferredVideoConstraints,
+} from '../lib/mediaDevicesStore';
 
 interface StoriesBarProps {
   profile: Profile;
@@ -28,11 +41,13 @@ interface UserStoryGroup {
   userUsername: string;
   userAvatar: string | null;
   isVerified?: boolean;
+  isChannelStory?: boolean;
+  channelId?: string;
   stories: StoryItem[];
   hasUnviewed: boolean;
 }
 
-const STORY_REACTIONS = ['❤️', '🔥', '😂', '😍', '👏', '🎉'];
+const STORY_REACTIONS = ['❤️', '🔥', '😂', '😍', '👏', '🎉', '🇷🇺', '🇰🇿'];
 const BRUSH_COLORS = ['#ffd400', '#ffffff', '#ef4444', '#22c55e', '#38bdf8', '#ec4899', '#a855f7', '#000000'];
 
 function formatStoryAgo(iso: string): string {
@@ -102,16 +117,57 @@ export function StoriesBar({ profile }: StoriesBarProps) {
   const [progress, setProgress] = useState(0);
   const [paused, setPaused] = useState(false);
   const [viewerMuted, setViewerMuted] = useState(false);
+  const [showReactionPicker, setShowReactionPicker] = useState(false);
+  const [storyNotice, setStoryNotice] = useState<string | null>(null);
   const viewerVideoRef = useRef<HTMLVideoElement | null>(null);
+
+  // Каналы, где пользователь владелец или администратор (для публикации историй от имени канала)
+  const [adminChannels, setAdminChannels] = useState<AdminChannelOption[]>([]);
+  const [selectedPublisherChannelId, setSelectedPublisherChannelId] = useState<string>(''); // '' = личный профиль
 
   useEffect(() => {
     let mounted = true;
-    loadActiveStories().then((loaded) => {
-      if (mounted) {
-        setStories(loaded);
-        setViewedIds(getViewedStoryIds());
+    const refreshStories = () => {
+      loadActiveStories().then((loaded) => {
+        if (mounted) {
+          setStories(loaded);
+          setViewedIds(getViewedStoryIds());
+        }
+      });
+    };
+    refreshStories();
+
+    (async () => {
+      try {
+        const supabase = getSupabaseClient();
+        const { data: memberRows } = await supabase
+          .from('chat_members')
+          .select('chat_id, member_role')
+          .eq('user_id', profile.id)
+          .in('member_role', ['owner', 'admin']);
+        const chatIds = (memberRows ?? []).map((r: any) => r.chat_id);
+        if (chatIds.length === 0) return;
+        const { data: chatsData } = await supabase
+          .from('chats')
+          .select('id, type, title, username, avatar_url, is_verified')
+          .in('id', chatIds)
+          .eq('type', 'channel');
+        if (!mounted || !chatsData) return;
+        setAdminChannels(
+          chatsData.map((c: any) => ({
+            id: c.id,
+            title: c.title || 'Канал',
+            username: c.username ?? null,
+            avatarUrl: c.avatar_url ?? null,
+            isVerified: Boolean(c.is_verified),
+          }))
+        );
+      } catch {
+        // ignore
       }
-    });
+    })();
+
+    const pollInterval = setInterval(refreshStories, 15000);
 
     const onLocalUpdate = (e: Event) => {
       const custom = e as CustomEvent<{ stories: StoryItem[] }>;
@@ -120,23 +176,29 @@ export function StoriesBar({ profile }: StoriesBarProps) {
         setViewedIds(getViewedStoryIds());
       }
     };
+    const onOpenChannelStudio = (e: Event) => {
+      const custom = e as CustomEvent<{ channelId?: string }>;
+      if (custom.detail?.channelId) {
+        setSelectedPublisherChannelId(custom.detail.channelId);
+      }
+      setShowCreateModal(true);
+    };
     window.addEventListener('pixchats:stories_updated', onLocalUpdate);
+    window.addEventListener('pixchats:open_story_studio', onOpenChannelStudio);
 
     const supabase = getSupabaseClient();
     const channel = supabase
       .channel('pixchats-stories-global')
-      .on('broadcast', { event: 'stories-sync' }, ({ payload }) => {
-        if (payload?.stories && Array.isArray(payload.stories)) {
-          loadActiveStories().then((merged) => {
-            if (mounted) setStories(merged);
-          });
-        }
+      .on('broadcast', { event: 'stories-sync' }, () => {
+        refreshStories();
       })
       .subscribe();
 
     return () => {
       mounted = false;
+      clearInterval(pollInterval);
       window.removeEventListener('pixchats:stories_updated', onLocalUpdate);
+      window.removeEventListener('pixchats:open_story_studio', onOpenChannelStudio);
       supabase.removeChannel(channel);
     };
   }, []);
@@ -163,6 +225,8 @@ export function StoriesBar({ profile }: StoriesBarProps) {
         userUsername: first.userUsername,
         userAvatar: uid === profile.id ? profile.avatar_url : first.userAvatar,
         isVerified: first.isVerified,
+        isChannelStory: Boolean(first.isChannelStory || uid.startsWith('channel:')),
+        channelId: first.channelId,
         stories: sortedAsc,
         hasUnviewed,
       });
@@ -299,8 +363,8 @@ export function StoriesBar({ profile }: StoriesBarProps) {
     stopStoryCamera();
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: facing, width: { ideal: 1080 }, height: { ideal: 1920 } },
-        audio: true,
+        video: getPreferredVideoConstraints({ facingMode: facing, width: { ideal: 1080 }, height: { ideal: 1920 } }),
+        audio: getPreferredAudioConstraints(),
       });
       cameraStreamRef.current = stream;
       setCameraFacing(facing);
@@ -563,12 +627,19 @@ export function StoriesBar({ profile }: StoriesBarProps) {
         }
       }
 
+      const targetChannel = selectedPublisherChannelId
+        ? adminChannels.find((ch) => ch.id === selectedPublisherChannelId)
+        : null;
+
       await publishNewStory({
-        userId: profile.id,
-        userName: profile.display_name,
-        userUsername: profile.username,
-        userAvatar: profile.avatar_url,
-        isVerified: profile.is_verified,
+        userId: targetChannel ? `channel:${targetChannel.id}` : profile.id,
+        authorUserId: profile.id,
+        channelId: targetChannel ? targetChannel.id : undefined,
+        isChannelStory: Boolean(targetChannel),
+        userName: targetChannel ? targetChannel.title : profile.display_name,
+        userUsername: targetChannel ? targetChannel.username || 'channel' : profile.username,
+        userAvatar: targetChannel ? targetChannel.avatarUrl || null : profile.avatar_url,
+        isVerified: targetChannel ? Boolean(targetChannel.isVerified) : profile.is_verified,
         mediaUrl: finalMediaUrl,
         mediaType: finalMediaUrl ? (mediaType === 'video' ? 'video' : 'image') : 'none',
         videoMuted,
@@ -583,7 +654,8 @@ export function StoriesBar({ profile }: StoriesBarProps) {
         text: draftText,
         privacy,
       });
-      setStories(getCachedStories());
+      const refreshed = await loadActiveStories();
+      setStories(refreshed);
       resetCreateModal();
     } finally {
       setPublishing(false);
@@ -787,6 +859,40 @@ export function StoriesBar({ profile }: StoriesBarProps) {
             </div>
 
             <form onSubmit={handlePublish}>
+              {/* Выбор автора истории: Личный профиль или Канал */}
+              {adminChannels.length > 0 && (
+                <div
+                  style={{
+                    marginBottom: 10,
+                    padding: '8px 10px',
+                    borderRadius: 12,
+                    background: 'var(--surface-raised)',
+                    border: '1px solid var(--border)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 8,
+                  }}
+                >
+                  <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)' }}>
+                    📢 Опубликовать от имени:
+                  </span>
+                  <select
+                    className="input"
+                    value={selectedPublisherChannelId}
+                    onChange={(e) => setSelectedPublisherChannelId(e.target.value)}
+                    style={{ width: 'auto', flex: 1, maxWidth: 230, padding: '5px 10px', fontSize: 12.5 }}
+                  >
+                    <option value="">👤 {profile.display_name} (Личный профиль)</option>
+                    {adminChannels.map((ch) => (
+                      <option key={ch.id} value={ch.id}>
+                        📢 {ch.title} (Канал)
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
               {/* Превью истории ИЛИ живая камера */}
               <div
                 style={{
@@ -1527,7 +1633,10 @@ export function StoriesBar({ profile }: StoriesBarProps) {
                       + Ещё
                     </button>
                   )}
-                  {activeStory.userId === profile.id && (
+                  {(activeStory.userId === profile.id ||
+                    activeStory.authorUserId === profile.id ||
+                    profile.role === 'developer' ||
+                    profile.role === 'admin') && (
                     <button
                       type="button"
                       className="btn"
@@ -1694,25 +1803,83 @@ export function StoriesBar({ profile }: StoriesBarProps) {
               </div>
             )}
 
+            {/* Уведомление об ограничении реакций */}
+            {storyNotice && (
+              <div
+                style={{
+                  position: 'absolute',
+                  bottom: 68,
+                  left: 16,
+                  right: 16,
+                  zIndex: 25,
+                  background: 'rgba(24, 24, 27, 0.94)',
+                  border: '1px solid var(--accent)',
+                  color: '#ffd400',
+                  padding: '8px 12px',
+                  borderRadius: 12,
+                  fontSize: 12,
+                  fontWeight: 700,
+                  textAlign: 'center',
+                }}
+              >
+                {storyNotice}
+              </div>
+            )}
+
+            {/* Полноценный выбор эмодзи и флагов для реакции на историю */}
+            {showReactionPicker && (
+              <div
+                onClick={(e) => e.stopPropagation()}
+                style={{
+                  position: 'absolute',
+                  bottom: 62,
+                  right: 12,
+                  zIndex: 30,
+                }}
+              >
+                <EmojiPicker
+                  title="Реакция на историю (вкл. 🏳️ Флаги)"
+                  onClose={() => {
+                    setShowReactionPicker(false);
+                    setPaused(false);
+                  }}
+                  onSelect={async (emoji) => {
+                    setShowReactionPicker(false);
+                    setPaused(false);
+                    const updated = await toggleStoryReaction(activeStory.id, emoji, profile.id, {
+                      isDeveloper: profile.role === 'developer',
+                      onLimitReached: () => {
+                        setStoryNotice('Максимум 3 реакции на одну историю (безлимит для разработчика)');
+                        setTimeout(() => setStoryNotice(null), 3200);
+                      },
+                    });
+                    setStories(updated);
+                  }}
+                />
+              </div>
+            )}
+
             {/* Нижняя панель просмотров и быстрых реакций */}
             <div
               style={{
                 position: 'relative',
                 zIndex: 10,
                 padding: '10px 14px 14px',
-                background: 'linear-gradient(to top, rgba(0,0,0,0.82), transparent)',
+                background: 'linear-gradient(to top, rgba(0,0,0,0.88), transparent)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'space-between',
                 gap: 8,
               }}
             >
-              <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.85)', fontWeight: 600 }}>
+              <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.85)', fontWeight: 600, flexShrink: 0 }}>
                 👁️ {activeStory.viewers?.length || 1}
               </div>
 
-              <div style={{ display: 'flex', gap: 6 }}>
-                {STORY_REACTIONS.map((emoji) => {
+              <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                {Array.from(
+                  new Set([...STORY_REACTIONS, ...Object.keys(activeStory.reactions || {})])
+                ).map((emoji) => {
                   const users = activeStory.reactions?.[emoji] || [];
                   const reactedByMe = users.includes(profile.id);
                   return (
@@ -1720,15 +1887,21 @@ export function StoriesBar({ profile }: StoriesBarProps) {
                       key={emoji}
                       type="button"
                       onClick={async () => {
-                        const updated = await toggleStoryReaction(activeStory.id, emoji, profile.id);
+                        const updated = await toggleStoryReaction(activeStory.id, emoji, profile.id, {
+                          isDeveloper: profile.role === 'developer',
+                          onLimitReached: () => {
+                            setStoryNotice('Максимум 3 реакции на одну историю (безлимит для разработчика)');
+                            setTimeout(() => setStoryNotice(null), 3200);
+                          },
+                        });
                         setStories(updated);
                       }}
                       style={{
                         background: reactedByMe ? 'rgba(255, 212, 0, 0.28)' : 'rgba(255,255,255,0.12)',
                         border: reactedByMe ? '1px solid var(--accent)' : '1px solid rgba(255,255,255,0.2)',
                         borderRadius: 999,
-                        padding: '4px 9px',
-                        fontSize: 14,
+                        padding: '4px 8px',
+                        fontSize: 13.5,
                         color: '#fff',
                         cursor: 'pointer',
                         display: 'flex',
@@ -1743,6 +1916,29 @@ export function StoriesBar({ profile }: StoriesBarProps) {
                     </button>
                   );
                 })}
+                <button
+                  type="button"
+                  title="Ещё реакции и флаги"
+                  onClick={() => {
+                    setShowReactionPicker((v) => {
+                      const next = !v;
+                      setPaused(next);
+                      return next;
+                    });
+                  }}
+                  style={{
+                    background: 'rgba(255,255,255,0.16)',
+                    border: '1px solid rgba(255,255,255,0.28)',
+                    borderRadius: 999,
+                    padding: '4px 9px',
+                    fontSize: 13,
+                    color: '#fff',
+                    cursor: 'pointer',
+                    fontWeight: 800,
+                  }}
+                >
+                  ➕🏳️
+                </button>
               </div>
             </div>
           </div>

@@ -214,7 +214,7 @@ export default function LoginPage() {
               <div
                 style={{
                   display: 'inline-flex',
-                  padding: 14,
+                  padding: 12,
                   borderRadius: 16,
                   background: '#ffffff',
                   border: '3px solid var(--accent)',
@@ -222,10 +222,18 @@ export default function LoginPage() {
                   marginBottom: 12,
                 }}
               >
-                <svg width={175} height={175} viewBox="0 0 25 25" shapeRendering="crispEdges">
+                <svg
+                  width={196}
+                  height={196}
+                  viewBox={`0 0 ${qrMatrix.length + 8} ${qrMatrix.length + 8}`}
+                  shapeRendering="crispEdges"
+                >
+                  <rect width={qrMatrix.length + 8} height={qrMatrix.length + 8} fill="#ffffff" />
                   {qrMatrix.map((row, r) =>
                     row.map((cell, c) =>
-                      cell ? <rect key={`${r}-${c}`} x={c} y={r} width={1} height={1} fill="#09090b" /> : null
+                      cell ? (
+                        <rect key={`${r}-${c}`} x={c + 4} y={r + 4} width={1} height={1} fill="#000000" />
+                      ) : null
                     )
                   )}
                 </svg>

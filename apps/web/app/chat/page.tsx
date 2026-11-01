@@ -115,6 +115,10 @@ import {
   encodeLocationMessage,
   LocationPickerModal,
 } from '../../components/ChatInteractiveTools';
+import {
+  getPreferredAudioConstraints,
+  getPreferredVideoConstraints,
+} from '../../lib/mediaDevicesStore';
 
 interface ScheduledMessageItem {
   id: string;
@@ -141,7 +145,7 @@ function formatDateDivider(iso: string): string {
   });
 }
 
-const QUICK_REACTIONS = ['👍', '❤️', '🔥', '😂', '😮', '😢', '👏', '🎉'];
+const QUICK_REACTIONS = ['👍', '❤️', '🔥', '😂', '😮', '😢', '👏', '🎉', '🇷🇺', '🇰🇿'];
 
 const TTL_OPTIONS = [
   { label: 'Выкл', seconds: 0 },
@@ -735,7 +739,9 @@ function ChatWindowInner() {
 
   async function startRecording() {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: getPreferredAudioConstraints(),
+      });
       const recorder = new MediaRecorder(stream);
       audioChunksRef.current = [];
       liveSpeechSessionRef.current = startLiveSpeechRecognitionSession();
@@ -782,8 +788,8 @@ function ChatWindowInner() {
     setVideoNoteSeconds(0);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 360 }, height: { ideal: 360 }, facingMode: 'user' },
-        audio: true,
+        video: getPreferredVideoConstraints({ width: { ideal: 360 }, height: { ideal: 360 }, facingMode: 'user' }),
+        audio: getPreferredAudioConstraints(),
       });
       videoNoteStreamRef.current = stream;
       setTimeout(() => {
@@ -1570,12 +1576,39 @@ function ChatWindowInner() {
 
   async function handleToggleReaction(messageId: string, emoji: string) {
     if (!me) return;
+    const isSpecial =
+      emoji.startsWith('📊') || emoji.startsWith('☑️') || emoji.startsWith('💬:');
+    const isDev = me.role === 'developer';
+
+    // Check 3-reaction limit per message for non-developers before adding a new emoji reaction
+    const msgReactionMap = reactions[messageId] ?? {};
+    const alreadyReactedWithThis = Boolean(msgReactionMap[emoji]?.includes(me.id));
+    if (!alreadyReactedWithThis && !isSpecial && !isDev) {
+      let myEmojiCount = 0;
+      for (const [kEmoji, uList] of Object.entries(msgReactionMap)) {
+        if (
+          !kEmoji.startsWith('📊') &&
+          !kEmoji.startsWith('☑️') &&
+          !kEmoji.startsWith('💬:') &&
+          Array.isArray(uList) &&
+          uList.includes(me.id)
+        ) {
+          myEmojiCount++;
+        }
+      }
+      if (myEmojiCount >= 3) {
+        setNotice('Можно поставить максимум 3 реакции на одно сообщение (безлимит для разработчика)');
+        setTimeout(() => setNotice(null), 3000);
+        return;
+      }
+    }
+
     if (!emoji.startsWith('💬:')) {
       setParticleMsgId(messageId);
       setParticleEmoji(emoji.replace(/📊\d+/, '👍').replace(/☑️\d+/, '✅'));
     }
     try {
-      const payload = await toggleMessageReaction(chatId, messageId, emoji, me.id);
+      const payload = await toggleMessageReaction(chatId, messageId, emoji, me.id, isDev);
       setReactions((prev) => {
         const msgReactions = { ...(prev[payload.messageId] ?? {}) };
         const currentUsers = msgReactions[payload.emoji] ?? [];
@@ -1591,7 +1624,12 @@ function ChatWindowInner() {
         }
         return { ...prev, [payload.messageId]: msgReactions };
       });
-    } catch {}
+    } catch (err: any) {
+      if (err?.message) {
+        setNotice(err.message);
+        setTimeout(() => setNotice(null), 3000);
+      }
+    }
   }
 
   // Фильтрация удалённых сообщений (без заглушек «Сообщение удалено») и фильтрация по выбранной теме (Топику)

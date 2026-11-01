@@ -42,6 +42,10 @@ import {
 } from '../../lib/channelConfig';
 import { isChatHidden, toggleHiddenChat } from '../../lib/appLock';
 import { startPixChatsGroupCall } from '../../components/CallManager';
+import { QrCodeModal } from '../../components/QrCodeModal';
+import { publishNewStory, STORY_GRADIENTS } from '../../lib/stories';
+import { compressImageToDataUrl } from '../../lib/fileStorage';
+import { uploadMessageFile } from '@pixchats/core';
 
 const TYPE_LABEL: Record<Chat['type'], string> = {
   direct: 'Личный чат',
@@ -68,6 +72,13 @@ function ChatInfoInner() {
   const [isArchived, setIsArchived] = useState(false);
   const [isHidden, setIsHidden] = useState(false);
   const [customFolders, setCustomFolders] = useState<CustomChatFolder[]>([]);
+  const [showQrModal, setShowQrModal] = useState(false);
+  const [showChannelStoryModal, setShowChannelStoryModal] = useState(false);
+  const [channelStoryText, setChannelStoryText] = useState('');
+  const [channelStoryMedia, setChannelStoryMedia] = useState<string | null>(null);
+  const [channelStoryMediaType, setChannelStoryMediaType] = useState<'image' | 'video' | 'none'>('none');
+  const [channelStoryVideoFile, setChannelStoryVideoFile] = useState<File | null>(null);
+  const [channelStoryPublishing, setChannelStoryPublishing] = useState(false);
 
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -355,6 +366,22 @@ function ChatInfoInner() {
               🔊 Начать голосовой чат
             </button>
           )}
+          {chat.type === 'channel' && canEdit && (
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => setShowChannelStoryModal(true)}
+            >
+              ✨ Выложить историю канала
+            </button>
+          )}
+          <button
+            type="button"
+            className="btn"
+            onClick={() => setShowQrModal(true)}
+          >
+            📱 QR-код {chat.type === 'channel' ? 'канала' : 'группы'}
+          </button>
           <button className="btn" onClick={handleTogglePin}>
             {isPinned ? '📌 Открепить чат' : '📍 Закрепить чат'}
           </button>
@@ -721,7 +748,154 @@ function ChatInfoInner() {
         </div>
       )}
 
-      <SharedChatAttachments chatId={chat.id} />
+      <SharedChatAttachments
+        chatId={chat.id}
+        channelId={chat.type === 'channel' ? chat.id : undefined}
+      />
+
+      {showQrModal && (
+        <QrCodeModal
+          title={chat.title || TYPE_LABEL[chat.type]}
+          subtitle={chat.username ? `@${chat.username}` : TYPE_LABEL[chat.type]}
+          avatarUrl={chat.avatar_url}
+          url={buildAppUrl(chat.username ? `/c/?u=${chat.username}` : `/chat/?id=${chat.id}`)}
+          badgeText={chat.type === 'channel' ? 'PixChats Канал' : 'PixChats Группа'}
+          onClose={() => setShowQrModal(false)}
+        />
+      )}
+
+      {showChannelStoryModal && me && (
+        <div className="modal-overlay" onClick={() => setShowChannelStoryModal(false)}>
+          <div
+            className="modal-card"
+            style={{ maxWidth: 420 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 style={{ marginTop: 0 }}>✨ Новая история канала «{chat.title}»</h3>
+            <p style={{ fontSize: 12.5, color: 'var(--text-muted)', marginTop: 0 }}>
+              История будет опубликована от имени канала и отобразится в общей ленте историй и в профиле канала (на 24 часа).
+            </p>
+            <div className="field">
+              <label>Фото или видео (необязательно)</label>
+              <input
+                type="file"
+                className="input"
+                accept="image/*,video/*"
+                onChange={async (e) => {
+                  const f = e.target.files?.[0];
+                  if (!f) return;
+                  if (f.type.startsWith('video/')) {
+                    setChannelStoryVideoFile(f);
+                    setChannelStoryMedia(URL.createObjectURL(f));
+                    setChannelStoryMediaType('video');
+                  } else {
+                    const dataUrl = await compressImageToDataUrl(f, 1080, 0.84);
+                    setChannelStoryMedia(dataUrl);
+                    setChannelStoryMediaType('image');
+                    setChannelStoryVideoFile(null);
+                  }
+                }}
+              />
+            </div>
+
+            {channelStoryMedia && (
+              <div
+                style={{
+                  height: 200,
+                  borderRadius: 12,
+                  overflow: 'hidden',
+                  background: '#000',
+                  marginBottom: 12,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                {channelStoryMediaType === 'video' ? (
+                  <video
+                    src={channelStoryMedia}
+                    controls
+                    style={{ maxHeight: '100%', maxWidth: '100%' }}
+                  />
+                ) : (
+                  <img
+                    src={channelStoryMedia}
+                    alt="Превью"
+                    style={{ maxHeight: '100%', maxWidth: '100%', objectFit: 'contain' }}
+                  />
+                )}
+              </div>
+            )}
+
+            <div className="field">
+              <label>Текст / подпись к истории канала</label>
+              <textarea
+                className="textarea"
+                rows={3}
+                placeholder="Напишите новость или анонс канала…"
+                value={channelStoryText}
+                onChange={(e) => setChannelStoryText(e.target.value)}
+              />
+            </div>
+
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
+              <button
+                type="button"
+                className="btn"
+                style={{ width: 'auto' }}
+                onClick={() => setShowChannelStoryModal(false)}
+              >
+                Отмена
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                style={{ width: 'auto' }}
+                disabled={channelStoryPublishing || (!channelStoryText.trim() && !channelStoryMedia)}
+                onClick={async () => {
+                  setChannelStoryPublishing(true);
+                  try {
+                    let finalMediaUrl = channelStoryMedia;
+                    if (channelStoryMediaType === 'video' && channelStoryVideoFile) {
+                      try {
+                        const uploaded = await uploadMessageFile(
+                          `stories-channel-${chat.id}`,
+                          channelStoryVideoFile
+                        );
+                        finalMediaUrl = uploaded.url;
+                      } catch {}
+                    }
+                    await publishNewStory({
+                      userId: `channel:${chat.id}`,
+                      authorUserId: me.id,
+                      channelId: chat.id,
+                      isChannelStory: true,
+                      userName: chat.title || 'Канал',
+                      userUsername: chat.username || 'channel',
+                      userAvatar: chat.avatar_url || null,
+                      isVerified: Boolean(chat.is_verified),
+                      mediaUrl: finalMediaUrl,
+                      mediaType: finalMediaUrl ? channelStoryMediaType : 'none',
+                      bgGradient: STORY_GRADIENTS[0].css,
+                      text: channelStoryText,
+                      privacy: 'all',
+                    });
+                    setShowChannelStoryModal(false);
+                    setChannelStoryText('');
+                    setChannelStoryMedia(null);
+                    setChannelStoryMediaType('none');
+                    setChannelStoryVideoFile(null);
+                  } finally {
+                    setChannelStoryPublishing(false);
+                  }
+                }}
+              >
+                {channelStoryPublishing ? 'Публикация…' : '✨ Опубликовать историю'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

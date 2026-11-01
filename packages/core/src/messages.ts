@@ -335,18 +335,35 @@ export async function getChatReactions(chatId: string, messageIds: string[]): Pr
   return result;
 }
 
+export function isSpecialMetadataReaction(emoji: string): boolean {
+  return emoji.startsWith('📊') || emoji.startsWith('☑️') || emoji.startsWith('💬:');
+}
+
 /** Переключить реакцию (поставить или снять) с мгновенной рассылкой в Realtime */
 export async function toggleMessageReaction(
   chatId: string,
   messageId: string,
   emoji: string,
-  userId: string
+  userId: string,
+  isDeveloper = false
 ): Promise<ReactionPayload> {
   const current = getStoredReactions(chatId);
   const msgReactions = current[messageId] ?? {};
   const userList = msgReactions[emoji] ?? [];
   const hasReacted = userList.includes(userId);
   const action: 'add' | 'remove' = hasReacted ? 'remove' : 'add';
+
+  if (action === 'add' && !isDeveloper && !isSpecialMetadataReaction(emoji)) {
+    let myEmojiCount = 0;
+    for (const [keyEmoji, uList] of Object.entries(msgReactions)) {
+      if (!isSpecialMetadataReaction(keyEmoji) && Array.isArray(uList) && uList.includes(userId)) {
+        myEmojiCount++;
+      }
+    }
+    if (myEmojiCount >= 3) {
+      throw new Error('Можно поставить максимум 3 реакции на одно сообщение (безлимит для разработчика)');
+    }
+  }
 
   if (action === 'add') {
     msgReactions[emoji] = [...userList, userId];

@@ -1,5 +1,5 @@
 import { getSupabaseClient } from './supabaseClient';
-import type { Profile, UserRole } from './types';
+import type { Chat, Profile, UserRole } from './types';
 
 export interface AdminStatsOverview {
   total_users: number;
@@ -12,6 +12,27 @@ export interface AdminStatsOverview {
   messages_today: number;
   total_calls: number;
   calls_today: number;
+}
+
+export type AdminUserFilter =
+  | 'all'
+  | 'developer'
+  | 'admin'
+  | 'moderator'
+  | 'partner'
+  | 'verified'
+  | 'employee'
+  | 'frozen'
+  | 'banned';
+
+export interface AdminAuditLogRow {
+  id: string;
+  actor_id: string | null;
+  action: string;
+  target_type: string;
+  target_id: string;
+  details: Record<string, any> | null;
+  created_at: string;
 }
 
 export async function getAdminStats(): Promise<AdminStatsOverview> {
@@ -71,9 +92,79 @@ export async function getErrorLogs(limit = 50): Promise<ErrorLogRow[]> {
 
 export async function searchProfilesByUsername(query: string): Promise<Profile[]> {
   const supabase = getSupabaseClient();
-  const { data, error } = await supabase.from('profiles').select('*').ilike('username', `%${query}%`).limit(20);
+  const clean = query.trim().replace(/^@/, '');
+  if (!clean) {
+    return listProfilesForAdmin({ filter: 'all', limit: 30 });
+  }
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('*')
+    .or(`username.ilike.%${clean}%,display_name.ilike.%${clean}%`)
+    .order('created_at', { ascending: false })
+    .limit(30);
   if (error) throw error;
   return (data ?? []) as Profile[];
+}
+
+export async function listProfilesForAdmin(options?: {
+  filter?: AdminUserFilter;
+  query?: string;
+  limit?: number;
+}): Promise<Profile[]> {
+  const supabase = getSupabaseClient();
+  const filter = options?.filter ?? 'all';
+  const cleanQuery = (options?.query ?? '').trim().replace(/^@/, '');
+  const limit = options?.limit ?? 40;
+
+  let req = supabase.from('profiles').select('*');
+
+  if (cleanQuery) {
+    req = req.or(`username.ilike.%${cleanQuery}%,display_name.ilike.%${cleanQuery}%`);
+  }
+
+  if (filter === 'developer' || filter === 'admin' || filter === 'moderator' || filter === 'partner') {
+    req = req.eq('role', filter);
+  } else if (filter === 'verified') {
+    req = req.eq('is_verified', true);
+  } else if (filter === 'employee') {
+    req = req.eq('is_pixset_employee', true);
+  } else if (filter === 'frozen') {
+    req = req.eq('frozen', true);
+  } else if (filter === 'banned') {
+    req = req.or(`banned_permanently.eq.true,banned_until.gt.${new Date().toISOString()}`);
+  }
+
+  const { data, error } = await req.order('created_at', { ascending: false }).limit(limit);
+  if (error) throw error;
+  return (data ?? []) as Profile[];
+}
+
+export async function listGroupAndChannelChatsForAdmin(query = '', limit = 40): Promise<Chat[]> {
+  const supabase = getSupabaseClient();
+  const clean = query.trim().replace(/^@/, '');
+  let req = supabase
+    .from('chats')
+    .select('*')
+    .in('type', ['group', 'channel']);
+
+  if (clean) {
+    req = req.or(`title.ilike.%${clean}%,username.ilike.%${clean}%`);
+  }
+
+  const { data, error } = await req.order('created_at', { ascending: false }).limit(limit);
+  if (error) throw error;
+  return (data ?? []) as Chat[];
+}
+
+export async function getAuditLogsForAdmin(limit = 40): Promise<AdminAuditLogRow[]> {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from('admin_audit_log')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  if (error) return [];
+  return (data ?? []) as AdminAuditLogRow[];
 }
 
 async function logAdminAction(action: string, targetType: string, targetId: string, details?: object) {

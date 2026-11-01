@@ -2,12 +2,15 @@ import { getSupabaseClient } from '@pixchats/core';
 
 export interface StoryItem {
   id: string;
-  userId: string;
+  userId: string; // For channel stories: `channel:${channelId}` so stories group by channel
+  authorUserId?: string;
+  channelId?: string;
+  isChannelStory?: boolean;
   userName: string;
   userUsername: string;
   userAvatar: string | null;
   isVerified?: boolean;
-  mediaUrl: string | null;
+  mediaUrl?: string | null;
   mediaType?: 'image' | 'video' | 'none';
   videoMuted?: boolean;
   filterCss?: string;
@@ -22,84 +25,146 @@ export interface StoryItem {
   privacy: 'all' | 'friends';
   createdAt: string;
   expiresAt: string;
-  reactions: Record<string, string[]>;
   viewers: string[];
+  reactions: Record<string, string[]>; // emoji -> array of userIds
 }
 
-const STORIES_LOCAL_KEY = 'pixchats:stories_v1';
-const VIEWED_STORIES_KEY = 'pixchats:viewed_stories_v1';
-const STORIES_STORAGE_PATH = 'stories/active_stories_v1.json';
+export const MAX_REACTIONS_PER_STORY_USER = 3;
+
+const STORIES_STORAGE_KEY = 'pixchats:stories:v2';
+const STORIES_VIEWED_KEY = 'pixchats:stories_viewed:v1';
+const STORIES_BUCKET = 'message-media';
+const STORIES_REMOTE_PATH = 'stories/active_stories.json';
+const STORIES_LEGACY_PATH = 'stories/active_stories_v1.json';
+const STORIES_ITEMS_FOLDER = 'stories/items';
+const STORY_LIFETIME_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 export const STORY_GRADIENTS = [
-  {
-    id: 'gold-noir',
-    label: '⚡ Фирменный PixChats',
-    css: 'linear-gradient(135deg, #1a1600 0%, #3d3100 45%, #ffd400 100%)',
-  },
-  {
-    id: 'cyber-violet',
-    label: '🔮 Неоновый киберпанк',
-    css: 'linear-gradient(135deg, #0f0728 0%, #4c1d95 55%, #ec4899 100%)',
-  },
-  {
-    id: 'emerald-glow',
-    label: 'emerald Изумрудный шторм',
-    css: 'linear-gradient(135deg, #041f18 0%, #059669 55%, #34d399 100%)',
-  },
-  {
-    id: 'crimson-sunset',
-    label: '🔥 Огненный закат',
-    css: 'linear-gradient(135deg, #2a0808 0%, #dc2626 55%, #f59e0b 100%)',
-  },
-  {
-    id: 'deep-ocean',
-    label: '🌊 Глубокий космос',
-    css: 'linear-gradient(135deg, #06122e 0%, #1d4ed8 55%, #38bdf8 100%)',
-  },
+  { id: 'gold', label: 'Золото Pix', css: 'linear-gradient(135deg, #1a1500 0%, #5c4900 50%, #ffd400 100%)' },
+  { id: 'cyber', label: 'Киберпанк', css: 'linear-gradient(135deg, #090d16 0%, #3b0764 50%, #ec4899 100%)' },
+  { id: 'emerald', label: 'Изумруд', css: 'linear-gradient(135deg, #052e16 0%, #065f46 50%, #10b981 100%)' },
+  { id: 'ocean', label: 'Океан', css: 'linear-gradient(135deg, #082f49 0%, #0284c7 50%, #38bdf8 100%)' },
+  { id: 'sunset', label: 'Закат', css: 'linear-gradient(135deg, #450a0a 0%, #c2410c 50%, #facc15 100%)' },
 ];
 
 export const STORY_FILTERS = [
   { id: 'none', label: 'Оригинал', css: 'none' },
-  { id: 'warm', label: '☀️ Тёплый', css: 'sepia(0.28) saturate(1.45) contrast(1.06) brightness(1.04)' },
-  { id: 'cyber', label: '🔮 Киберпанк', css: 'hue-rotate(28deg) saturate(1.75) contrast(1.18)' },
-  { id: 'vivid', label: '⚡ Контраст', css: 'contrast(1.28) saturate(1.35) brightness(1.02)' },
-  { id: 'bw', label: '🎬 Нуар Ч/Б', css: 'grayscale(1) contrast(1.22)' },
-  { id: 'retro', label: '🎞️ Винтаж', css: 'sepia(0.55) contrast(0.95) brightness(1.05)' },
-  { id: 'cool', label: '❄️ Холодный', css: 'hue-rotate(-18deg) saturate(1.2) brightness(1.05)' },
+  { id: 'vivid', label: 'Яркий', css: 'saturate(1.45) contrast(1.12)' },
+  { id: 'warm', label: 'Тёплый', css: 'sepia(0.28) saturate(1.35) brightness(1.05)' },
+  { id: 'cool', label: 'Холодный', css: 'hue-rotate(18deg) saturate(1.15) contrast(1.08)' },
+  { id: 'bw', label: 'Ч/Б Нуар', css: 'grayscale(1) contrast(1.25)' },
+  { id: 'vintage', label: 'Винтаж', css: 'sepia(0.55) contrast(0.95) brightness(1.04)' },
+  { id: 'cyber', label: 'Неон', css: 'hue-rotate(-25deg) saturate(1.65) contrast(1.15)' },
 ];
 
-function filterNonExpired(stories: StoryItem[]): StoryItem[] {
+function normalizeStoryItem(raw: any): StoryItem | null {
+  if (!raw || typeof raw.id !== 'string' || !raw.expiresAt) return null;
+  const userName = raw.userName || raw.displayName || 'Пользователь';
+  const userUsername = raw.userUsername || raw.username || 'user';
+  const userAvatar = raw.userAvatar !== undefined ? raw.userAvatar : raw.avatarUrl || null;
+  const text = typeof raw.text === 'string' ? raw.text : typeof raw.caption === 'string' ? raw.caption : '';
+  const viewers = Array.isArray(raw.viewers)
+    ? raw.viewers
+    : Array.isArray(raw.viewerIds)
+      ? raw.viewerIds
+      : [];
+
+  return {
+    id: raw.id,
+    userId: raw.userId || raw.authorUserId || 'unknown',
+    authorUserId: raw.authorUserId || raw.userId,
+    channelId: raw.channelId,
+    isChannelStory: Boolean(raw.isChannelStory || (typeof raw.userId === 'string' && raw.userId.startsWith('channel:'))),
+    userName,
+    userUsername,
+    userAvatar,
+    isVerified: Boolean(raw.isVerified),
+    mediaUrl: raw.mediaUrl || null,
+    mediaType: raw.mediaType || (raw.mediaUrl ? 'image' : 'none'),
+    videoMuted: Boolean(raw.videoMuted || raw.mutedAudio),
+    filterCss: raw.filterCss,
+    overlayText: raw.overlayText,
+    overlayColor: raw.overlayColor,
+    overlaySize: raw.overlaySize,
+    overlayY: raw.overlayY,
+    overlayBg: raw.overlayBg,
+    drawingDataUrl: raw.drawingDataUrl || null,
+    bgGradient: raw.bgGradient || STORY_GRADIENTS[0].css,
+    text,
+    privacy: raw.privacy === 'friends' ? 'friends' : 'all',
+    createdAt: raw.createdAt || new Date().toISOString(),
+    expiresAt: raw.expiresAt,
+    viewers: Array.from(new Set(viewers)),
+    reactions: raw.reactions && typeof raw.reactions === 'object' ? raw.reactions : {},
+  };
+}
+
+function filterActive(items: any[]): StoryItem[] {
   const now = Date.now();
-  return stories
-    .filter((s) => s && s.id && s.expiresAt && new Date(s.expiresAt).getTime() > now)
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  const byId = new Map<string, StoryItem>();
+
+  for (const raw of items) {
+    const item = normalizeStoryItem(raw);
+    if (!item) continue;
+    const exp = new Date(item.expiresAt).getTime();
+    if (!Number.isFinite(exp) || exp <= now) continue;
+
+    const existing = byId.get(item.id);
+    if (!existing) {
+      byId.set(item.id, item);
+    } else {
+      const mergedViewers = Array.from(new Set([...existing.viewers, ...item.viewers]));
+      const mergedReactions: Record<string, string[]> = { ...existing.reactions };
+      for (const [emoji, uIds] of Object.entries(item.reactions || {})) {
+        if (Array.isArray(uIds) && uIds.length > 0) {
+          mergedReactions[emoji] = uIds;
+        }
+      }
+      byId.set(item.id, {
+        ...existing,
+        ...item,
+        viewers: mergedViewers,
+        reactions: Object.keys(mergedReactions).length > 0 ? mergedReactions : item.reactions,
+      });
+    }
+  }
+
+  return Array.from(byId.values()).sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  );
 }
 
 export function getCachedStories(): StoryItem[] {
   if (typeof window === 'undefined') return [];
   try {
-    const raw = localStorage.getItem(STORIES_LOCAL_KEY);
+    const raw = window.localStorage.getItem(STORIES_STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? filterNonExpired(parsed) : [];
+    return Array.isArray(parsed) ? filterActive(parsed) : [];
   } catch {
     return [];
   }
 }
 
-export function saveCachedStories(stories: StoryItem[]): void {
-  if (typeof window === 'undefined') return;
-  try {
-    const valid = filterNonExpired(stories);
-    localStorage.setItem(STORIES_LOCAL_KEY, JSON.stringify(valid));
-  } catch {}
+function saveCachedStories(items: StoryItem[]): StoryItem[] {
+  const active = filterActive(items);
+  if (typeof window !== 'undefined') {
+    try {
+      window.localStorage.setItem(STORIES_STORAGE_KEY, JSON.stringify(active));
+      window.dispatchEvent(new CustomEvent('pixchats:stories_updated', { detail: { stories: active } }));
+    } catch {
+      // ignore
+    }
+  }
+  return active;
 }
 
 export function getViewedStoryIds(): Set<string> {
   if (typeof window === 'undefined') return new Set();
   try {
-    const raw = localStorage.getItem(VIEWED_STORIES_KEY);
-    const arr = raw ? JSON.parse(raw) : [];
+    const raw = window.localStorage.getItem(STORIES_VIEWED_KEY);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw);
     return new Set(Array.isArray(arr) ? arr : []);
   } catch {
     return new Set();
@@ -107,77 +172,137 @@ export function getViewedStoryIds(): Set<string> {
 }
 
 export function markStoryViewedLocal(storyId: string): void {
-  if (typeof window === 'undefined' || !storyId) return;
+  if (typeof window === 'undefined') return;
   try {
-    const set = getViewedStoryIds();
-    set.add(storyId);
-    localStorage.setItem(VIEWED_STORIES_KEY, JSON.stringify(Array.from(set).slice(-500)));
-  } catch {}
-}
-
-async function fetchRemoteStoriesFile(): Promise<StoryItem[]> {
-  try {
-    const supabase = getSupabaseClient();
-    const { data } = supabase.storage.from('message-media').getPublicUrl(STORIES_STORAGE_PATH);
-    if (!data?.publicUrl) return [];
-    const res = await fetch(`${data.publicUrl}?t=${Date.now()}`, { cache: 'no-store' });
-    if (!res.ok) return [];
-    const json = await res.json();
-    return Array.isArray(json) ? filterNonExpired(json) : [];
+    const current = getViewedStoryIds();
+    current.add(storyId);
+    window.localStorage.setItem(STORIES_VIEWED_KEY, JSON.stringify(Array.from(current)));
   } catch {
-    return [];
+    // ignore
   }
 }
 
-async function persistRemoteStoriesFile(stories: StoryItem[]): Promise<void> {
+async function saveSingleStoryItemToCloud(story: StoryItem): Promise<void> {
   try {
     const supabase = getSupabaseClient();
-    const valid = filterNonExpired(stories).slice(0, 120);
-    const blob = new Blob([JSON.stringify(valid)], { type: 'application/json' });
-    await supabase.storage.from('message-media').upload(STORIES_STORAGE_PATH, blob, {
-      upsert: true,
-      contentType: 'application/json',
-    });
-  } catch {}
+    const blob = new Blob([JSON.stringify(story)], { type: 'application/json' });
+    await supabase.storage
+      .from(STORIES_BUCKET)
+      .upload(`${STORIES_ITEMS_FOLDER}/${story.id}.json`, blob, {
+        upsert: true,
+        contentType: 'application/json',
+        cacheControl: '0',
+      });
+  } catch {
+    // ignore
+  }
 }
 
 export async function loadActiveStories(): Promise<StoryItem[]> {
   const local = getCachedStories();
-  const remote = await fetchRemoteStoriesFile();
+  try {
+    const supabase = getSupabaseClient();
+    const cacheBust = Date.now();
 
-  const mergedMap = new Map<string, StoryItem>();
-  for (const s of [...local, ...remote]) {
-    const existing = mergedMap.get(s.id);
-    if (!existing) {
-      mergedMap.set(s.id, s);
-    } else {
-      const mergedReactions: Record<string, string[]> = { ...(existing.reactions || {}) };
-      for (const [emoji, users] of Object.entries(s.reactions || {})) {
-        const set = new Set([...(mergedReactions[emoji] || []), ...(users || [])]);
-        mergedReactions[emoji] = Array.from(set);
+    // 1. Load individual story objects in stories/items/*.json so stories from ALL users & channels
+    // are always visible without being blocked by single-file RLS overwrite limits.
+    const itemsFolderPromise = supabase.storage
+      .from(STORIES_BUCKET)
+      .list(STORIES_ITEMS_FOLDER, {
+        limit: 100,
+        sortBy: { column: 'created_at', order: 'desc' },
+      })
+      .then(async ({ data: files }) => {
+        if (!files || files.length === 0) return [];
+        const jsonFiles = files.filter((f) => f.name && f.name.endsWith('.json')).slice(0, 80);
+        const loaded = await Promise.all(
+          jsonFiles.map(async (f) => {
+            try {
+              const { data } = supabase.storage
+                .from(STORIES_BUCKET)
+                .getPublicUrl(`${STORIES_ITEMS_FOLDER}/${f.name}`);
+              if (!data?.publicUrl) return null;
+              const res = await fetch(`${data.publicUrl}?t=${cacheBust}`, { cache: 'no-store' });
+              if (!res.ok) return null;
+              return await res.json();
+            } catch {
+              return null;
+            }
+          })
+        );
+        return loaded.filter(Boolean);
+      })
+      .catch(() => []);
+
+    // 2. Load shared index files (active_stories.json and active_stories_v1.json)
+    const fetchIndexFile = async (path: string) => {
+      try {
+        const { data } = supabase.storage.from(STORIES_BUCKET).getPublicUrl(path);
+        if (!data?.publicUrl) return [];
+        const resp = await fetch(`${data.publicUrl}?t=${cacheBust}`, { cache: 'no-store' });
+        if (!resp.ok) return [];
+        const json = await resp.json();
+        return Array.isArray(json) ? json : [];
+      } catch {
+        return [];
       }
-      const viewersSet = new Set([...(existing.viewers || []), ...(s.viewers || [])]);
-      mergedMap.set(s.id, {
-        ...existing,
-        ...s,
-        reactions: mergedReactions,
-        viewers: Array.from(viewersSet),
-      });
-    }
-  }
+    };
 
-  const merged = filterNonExpired(Array.from(mergedMap.values()));
-  saveCachedStories(merged);
-  return merged;
+    const [fromFolder, fromMainIndex, fromLegacyIndex] = await Promise.all([
+      itemsFolderPromise,
+      fetchIndexFile(STORIES_REMOTE_PATH),
+      fetchIndexFile(STORIES_LEGACY_PATH),
+    ]);
+
+    const merged = filterActive([...local, ...fromLegacyIndex, ...fromMainIndex, ...fromFolder]);
+    return saveCachedStories(merged);
+  } catch {
+    return local;
+  }
+}
+
+async function persistStoriesToCloud(stories: StoryItem[]): Promise<void> {
+  const active = saveCachedStories(stories);
+  try {
+    const supabase = getSupabaseClient();
+    const blob = new Blob([JSON.stringify(active)], { type: 'application/json' });
+    await supabase.storage.from(STORIES_BUCKET).upload(STORIES_REMOTE_PATH, blob, {
+      upsert: true,
+      contentType: 'application/json',
+      cacheControl: '0',
+    });
+
+    const channel = supabase.channel('pixchats-stories-global');
+    channel.subscribe((status) => {
+      if (status === 'SUBSCRIBED') {
+        void channel
+          .send({
+            type: 'broadcast',
+            event: 'stories-sync',
+            payload: { stories: active },
+          })
+          .finally(() => {
+            setTimeout(() => {
+              supabase.removeChannel(channel);
+            }, 350);
+          });
+      }
+    });
+  } catch {
+    // Local cache is already updated
+  }
 }
 
 export async function publishNewStory(params: {
   userId: string;
+  authorUserId?: string;
+  channelId?: string;
+  isChannelStory?: boolean;
   userName: string;
   userUsername: string;
   userAvatar: string | null;
   isVerified?: boolean;
-  mediaUrl: string | null;
+  mediaUrl?: string | null;
   mediaType?: 'image' | 'video' | 'none';
   videoMuted?: boolean;
   filterCss?: string;
@@ -192,108 +317,134 @@ export async function publishNewStory(params: {
   privacy: 'all' | 'friends';
 }): Promise<StoryItem> {
   const now = new Date();
-  const expires = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+  const expires = new Date(now.getTime() + STORY_LIFETIME_MS);
+  const effectiveUserId =
+    params.isChannelStory && params.channelId ? `channel:${params.channelId}` : params.userId;
+
   const newStory: StoryItem = {
-    id: `story-${now.getTime()}-${Math.random().toString(36).slice(2, 8)}`,
-    userId: params.userId,
+    id: `story_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    userId: effectiveUserId,
+    authorUserId: params.authorUserId || params.userId,
+    channelId: params.channelId,
+    isChannelStory: Boolean(params.isChannelStory && params.channelId),
     userName: params.userName,
     userUsername: params.userUsername,
     userAvatar: params.userAvatar,
     isVerified: params.isVerified,
-    mediaUrl: params.mediaUrl,
+    mediaUrl: params.mediaUrl || null,
     mediaType: params.mediaType || (params.mediaUrl ? 'image' : 'none'),
     videoMuted: params.videoMuted,
     filterCss: params.filterCss,
-    overlayText: params.overlayText?.trim() || undefined,
+    overlayText: params.overlayText,
     overlayColor: params.overlayColor,
     overlaySize: params.overlaySize,
     overlayY: params.overlayY,
     overlayBg: params.overlayBg,
     drawingDataUrl: params.drawingDataUrl || null,
-    bgGradient: params.bgGradient,
+    bgGradient: params.bgGradient || STORY_GRADIENTS[0].css,
     text: params.text.trim(),
     privacy: params.privacy,
     createdAt: now.toISOString(),
     expiresAt: expires.toISOString(),
+    viewers: [params.authorUserId || params.userId],
     reactions: {},
-    viewers: [params.userId],
   };
+
+  // Save as dedicated per-story file in stories/items/ so all users discover it reliably
+  await saveSingleStoryItemToCloud(newStory);
 
   const current = await loadActiveStories();
   const updated = [newStory, ...current];
-  saveCachedStories(updated);
-  await persistRemoteStoriesFile(updated);
-  broadcastStoriesSync(updated);
+  await persistStoriesToCloud(updated);
   return newStory;
 }
 
 export async function deleteStoryById(storyId: string): Promise<StoryItem[]> {
+  try {
+    const supabase = getSupabaseClient();
+    await supabase.storage.from(STORIES_BUCKET).remove([`${STORIES_ITEMS_FOLDER}/${storyId}.json`]);
+  } catch {
+    // ignore
+  }
   const current = await loadActiveStories();
   const updated = current.filter((s) => s.id !== storyId);
-  saveCachedStories(updated);
-  await persistRemoteStoriesFile(updated);
-  broadcastStoriesSync(updated);
+  await persistStoriesToCloud(updated);
   return updated;
 }
 
-export async function toggleStoryReaction(storyId: string, emoji: string, userId: string): Promise<StoryItem[]> {
-  const current = getCachedStories();
-  const updated = current.map((s) => {
-    if (s.id !== storyId) return s;
-    const reactions = { ...(s.reactions || {}) };
-    const list = reactions[emoji] || [];
-    if (list.includes(userId)) {
-      reactions[emoji] = list.filter((id) => id !== userId);
-      if (reactions[emoji].length === 0) delete reactions[emoji];
-    } else {
-      reactions[emoji] = [...list, userId];
-    }
-    return { ...s, reactions };
-  });
-  saveCachedStories(updated);
-  void persistRemoteStoriesFile(updated);
-  broadcastStoriesSync(updated);
-  return updated;
-}
-
-export async function recordStoryView(storyId: string, viewerId: string): Promise<StoryItem[]> {
+export async function recordStoryView(storyId: string, viewerUserId: string): Promise<void> {
   markStoryViewedLocal(storyId);
   const current = getCachedStories();
   let changed = false;
+  let updatedItem: StoryItem | null = null;
+
   const updated = current.map((s) => {
     if (s.id !== storyId) return s;
-    const viewers = s.viewers || [];
-    if (viewers.includes(viewerId)) return s;
+    if (s.viewers.includes(viewerUserId)) return s;
     changed = true;
-    return { ...s, viewers: [...viewers, viewerId] };
+    updatedItem = { ...s, viewers: [...s.viewers, viewerUserId] };
+    return updatedItem;
   });
-  if (changed) {
-    saveCachedStories(updated);
-    void persistRemoteStoriesFile(updated);
-    broadcastStoriesSync(updated);
+
+  if (changed && updatedItem) {
+    await saveSingleStoryItemToCloud(updatedItem);
+    await persistStoriesToCloud(updated);
   }
-  return updated;
 }
 
-function broadcastStoriesSync(stories: StoryItem[]): void {
-  try {
-    const supabase = getSupabaseClient();
-    const channel = supabase.channel('pixchats-stories-global');
-    channel.subscribe((st) => {
-      if (st === 'SUBSCRIBED') {
-        channel
-          .send({
-            type: 'broadcast',
-            event: 'stories-sync',
-            payload: { stories: stories.slice(0, 50) },
-          })
-          .then(() => {
-            setTimeout(() => supabase.removeChannel(channel), 800);
-          });
-      }
-    });
-  } catch {}
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent('pixchats:stories_updated', { detail: { stories } }));
+export function countUserReactionsOnStory(story: StoryItem, userId: string): number {
+  const reactions = story.reactions || {};
+  let count = 0;
+  for (const list of Object.values(reactions)) {
+    if (Array.isArray(list) && list.includes(userId)) {
+      count++;
+    }
   }
+  return count;
+}
+
+export async function toggleStoryReaction(
+  storyId: string,
+  emoji: string,
+  userId: string,
+  options?: { isDeveloper?: boolean; onLimitReached?: () => void }
+): Promise<StoryItem[]> {
+  const current = await loadActiveStories();
+  let updatedItem: StoryItem | null = null;
+  let limitReached = false;
+
+  const updated = current.map((s) => {
+    if (s.id !== storyId) return s;
+    const reactions = { ...(s.reactions || {}) };
+    const existing = Array.isArray(reactions[emoji]) ? [...reactions[emoji]] : [];
+    const alreadyReacted = existing.includes(userId);
+
+    if (!alreadyReacted && !options?.isDeveloper) {
+      const myTotalReactions = countUserReactionsOnStory(s, userId);
+      if (myTotalReactions >= MAX_REACTIONS_PER_STORY_USER) {
+        limitReached = true;
+        return s;
+      }
+    }
+
+    if (alreadyReacted) {
+      reactions[emoji] = existing.filter((id) => id !== userId);
+      if (reactions[emoji].length === 0) delete reactions[emoji];
+    } else {
+      reactions[emoji] = [...existing, userId];
+    }
+    updatedItem = { ...s, reactions };
+    return updatedItem;
+  });
+
+  if (limitReached) {
+    options?.onLimitReached?.();
+    return current;
+  }
+
+  if (updatedItem) {
+    await saveSingleStoryItemToCloud(updatedItem);
+  }
+  await persistStoriesToCloud(updated);
+  return updated;
 }

@@ -56,7 +56,17 @@ import {
   terminateAllOtherDeviceSessions,
   type DeviceSessionInfo,
 } from '../../lib/deviceSessions';
-import { approveQrLoginSession } from '../../lib/qrAuth';
+import { approveQrLoginSession, normalizeQrCodeInput } from '../../lib/qrAuth';
+import {
+  getPreferredMediaDevices,
+  savePreferredMediaDevices,
+} from '../../lib/mediaDevicesStore';
+import {
+  getUserEmojiStatus,
+  setUserEmojiStatus,
+  EMOJI_STATUS_PRESETS,
+} from '../../lib/emojiStatus';
+import { EmojiPicker } from '../../components/EmojiPicker';
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -112,6 +122,204 @@ export default function SettingsPage() {
   const qrVideoRef = useRef<HTMLVideoElement>(null);
   const qrStreamRef = useRef<MediaStream | null>(null);
 
+  // Эмодзи-статус рядом с ником
+  const [emojiStatus, setEmojiStatus] = useState<string | null>(() =>
+    initialCachedMe ? getUserEmojiStatus(initialCachedMe.id, initialCachedMe.username) : null
+  );
+  const [showEmojiStatusPicker, setShowEmojiStatusPicker] = useState(false);
+
+  // Устройства ввода/вывода (Микрофон, Камера, Динамики) и разрешения для ПК / Веб
+  const [audioInputs, setAudioInputs] = useState<MediaDeviceInfo[]>([]);
+  const [videoInputs, setVideoInputs] = useState<MediaDeviceInfo[]>([]);
+  const [audioOutputs, setAudioOutputs] = useState<MediaDeviceInfo[]>([]);
+  const [selectedAudioInput, setSelectedAudioInput] = useState<string>(
+    () => getPreferredMediaDevices().audioInputId
+  );
+  const [selectedVideoInput, setSelectedVideoInput] = useState<string>(
+    () => getPreferredMediaDevices().videoInputId
+  );
+  const [selectedAudioOutput, setSelectedAudioOutput] = useState<string>(
+    () => getPreferredMediaDevices().audioOutputId
+  );
+  const [micPermission, setMicPermission] = useState<'granted' | 'denied' | 'prompt'>('prompt');
+  const [camPermission, setCamPermission] = useState<'granted' | 'denied' | 'prompt'>('prompt');
+  const [testingMic, setTestingMic] = useState(false);
+  const [micVolumePct, setMicVolumePct] = useState(0);
+  const [testingCam, setTestingCam] = useState(false);
+  const testCamVideoRef = useRef<HTMLVideoElement | null>(null);
+  const testMicStreamRef = useRef<MediaStream | null>(null);
+  const testCamStreamRef = useRef<MediaStream | null>(null);
+  const testMicRafRef = useRef<number | null>(null);
+
+  async function refreshHardwareDevices() {
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.enumerateDevices) return;
+    try {
+      const list = await navigator.mediaDevices.enumerateDevices();
+      setAudioInputs(list.filter((d) => d.kind === 'audioinput'));
+      setVideoInputs(list.filter((d) => d.kind === 'videoinput'));
+      setAudioOutputs(list.filter((d) => d.kind === 'audiooutput'));
+
+      const hasLabels = list.some((d) => Boolean(d.label));
+      if (hasLabels) {
+        if (list.some((d) => d.kind === 'audioinput' && d.label)) setMicPermission('granted');
+        if (list.some((d) => d.kind === 'videoinput' && d.label)) setCamPermission('granted');
+      }
+    } catch {}
+
+    try {
+      if (navigator.permissions?.query) {
+        const micRes = await navigator.permissions.query({ name: 'microphone' as PermissionName });
+        setMicPermission(micRes.state);
+        const camRes = await navigator.permissions.query({ name: 'camera' as PermissionName });
+        setCamPermission(camRes.state);
+      }
+    } catch {}
+  }
+
+  async function requestMicAndCameraPermissions() {
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+      setError('Ваш браузер не поддерживает доступ к микрофону и камере');
+      return;
+    }
+    setError(null);
+    let micOk = false;
+    let camOk = false;
+    try {
+      const mStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      mStream.getTracks().forEach((t) => t.stop());
+      micOk = true;
+      setMicPermission('granted');
+    } catch {
+      setMicPermission('denied');
+    }
+    try {
+      const cStream = await navigator.mediaDevices.getUserMedia({ audio: false, video: true });
+      cStream.getTracks().forEach((t) => t.stop());
+      camOk = true;
+      setCamPermission('granted');
+    } catch {
+      setCamPermission('denied');
+    }
+    await refreshHardwareDevices();
+    if (micOk || camOk) {
+      setNotice(
+        `✅ Доступ получен: Микрофон (${micOk ? 'Разрешён' : 'Отклонён'}), Камера (${camOk ? 'Разрешена' : 'Отклонена'})`
+      );
+      setTimeout(() => setNotice(null), 3000);
+    } else {
+      setError('Доступ к микрофону и камере заблокирован в настройках браузера/системы');
+    }
+  }
+
+  function stopHardwareTests() {
+    if (testMicRafRef.current) {
+      cancelAnimationFrame(testMicRafRef.current);
+      testMicRafRef.current = null;
+    }
+    if (testMicStreamRef.current) {
+      testMicStreamRef.current.getTracks().forEach((t) => t.stop());
+      testMicStreamRef.current = null;
+    }
+    if (testCamStreamRef.current) {
+      testCamStreamRef.current.getTracks().forEach((t) => t.stop());
+      testCamStreamRef.current = null;
+    }
+    setTestingMic(false);
+    setMicVolumePct(0);
+    setTestingCam(false);
+  }
+
+  async function toggleMicTest() {
+    if (testingMic) {
+      stopHardwareTests();
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: selectedAudioInput ? { deviceId: { exact: selectedAudioInput } } : true,
+        video: false,
+      });
+      testMicStreamRef.current = stream;
+      setMicPermission('granted');
+      setTestingMic(true);
+      void refreshHardwareDevices();
+
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      const ctx = new AudioCtx();
+      const source = ctx.createMediaStreamSource(stream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      const data = new Uint8Array(analyser.frequencyBinCount);
+
+      const tick = () => {
+        if (!testMicStreamRef.current) {
+          void ctx.close().catch(() => {});
+          return;
+        }
+        analyser.getByteFrequencyData(data);
+        let sum = 0;
+        for (let i = 0; i < data.length; i++) sum += data[i];
+        const avg = sum / data.length;
+        setMicVolumePct(Math.min(100, Math.round((avg / 90) * 100)));
+        testMicRafRef.current = requestAnimationFrame(tick);
+      };
+      tick();
+    } catch {
+      setError('Не удалось запустить проверку микрофона (разрешите доступ к микрофону)');
+    }
+  }
+
+  async function toggleCamTest() {
+    if (testingCam) {
+      stopHardwareTests();
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: selectedVideoInput
+          ? { deviceId: { exact: selectedVideoInput }, width: { ideal: 640 }, height: { ideal: 360 } }
+          : { width: { ideal: 640 }, height: { ideal: 360 } },
+        audio: false,
+      });
+      testCamStreamRef.current = stream;
+      setCamPermission('granted');
+      setTestingCam(true);
+      void refreshHardwareDevices();
+      setTimeout(() => {
+        if (testCamVideoRef.current) {
+          testCamVideoRef.current.srcObject = stream;
+          void testCamVideoRef.current.play().catch(() => {});
+        }
+      }, 60);
+    } catch {
+      setError('Не удалось запустить проверку камеры (разрешите доступ к камере)');
+    }
+  }
+
+  useEffect(() => {
+    void refreshHardwareDevices();
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const qrApproveParam = params.get('qr_approve');
+      if (qrApproveParam) {
+        const clean = normalizeQrCodeInput(qrApproveParam);
+        if (clean) {
+          setSettingsTab('devices');
+          setQrInputCode(clean);
+          approveQrLoginSession(clean)
+            .then(() => {
+              setNotice('✅ Вход на устройстве по QR-коду автоматически подтверждён!');
+            })
+            .catch(() => {});
+        }
+      }
+    }
+    return () => {
+      stopHardwareTests();
+    };
+  }, []);
+
   useEffect(() => {
     (async () => {
       const active = await hasActiveSession();
@@ -132,6 +340,7 @@ export default function SettingsPage() {
       setDisplayName(me.display_name);
       setUsername(me.username);
       setBio(me.bio ?? '');
+      setEmojiStatus(getUserEmojiStatus(me.id, me.username));
       // Не перезаписываем кастомную тему из устаревшего поля базы
       setThemeState(getCurrentTheme());
       setWhoCanMessage(me.privacy_who_can_message);
@@ -636,6 +845,44 @@ export default function SettingsPage() {
                             if (qrVideoRef.current) {
                               qrVideoRef.current.srcObject = stream;
                               qrVideoRef.current.play().catch(() => {});
+
+                              // Автоматическое распознавание QR-кода через встроенный BarcodeDetector браузера
+                              const BarcodeDetectorCtor = (window as any).BarcodeDetector;
+                              if (typeof BarcodeDetectorCtor === 'function') {
+                                try {
+                                  const detector = new BarcodeDetectorCtor({ formats: ['qr_code'] });
+                                  const scanLoop = setInterval(async () => {
+                                    if (!qrVideoRef.current || !qrStreamRef.current) {
+                                      clearInterval(scanLoop);
+                                      return;
+                                    }
+                                    try {
+                                      const codes = await detector.detect(qrVideoRef.current);
+                                      if (codes && codes.length > 0 && codes[0].rawValue) {
+                                        const code = normalizeQrCodeInput(codes[0].rawValue);
+                                        if (code && code.length >= 4) {
+                                          clearInterval(scanLoop);
+                                          qrStreamRef.current?.getTracks().forEach((t) => t.stop());
+                                          qrStreamRef.current = null;
+                                          setQrCameraOpen(false);
+                                          setQrInputCode(code);
+                                          setQrApproving(true);
+                                          approveQrLoginSession(code)
+                                            .then(() => {
+                                              setQrInputCode('');
+                                              setNotice('✅ QR-код отсканирован! Вход на устройстве подтверждён.');
+                                              setTimeout(() => void handleRefreshDevices(), 1000);
+                                            })
+                                            .catch((err: any) => {
+                                              setError(err?.message || 'Ошибка подтверждения QR');
+                                            })
+                                            .finally(() => setQrApproving(false));
+                                        }
+                                      }
+                                    } catch {}
+                                  }, 400);
+                                } catch {}
+                              }
                             }
                           }, 100);
                         } catch {
@@ -859,6 +1106,312 @@ export default function SettingsPage() {
             Сохранить
           </button>
         </form>
+
+        {/* Эмодзи-статус (справа рядом с ником) */}
+        <div
+          style={{
+            marginTop: 20,
+            paddingTop: 16,
+            borderTop: '1px solid var(--border)',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 14 }}>
+                ✨ Эмодзи-статус (справа рядом с ником):{' '}
+                <span style={{ color: 'var(--accent)', fontSize: 17 }}>{emojiStatus || 'Нет'}</span>
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                Выберите любой эмодзи или флаг — он будет виден всем рядом с вашим именем в чатах и профиле
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button
+                type="button"
+                className="btn btn-compact"
+                onClick={() => setShowEmojiStatusPicker((v) => !v)}
+              >
+                😀 Все эмодзи / 🏳️ Флаги
+              </button>
+              {emojiStatus && (
+                <button
+                  type="button"
+                  className="btn btn-compact"
+                  onClick={async () => {
+                    setEmojiStatus(null);
+                    await setUserEmojiStatus(profile.id, null, profile.username);
+                    setNotice('Эмодзи-статус сброшен');
+                    setTimeout(() => setNotice(null), 1500);
+                  }}
+                >
+                  ✕ Сбросить
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {EMOJI_STATUS_PRESETS.map((preset) => (
+              <button
+                key={preset.emoji}
+                type="button"
+                title={preset.label}
+                onClick={async () => {
+                  setEmojiStatus(preset.emoji);
+                  await setUserEmojiStatus(profile.id, preset.emoji, profile.username);
+                  setNotice(`Установлен эмодзи-статус ${preset.emoji}`);
+                  setTimeout(() => setNotice(null), 1500);
+                }}
+                style={{
+                  padding: '5px 10px',
+                  borderRadius: 10,
+                  border:
+                    emojiStatus === preset.emoji ? '2px solid var(--accent)' : '1px solid var(--border)',
+                  background:
+                    emojiStatus === preset.emoji ? 'rgba(255, 212, 0, 0.16)' : 'var(--bg)',
+                  cursor: 'pointer',
+                  fontSize: 15,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 5,
+                  color: 'var(--text)',
+                }}
+              >
+                <span>{preset.emoji}</span>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{preset.label}</span>
+              </button>
+            ))}
+          </div>
+
+          {showEmojiStatusPicker && (
+            <div style={{ marginTop: 12 }}>
+              <EmojiPicker
+                title="Выберите эмодзи-статус или флаг"
+                onClose={() => setShowEmojiStatusPicker(false)}
+                onSelect={async (emoji) => {
+                  setShowEmojiStatusPicker(false);
+                  setEmojiStatus(emoji);
+                  await setUserEmojiStatus(profile.id, emoji, profile.username);
+                  setNotice(`Установлен эмодзи-статус ${emoji}`);
+                  setTimeout(() => setNotice(null), 1500);
+                }}
+              />
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Выбор микрофона, камеры и разрешений для ПК и Веб */}
+      <div className="section-title">🎙️📹 Микрофон, камера и разрешения (ПК и Веб)</div>
+      <div className="card" style={{ marginBottom: 24 }}>
+        <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 0, marginBottom: 14 }}>
+          Настройте устройства ввода/вывода для звонков, голосовых сообщений, видеокружков и эфиров, а также проверьте разрешения:
+        </p>
+
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: 10,
+            padding: '10px 14px',
+            borderRadius: 12,
+            background: 'var(--surface-raised)',
+            border: '1px solid var(--border)',
+            marginBottom: 16,
+          }}
+        >
+          <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 13 }}>
+            <span>
+              🎙️ Микрофон:{' '}
+              <b
+                style={{
+                  color:
+                    micPermission === 'granted'
+                      ? '#22c55e'
+                      : micPermission === 'denied'
+                        ? 'var(--danger)'
+                        : 'var(--accent)',
+                }}
+              >
+                {micPermission === 'granted'
+                  ? 'Разрешено ✓'
+                  : micPermission === 'denied'
+                    ? 'Заблокировано ✕'
+                    : 'Ожидает запроса'}
+              </b>
+            </span>
+            <span>
+              📹 Камера:{' '}
+              <b
+                style={{
+                  color:
+                    camPermission === 'granted'
+                      ? '#22c55e'
+                      : camPermission === 'denied'
+                        ? 'var(--danger)'
+                        : 'var(--accent)',
+                }}
+              >
+                {camPermission === 'granted'
+                  ? 'Разрешено ✓'
+                  : camPermission === 'denied'
+                    ? 'Заблокировано ✕'
+                    : 'Ожидает запроса'}
+              </b>
+            </span>
+          </div>
+
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              type="button"
+              className="btn btn-primary btn-compact"
+              onClick={requestMicAndCameraPermissions}
+            >
+              🔓 Запросить доступ к микрофону и камере
+            </button>
+            <button
+              type="button"
+              className="btn btn-compact"
+              onClick={refreshHardwareDevices}
+            >
+              🔄 Обновить устройства
+            </button>
+          </div>
+        </div>
+
+        <div className="field">
+          <label>🎙️ Микрофон (устройство записи голоса)</label>
+          <select
+            className="input"
+            value={selectedAudioInput}
+            onChange={(e) => {
+              const val = e.target.value;
+              setSelectedAudioInput(val);
+              savePreferredMediaDevices({ audioInputId: val });
+              setNotice('Выбранный микрофон сохранён');
+              setTimeout(() => setNotice(null), 1500);
+            }}
+          >
+            <option value="">По умолчанию (Системный микрофон)</option>
+            {audioInputs.map((d, idx) => (
+              <option key={d.deviceId || idx} value={d.deviceId}>
+                {d.label || `Микрофон #${idx + 1}`}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="field">
+          <label>📹 Камера (устройство видеозахвата)</label>
+          <select
+            className="input"
+            value={selectedVideoInput}
+            onChange={(e) => {
+              const val = e.target.value;
+              setSelectedVideoInput(val);
+              savePreferredMediaDevices({ videoInputId: val });
+              setNotice('Выбранная камера сохранена');
+              setTimeout(() => setNotice(null), 1500);
+            }}
+          >
+            <option value="">По умолчанию (Системная камера)</option>
+            {videoInputs.map((d, idx) => (
+              <option key={d.deviceId || idx} value={d.deviceId}>
+                {d.label || `Камера #${idx + 1}`}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {audioOutputs.length > 0 && (
+          <div className="field">
+            <label>🔊 Динамики / Наушники (вывод звука в звонках)</label>
+            <select
+              className="input"
+              value={selectedAudioOutput}
+              onChange={(e) => {
+                const val = e.target.value;
+                setSelectedAudioOutput(val);
+                savePreferredMediaDevices({ audioOutputId: val });
+                setNotice('Устройство вывода звука сохранено');
+                setTimeout(() => setNotice(null), 1500);
+              }}
+            >
+              <option value="">По умолчанию (Системный динамик)</option>
+              {audioOutputs.map((d, idx) => (
+                <option key={d.deviceId || idx} value={d.deviceId}>
+                  {d.label || `Динамики #${idx + 1}`}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+          <button
+            type="button"
+            className={`btn btn-compact ${testingMic ? 'btn-primary' : ''}`}
+            onClick={toggleMicTest}
+          >
+            {testingMic ? '⏹ Остановить проверку микрофона' : '🎤 Проверить микрофон'}
+          </button>
+          <button
+            type="button"
+            className={`btn btn-compact ${testingCam ? 'btn-primary' : ''}`}
+            onClick={toggleCamTest}
+          >
+            {testingCam ? '⏹ Остановить проверку камеры' : '📹 Проверить камеру'}
+          </button>
+        </div>
+
+        {testingMic && (
+          <div style={{ marginTop: 12 }}>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>
+              Уровень сигнала микрофона: <b style={{ color: 'var(--accent)' }}>{micVolumePct}%</b>
+            </div>
+            <div
+              style={{
+                height: 10,
+                borderRadius: 999,
+                background: 'var(--surface-raised)',
+                border: '1px solid var(--border)',
+                overflow: 'hidden',
+              }}
+            >
+              <div
+                style={{
+                  width: `${micVolumePct}%`,
+                  height: '100%',
+                  background: 'linear-gradient(90deg, #22c55e, #ffd400, #ef4444)',
+                  transition: 'width 0.08s linear',
+                }}
+              />
+            </div>
+          </div>
+        )}
+
+        {testingCam && (
+          <div
+            style={{
+              marginTop: 12,
+              maxWidth: 360,
+              borderRadius: 12,
+              overflow: 'hidden',
+              border: '2px solid var(--accent)',
+              background: '#000',
+            }}
+          >
+            <video
+              ref={testCamVideoRef}
+              muted
+              playsInline
+              autoPlay
+              style={{ width: '100%', height: 210, objectFit: 'cover', display: 'block' }}
+            />
+          </div>
+        )}
       </div>
 
       <div className="section-title">Тема оформления</div>

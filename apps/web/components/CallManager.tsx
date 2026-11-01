@@ -14,6 +14,11 @@ import {
   stopIncomingCallNativeAlert,
 } from '../lib/nativePlatform';
 import { AvatarWithStatus } from './AvatarWithStatus';
+import {
+  getPreferredAudioConstraints,
+  getPreferredVideoConstraints,
+  getPreferredMediaDevices,
+} from '../lib/mediaDevicesStore';
 
 export interface StartCallParams {
   targetUserId: string;
@@ -648,6 +653,10 @@ export function CallManager() {
       if (remoteAudioRef.current.srcObject !== stream) {
         remoteAudioRef.current.srcObject = stream;
       }
+      const { audioOutputId } = getPreferredMediaDevices();
+      if (audioOutputId && typeof (remoteAudioRef.current as any).setSinkId === 'function') {
+        void (remoteAudioRef.current as any).setSinkId(audioOutputId).catch(() => {});
+      }
       remoteAudioRef.current.muted = false;
       remoteAudioRef.current.volume = 1.0;
       void remoteAudioRef.current.play().catch(() => {});
@@ -733,17 +742,21 @@ export function CallManager() {
 
   async function acquireLocalMedia(wantVideo: boolean): Promise<MediaStream> {
     if (typeof navigator !== 'undefined' && navigator.mediaDevices?.getUserMedia) {
-      const audioConstraints: MediaTrackConstraints = {
+      const audioConstraints = getPreferredAudioConstraints({
         echoCancellation: true,
-        noiseSuppression: true,
+        noiseSuppression: false,
         autoGainControl: true,
         channelCount: 1,
         sampleRate: 48000,
-      };
+      });
+      const videoConstraints = getPreferredVideoConstraints({
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+      });
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: audioConstraints,
-          video: wantVideo ? { width: { ideal: 1280 }, height: { ideal: 720 } } : false,
+          video: wantVideo ? videoConstraints : false,
         });
         setCameraEnabled(wantVideo && stream.getVideoTracks().length > 0);
         setMicMuted(false);
@@ -752,7 +765,7 @@ export function CallManager() {
       } catch {
         try {
           const fallbackStream = await navigator.mediaDevices.getUserMedia({
-            audio: audioConstraints,
+            audio: true,
             video: false,
           });
           setCameraEnabled(false);
@@ -1445,7 +1458,7 @@ export function CallManager() {
 
     try {
       const camStream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
+        video: getPreferredVideoConstraints({ width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' }),
         audio: false,
       });
       const camTrack = camStream.getVideoTracks()[0];

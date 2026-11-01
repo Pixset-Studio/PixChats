@@ -23,10 +23,12 @@ import type { Profile, MuteState } from '@pixchats/core';
 import { NameWithBadges } from '../../components/NameBadges';
 import { resolveLastSeenLabel } from '../../lib/lastSeen';
 import { isBanned } from '../../lib/ban';
+import { buildAppUrl } from '../../lib/url';
 import { MuteControl } from '../../components/MuteControl';
 import { Loading } from '../../components/Loading';
 import { DesktopShell } from '../../components/DesktopShell';
 import { SharedChatAttachments } from '../../components/SharedChatAttachments';
+import { QrCodeModal } from '../../components/QrCodeModal';
 import { startPixChatsCall } from '../../components/CallManager';
 import {
   isChatArchived,
@@ -56,6 +58,7 @@ function UserProfileInner() {
   const [isArchived, setIsArchived] = useState(false);
   const [isHidden, setIsHidden] = useState(false);
   const [customFolders, setCustomFolders] = useState<CustomChatFolder[]>([]);
+  const [showQrModal, setShowQrModal] = useState(false);
 
   useEffect(() => {
     setCustomFolders(getCustomFolders());
@@ -259,6 +262,8 @@ function UserProfileInner() {
         <h2>
           <NameWithBadges
             name={user.display_name}
+            userId={user.id}
+            username={user.username}
             role={user.role}
             isVerified={user.is_verified}
             isPixsetEmployee={user.is_pixset_employee}
@@ -345,6 +350,9 @@ function UserProfileInner() {
 
         {!isSelf && (
           <div className="profile-actions-row" style={{ marginTop: 8 }}>
+            <button className="btn btn-compact" onClick={() => setShowQrModal(true)}>
+              📱 QR-код
+            </button>
             <button className="btn btn-compact" onClick={handleTogglePin}>
               {isPinned ? '📌 Открепить' : '📍 Закрепить'}
             </button>
@@ -383,7 +391,18 @@ function UserProfileInner() {
         )}
       </div>
 
-      {existingChatId && <SharedChatAttachments chatId={existingChatId} />}
+      <SharedChatAttachments chatId={existingChatId} targetUserId={user.id} />
+
+      {showQrModal && (
+        <QrCodeModal
+          title={user.display_name}
+          subtitle={`@${user.username}`}
+          avatarUrl={user.avatar_url}
+          url={buildAppUrl(`/user/?id=${user.id}`)}
+          badgeText="PixChats Профиль"
+          onClose={() => setShowQrModal(false)}
+        />
+      )}
     </main>
   );
 }

@@ -598,15 +598,15 @@ export function ChatListPanel() {
       {/* Кружочки историй (24 часа) над списком чатов */}
       {!isSearchMode && <StoriesBar profile={profile} />}
 
-      <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
-        <div style={{ position: 'relative', flex: 1 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+        <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
           <SearchIcon
             size={16}
             style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', pointerEvents: 'none' }}
           />
           <input
             className="input"
-            style={{ width: '100%', paddingLeft: 36 }}
+            style={{ width: '100%', paddingLeft: 36, paddingRight: 12 }}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Поиск по чатам, сообщениям или @username…"
@@ -616,26 +616,17 @@ export function ChatListPanel() {
           <button
             type="button"
             className="btn"
-            style={{ width: 'auto', padding: '0 11px', display: 'inline-flex', alignItems: 'center' }}
+            style={{ width: 'auto', padding: '0 11px', display: 'inline-flex', alignItems: 'center', flexShrink: 0 }}
             onClick={() => lockSessionNow()}
             title="Заблокировать экран под PIN-код"
           >
             <span>🔒</span>
           </button>
         )}
-        <button
-          type="button"
-          className="btn"
-          style={{ width: 'auto', padding: '0 12px', display: 'inline-flex', alignItems: 'center', gap: 5 }}
-          onClick={handleOpenSavedMessages}
-          title="Открыть «Избранное» (Сохранённые сообщения и заметки)"
-        >
-          <span>⭐</span>
-        </button>
         <Link
           href="/chats/new/"
           className="btn btn-primary"
-          style={{ width: 'auto', padding: '0 14px', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+          style={{ width: 'auto', padding: '0 14px', display: 'inline-flex', alignItems: 'center', gap: 6, flexShrink: 0 }}
         >
           <PlusIcon size={16} />
           <span>Создать</span>
@@ -894,6 +885,8 @@ export function ChatListPanel() {
                       <div className="chat-item-name">
                         <NameWithBadges
                           name={result.profile.display_name}
+                          userId={result.profile.id}
+                          username={result.profile.username}
                           role={result.profile.role}
                           isVerified={result.profile.is_verified}
                           isPixsetEmployee={result.profile.is_pixset_employee}
@@ -981,8 +974,21 @@ export function ChatListPanel() {
                   <div className="chat-item-top-row">
                     <span className="chat-item-name" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                       {isPinned && !isSaved && <span className="pinned-badge" title="Закреплённый чат">📌</span>}
-                      <span>{displayName}</span>
-                      {isVerified && <VerifiedBadge size={14} />}
+                      {partner ? (
+                        <NameWithBadges
+                          name={displayName}
+                          userId={partner.id}
+                          username={partner.username}
+                          role={partner.role}
+                          isVerified={partner.is_verified}
+                          isInteractive={false}
+                        />
+                      ) : (
+                        <>
+                          <span>{displayName}</span>
+                          {isVerified && <VerifiedBadge size={14} />}
+                        </>
+                      )}
                     </span>
                     {preview && <span className="chat-item-time">{formatTime(preview.sent_at)}</span>}
                   </div>
