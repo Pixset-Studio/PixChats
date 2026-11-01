@@ -36,6 +36,10 @@ import { parsePollMessage, extractSelfDestructInfo } from './FormattedMessageTex
 import { getHiddenChatIds, getAppLockConfig, lockSessionNow } from '../lib/appLock';
 import { isStickerTagText } from '../lib/stickers';
 import { extractTopicFromText } from '../lib/channelConfig';
+import { StoriesBar } from './StoriesBar';
+import { useIsDesktop } from '../lib/useIsDesktop';
+
+const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || '0.2.0';
 
 const TYPE_LABEL: Record<Chat['type'], string> = {
   direct: 'Личный чат',
@@ -94,6 +98,7 @@ function formatPreviewText(message: Message): string {
 
 export function ChatListPanel() {
   const router = useRouter();
+  const isDesktop = useIsDesktop();
   const cache = getChatListCache();
   const [profile, setProfile] = useState<Profile | null>(cache?.profile ?? null);
   const [chats, setChats] = useState<Chat[]>(cache?.chats ?? []);
@@ -512,6 +517,37 @@ export function ChatListPanel() {
 
   return (
     <div>
+      {isDesktop && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'baseline',
+            gap: 6,
+            marginBottom: 8,
+            paddingLeft: 2,
+          }}
+        >
+          <span style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 15, color: 'var(--text)' }}>
+            PixChats
+          </span>
+          <span
+            style={{
+              fontSize: 10.5,
+              fontWeight: 500,
+              color: 'var(--text-muted)',
+              opacity: 0.36,
+              letterSpacing: '0.02em',
+              userSelect: 'none',
+            }}
+          >
+            v{APP_VERSION}
+          </span>
+        </div>
+      )}
+
+      {/* Кружочки историй (24 часа) над списком чатов */}
+      {!isSearchMode && <StoriesBar profile={profile} />}
+
       <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
         <div style={{ position: 'relative', flex: 1 }}>
           <SearchIcon

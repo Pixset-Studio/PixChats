@@ -12,6 +12,10 @@ import { isBanned } from '../../lib/ban';
 import { Loading } from '../../components/Loading';
 
 import { useConnectionStatus } from '../../lib/useConnectionStatus';
+import { detectRuntimePlatform } from '../../lib/nativePlatform';
+import { openDownloadAppModal } from '../../components/DownloadAppModal';
+
+const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || '0.2.0';
 
 export default function ChatsPage() {
   const router = useRouter();
@@ -19,8 +23,10 @@ export default function ChatsPage() {
   const connStatus = useConnectionStatus();
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isWebBrowser, setIsWebBrowser] = useState(false);
 
   useEffect(() => {
+    setIsWebBrowser(detectRuntimePlatform() === 'web');
     (async () => {
       const active = await hasActiveSession();
       if (!active) {
@@ -68,10 +74,24 @@ export default function ChatsPage() {
   return (
     <>
       <main className="container-wide with-bottom-nav">
-        <header className="app-header">
-          <span className="brand" style={{ fontSize: 20, display: 'inline-flex', alignItems: 'center', gap: 10 }}>
-            <img src={`${process.env.NEXT_PUBLIC_BASE_PATH || ''}/logo/icon.png`} alt="" width={36} height={36} style={{ objectFit: 'contain' }} />
-            <span>PixChats</span>
+        <header className="app-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+          <span className="brand" style={{ fontSize: 20, display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            <img src={`${process.env.NEXT_PUBLIC_BASE_PATH || ''}/logo/icon.png`} alt="" width={34} height={34} style={{ objectFit: 'contain' }} />
+            <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 6 }}>
+              <span>PixChats</span>
+              <span
+                style={{
+                  fontSize: 11,
+                  fontWeight: 500,
+                  color: 'var(--text-muted)',
+                  opacity: 0.36,
+                  letterSpacing: '0.02em',
+                  userSelect: 'none',
+                }}
+              >
+                v{APP_VERSION}
+              </span>
+            </span>
             {connStatus === 'offline' && (
               <span style={{ fontSize: 11, color: 'var(--danger)', fontWeight: 600, marginLeft: 4 }}>
                 Ожидание сети…
@@ -83,6 +103,29 @@ export default function ChatsPage() {
               </span>
             )}
           </span>
+
+          {isWebBrowser && (
+            <button
+              type="button"
+              className="btn btn-compact"
+              onClick={() => openDownloadAppModal()}
+              style={{
+                width: 'auto',
+                padding: '5px 10px',
+                fontSize: 11.5,
+                fontWeight: 700,
+                borderColor: 'rgba(255, 212, 0, 0.45)',
+                color: 'var(--accent)',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+              }}
+              title="Скачать приложение PixChats (.apk / .exe)"
+            >
+              <span>📲</span>
+              <span>Скачать</span>
+            </button>
+          )}
         </header>
 
         {profile.frozen && (

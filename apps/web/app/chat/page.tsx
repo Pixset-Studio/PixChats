@@ -42,6 +42,7 @@ import {
 import type { Message, Chat, Profile, ChatSafetyFingerprint } from '@pixchats/core';
 import { Loading } from '../../components/Loading';
 import { EmojiPicker } from '../../components/EmojiPicker';
+import { playGlobalAudioTrack } from '../../lib/audioPlayerStore';
 import {
   FormattedMessageText,
   encodePollMessage,
@@ -2542,7 +2543,7 @@ function ChatWindowInner() {
                       <video src={m.media_path} controls className="media-video" onClick={(e) => e.stopPropagation()} />
                     ) : (m.message_type === 'audio' || m.message_type === 'voice') && m.media_path ? (
                       <div
-                        style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}
                         onClick={(e) => e.stopPropagation()}
                       >
                         <audio
@@ -2567,6 +2568,39 @@ function ChatWindowInner() {
                           title="Скорость воспроизведения голосового сообщения"
                         >
                           {audioRates[m.id] || 1}x
+                        </button>
+                        <button
+                          type="button"
+                          className="btn"
+                          style={{
+                            width: 'auto',
+                            padding: '4px 8px',
+                            fontSize: 11,
+                            fontWeight: 700,
+                            borderRadius: 6,
+                            borderColor: 'rgba(255, 212, 0, 0.4)',
+                            color: 'var(--accent)',
+                          }}
+                          onClick={() => {
+                            const localEl = audioRefs.current[m.id];
+                            if (localEl && !localEl.paused) {
+                              localEl.pause();
+                            }
+                            playGlobalAudioTrack({
+                              id: m.id,
+                              src: m.media_path!,
+                              title:
+                                m.message_type === 'voice'
+                                  ? '🎤 Голосовое сообщение'
+                                  : `🎵 ${m.text || 'Аудиозапись'}`,
+                              senderName: isMine ? me.display_name : sender?.display_name || otherProfile?.display_name || 'Собеседник',
+                              chatId: chat.id,
+                              chatTitle: isSavedChat ? 'Избранное' : otherProfile ? otherProfile.display_name : chat.title || 'Чат',
+                            });
+                          }}
+                          title="Слушать в фоновом мини-плеере (не прерывается при переходе в другие чаты)"
+                        >
+                          🎧 В фоне
                         </button>
                       </div>
                     ) : m.message_type === 'file' && m.media_path ? (

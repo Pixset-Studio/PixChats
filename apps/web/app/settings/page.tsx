@@ -55,6 +55,7 @@ import {
   terminateAllOtherDeviceSessions,
   type DeviceSessionInfo,
 } from '../../lib/deviceSessions';
+import { approveQrLoginSession } from '../../lib/qrAuth';
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -97,6 +98,11 @@ export default function SettingsPage() {
   const [deviceSessions, setDeviceSessions] = useState<DeviceSessionInfo[]>([]);
   const [devicesLoading, setDevicesLoading] = useState(false);
   const [terminatingId, setTerminatingId] = useState<string | null>(null);
+  const [qrInputCode, setQrInputCode] = useState('');
+  const [qrApproving, setQrApproving] = useState(false);
+  const [qrCameraOpen, setQrCameraOpen] = useState(false);
+  const qrVideoRef = useRef<HTMLVideoElement>(null);
+  const qrStreamRef = useRef<MediaStream | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -557,6 +563,114 @@ export default function SettingsPage() {
                     </div>
                   </div>
                 )}
+
+                <div className="section-title">📷 Подключить устройство по QR-коду (Вход на ПК за 1 сек)</div>
+                <div className="card" style={{ marginBottom: 20 }}>
+                  <p style={{ margin: '0 0 12px', fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.45 }}>
+                    На странице входа на ПК или в другом браузере выберите вкладку <b>«📷 QR-код»</b> и введите показанный там 6-значный код (или наведите камеру):
+                  </p>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                    <input
+                      className="input"
+                      style={{
+                        flex: 1,
+                        minWidth: 160,
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.14em',
+                        fontWeight: 700,
+                        fontFamily: 'var(--font-mono, monospace)',
+                      }}
+                      maxLength={8}
+                      placeholder="Код с экрана (напр. 8F4K2M)"
+                      value={qrInputCode}
+                      onChange={(e) => setQrInputCode(e.target.value.toUpperCase())}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-compact"
+                      style={{ fontWeight: 700 }}
+                      disabled={qrApproving || qrInputCode.trim().length < 4}
+                      onClick={async () => {
+                        setQrApproving(true);
+                        setError(null);
+                        try {
+                          await approveQrLoginSession(qrInputCode);
+                          setQrInputCode('');
+                          setNotice('✅ Вход на новом устройстве успешно подтверждён!');
+                          setTimeout(() => void handleRefreshDevices(), 1200);
+                        } catch (err: any) {
+                          setError(err?.message || 'Не удалось подтвердить вход по QR-коду');
+                        } finally {
+                          setQrApproving(false);
+                        }
+                      }}
+                    >
+                      {qrApproving ? 'Подключаем…' : '⚡ Подтвердить вход'}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-compact"
+                      onClick={async () => {
+                        if (qrCameraOpen) {
+                          qrStreamRef.current?.getTracks().forEach((t) => t.stop());
+                          qrStreamRef.current = null;
+                          setQrCameraOpen(false);
+                          return;
+                        }
+                        try {
+                          const stream = await navigator.mediaDevices.getUserMedia({
+                            video: { facingMode: 'environment' },
+                            audio: false,
+                          });
+                          qrStreamRef.current = stream;
+                          setQrCameraOpen(true);
+                          setTimeout(() => {
+                            if (qrVideoRef.current) {
+                              qrVideoRef.current.srcObject = stream;
+                              qrVideoRef.current.play().catch(() => {});
+                            }
+                          }, 100);
+                        } catch {
+                          setError('Не удалось открыть камеру для сканирования QR-кода');
+                        }
+                      }}
+                    >
+                      {qrCameraOpen ? '✕ Закрыть камеру' : '📸 Сканировать камерой'}
+                    </button>
+                  </div>
+
+                  {qrCameraOpen && (
+                    <div
+                      style={{
+                        marginTop: 12,
+                        borderRadius: 12,
+                        overflow: 'hidden',
+                        border: '2px solid var(--accent)',
+                        background: '#000',
+                        position: 'relative',
+                        maxWidth: 320,
+                      }}
+                    >
+                      <video
+                        ref={qrVideoRef}
+                        playsInline
+                        muted
+                        style={{ width: '100%', height: 220, objectFit: 'cover', display: 'block' }}
+                      />
+                      <div
+                        style={{
+                          padding: '6px 10px',
+                          fontSize: 11.5,
+                          color: 'var(--accent)',
+                          textAlign: 'center',
+                          background: 'rgba(0,0,0,0.75)',
+                        }}
+                      >
+                        Наведите камеру на QR-код или введите 6-значный код под ним
+                      </div>
+                    </div>
+                  )}
+                </div>
 
                 <div className="section-title">
                   Активные сеансы на других устройствах ({otherDevices.length})

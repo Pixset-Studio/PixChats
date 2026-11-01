@@ -4,6 +4,8 @@ import { UpdateNotifier } from '../components/UpdateNotifier';
 import { ThemeManager } from '../components/ThemeManager';
 import { CallManager } from '../components/CallManager';
 import { AppLockGuard } from '../components/AppLockGuard';
+import { MiniAudioPlayer } from '../components/MiniAudioPlayer';
+import { DownloadAppModal } from '../components/DownloadAppModal';
 
 const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH || '';
 
@@ -71,6 +73,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <ThemeManager />
         <AppLockGuard />
         {children}
+        <MiniAudioPlayer />
+        <DownloadAppModal />
         <NotificationListener />
         <CallManager />
         <UpdateNotifier />
