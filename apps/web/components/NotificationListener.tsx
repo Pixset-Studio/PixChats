@@ -27,14 +27,105 @@ interface InAppToast {
   badge?: string;
 }
 
+function createChimeWavDataUrl(): string {
+  try {
+    const sampleRate = 8000;
+    const durationSec = 0.35;
+    const numSamples = Math.floor(sampleRate * durationSec);
+    const buffer = new ArrayBuffer(44 + numSamples * 2);
+    const view = new DataView(buffer);
+
+    const writeStr = (offset: number, str: string) => {
+      for (let i = 0; i < str.length; i++) {
+        view.setUint8(offset + i, str.charCodeAt(i));
+      }
+    };
+
+    writeStr(0, 'RIFF');
+    view.setUint32(4, 36 + numSamples * 2, true);
+    writeStr(8, 'WAVE');
+    writeStr(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true); // PCM
+    view.setUint16(22, 1, true); // Mono
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeStr(36, 'data');
+    view.setUint32(40, numSamples * 2, true);
+
+    for (let i = 0; i < numSamples; i++) {
+      const t = i / sampleRate;
+      const freq = t < 0.12 ? 587.33 : 880.0;
+      const decay = Math.exp(-t * 9);
+      const sample = Math.sin(2 * Math.PI * freq * t) * decay * 0.45;
+      const intSample = Math.max(-32768, Math.min(32767, Math.floor(sample * 32767)));
+      view.setInt16(44 + i * 2, intSample, true);
+    }
+
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    for (let i = 0; i < bytes.byteLength; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return `data:audio/wav;base64,${btoa(binary)}`;
+  } catch {
+    return '';
+  }
+}
+
+let audioContextUnlocked = false;
+
+function unlockAudioContextOnce() {
+  if (audioContextUnlocked || typeof window === 'undefined') return;
+  audioContextUnlocked = true;
+  try {
+    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+    if (AudioContextClass) {
+      const ctx = new AudioContextClass();
+      if (ctx.state === 'suspended') {
+        void ctx.resume();
+      }
+    }
+  } catch {}
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('pointerdown', unlockAudioContextOnce, { once: true, passive: true });
+  window.addEventListener('keydown', unlockAudioContextOnce, { once: true, passive: true });
+  window.addEventListener('touchstart', unlockAudioContextOnce, { once: true, passive: true });
+}
+
 /**
- * Проигрывает мягкий звуковой сигнал через Web Audio API (без внешних аудио-файлов).
+ * Проигрывает звуковой сигнал и тактильный виброотклик (HTML5 Audio + Web Audio + Haptics)
  */
 function playChime() {
+  unlockAudioContextOnce();
+
+  // Вибрация на телефонах (Android / Web)
+  try {
+    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+      navigator.vibrate([80, 40, 80]);
+    }
+  } catch {}
+
+  try {
+    const wavUrl = createChimeWavDataUrl();
+    if (wavUrl) {
+      const audio = new Audio(wavUrl);
+      audio.volume = 0.9;
+      void audio.play().catch(() => {});
+    }
+  } catch {}
+
   try {
     const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
     if (!AudioContextClass) return;
     const ctx = new AudioContextClass();
+    if (ctx.state === 'suspended') {
+      void ctx.resume();
+    }
     const now = ctx.currentTime;
 
     const osc = ctx.createOscillator();
@@ -45,7 +136,7 @@ function playChime() {
     osc.frequency.exponentialRampToValueAtTime(880, now + 0.12); // A5
 
     gain.gain.setValueAtTime(0.001, now);
-    gain.gain.linearRampToValueAtTime(0.18, now + 0.04);
+    gain.gain.linearRampToValueAtTime(0.22, now + 0.04);
     gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.32);
 
     osc.connect(gain);
@@ -54,7 +145,7 @@ function playChime() {
     osc.start(now);
     osc.stop(now + 0.35);
   } catch {
-    // аудио-контекст может быть заблокирован политикой браузера до первого клика
+    // ignore
   }
 }
 
@@ -115,13 +206,18 @@ export function NotificationListener() {
       // ignore
     }
 
-    // Не показывать уведомление, если пользователь прямо сейчас смотрит этот чат в активном окне
-    if (
+    // Проверяем, открыт ли именно этот чат прямо сейчас в активном окне
+    const isActivelyViewingThisChat =
       typeof document !== 'undefined' &&
       document.visibilityState === 'visible' &&
-      window.location.pathname.includes('/chat') &&
-      window.location.search.includes(String(row.chat_id))
-    ) {
+      (window.location.pathname === '/chat' || window.location.pathname === '/chat/') &&
+      new URLSearchParams(window.location.search).get('id') === String(row.chat_id);
+
+    if (isActivelyViewingThisChat) {
+      // Пользователь уже в этом чате: не перекрываем экран баннером, но воспроизводим звук сообщения!
+      if (prefs.sound) {
+        playChime();
+      }
       return;
     }
 
@@ -197,6 +293,7 @@ export function NotificationListener() {
 
     let channel: ReturnType<ReturnType<typeof getSupabaseClient>['channel']> | null = null;
     let globalMsgChannel: ReturnType<ReturnType<typeof getSupabaseClient>['channel']> | null = null;
+    let personalChannel: ReturnType<ReturnType<typeof getSupabaseClient>['channel']> | null = null;
     let stopDeviceMonitor: (() => void) | null = null;
 
     (async () => {
@@ -210,13 +307,27 @@ export function NotificationListener() {
 
       const supabase = getSupabaseClient();
 
-      // Слушаем глобальный Realtime broadcast новых сообщений (работает 100% без задержек)
-      globalMsgChannel = supabase
-        .channel('pixchats-messages-global')
+      // 1. Личный канал уведомлений пользователя (как в звонках — доходит 100% на любое устройство)
+      personalChannel = supabase
+        .channel(`pixchats-user-notifications:${me.id}`)
         .on('broadcast', { event: 'new-message' }, (data: any) => {
           const msg = data?.payload?.message || data?.payload;
           const sender = data?.payload?.sender;
           if (msg) void handleIncomingMessage(msg, sender);
+        })
+        .subscribe();
+
+      // 2. Глобальный канал сообщений для групп и каналов
+      globalMsgChannel = supabase
+        .channel('pixchats-messages-global')
+        .on('broadcast', { event: 'new-message' }, (data: any) => {
+          const payload = data?.payload;
+          const msg = payload?.message || payload;
+          const sender = payload?.sender;
+          const targetIds = payload?.targetUserIds;
+          if (msg && (!targetIds || targetIds.length === 0 || targetIds.includes(me.id))) {
+            void handleIncomingMessage(msg, sender);
+          }
         })
         .subscribe();
 
@@ -349,6 +460,7 @@ export function NotificationListener() {
       window.removeEventListener('pixchats:native_navigate', onAndroidNavigate);
       if (channel) getSupabaseClient().removeChannel(channel);
       if (globalMsgChannel) getSupabaseClient().removeChannel(globalMsgChannel);
+      if (personalChannel) getSupabaseClient().removeChannel(personalChannel);
     };
   }, [router]);
 

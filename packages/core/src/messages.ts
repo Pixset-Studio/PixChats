@@ -138,30 +138,75 @@ export async function sendMessage(chatId: string, text: string, options: SendMes
 
   if (error) throw error;
 
-  // Рассылаем мгновенный Realtime broadcast для моментального появления сообщения и срабатывания уведомлений
+  // Рассылаем мгновенный Realtime broadcast для моментального появления сообщения и надёжного срабатывания уведомлений
   try {
     const mapped = await mapRowAsync(insertedRow);
-    const chatCh = supabase.channel(`messages:${chatId}`);
-    chatCh.subscribe((status) => {
-      if (status === 'SUBSCRIBED') {
-        chatCh.send({
-          type: 'broadcast',
-          event: 'new-message',
-          payload: { message: mapped, row: insertedRow },
-        });
-      }
-    });
+    const { data: senderProfile } = await supabase
+      .from('profiles')
+      .select('id, display_name, username, avatar_url')
+      .eq('id', senderId)
+      .maybeSingle();
 
-    const globalMsgCh = supabase.channel('pixchats-messages-global');
-    globalMsgCh.subscribe((status) => {
-      if (status === 'SUBSCRIBED') {
-        globalMsgCh.send({
-          type: 'broadcast',
-          event: 'new-message',
-          payload: { message: mapped, row: insertedRow },
-        });
+    // Находим всех получателей сообщения (по chat_members и direct_pair_key)
+    const recipientIds = new Set<string>();
+    try {
+      const { data: members } = await supabase
+        .from('chat_members')
+        .select('user_id')
+        .eq('chat_id', chatId);
+
+      if (members) {
+        for (const m of members) {
+          if (m.user_id && m.user_id !== senderId) recipientIds.add(m.user_id);
+        }
       }
-    });
+
+      if (recipientIds.size === 0) {
+        const { data: chatRow } = await supabase
+          .from('chats')
+          .select('direct_pair_key')
+          .eq('id', chatId)
+          .maybeSingle();
+        if (chatRow?.direct_pair_key) {
+          const parts = chatRow.direct_pair_key.split(':');
+          for (const p of parts) {
+            if (p && p !== senderId) recipientIds.add(p);
+          }
+        }
+      }
+    } catch {}
+
+    const broadcastPayload = {
+      message: mapped,
+      row: insertedRow,
+      sender: senderProfile,
+      chatId,
+      targetUserIds: Array.from(recipientIds),
+    };
+
+    const sendBroadcast = (chName: string) => {
+      try {
+        const ch = supabase.channel(chName);
+        if ((ch as any).state === 'joined') {
+          void ch.send({ type: 'broadcast', event: 'new-message', payload: broadcastPayload });
+          return;
+        }
+        ch.subscribe((st) => {
+          if (st === 'SUBSCRIBED') {
+            void ch.send({ type: 'broadcast', event: 'new-message', payload: broadcastPayload });
+          }
+        });
+      } catch {}
+    };
+
+    // 1. В канал конкретного чата
+    sendBroadcast(`messages:${chatId}`);
+    // 2. В глобальный канал сообщений
+    sendBroadcast('pixchats-messages-global');
+    // 3. Персонально каждому получателю в личный канал уведомлений
+    for (const uid of recipientIds) {
+      sendBroadcast(`pixchats-user-notifications:${uid}`);
+    }
   } catch {
     // broadcast failure should not block message send
   }

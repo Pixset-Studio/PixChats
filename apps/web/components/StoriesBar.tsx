@@ -246,7 +246,12 @@ export function StoriesBar({ profile }: StoriesBarProps) {
         (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
       );
       const first = sortedAsc[0];
-      const hasUnviewed = sortedAsc.some((st) => !viewedIds.has(st.id));
+      const hasUnviewed = sortedAsc.some((st) => {
+        const isViewed =
+          viewedIds.has(st.id) ||
+          (Array.isArray(st.viewers) && st.viewers.includes(profile.id));
+        return !isViewed;
+      });
       result.push({
         userId: uid,
         userName: uid === profile.id ? 'Моя история' : first.userName,
@@ -282,6 +287,13 @@ export function StoriesBar({ profile }: StoriesBarProps) {
       next.add(activeStory.id);
       return next;
     });
+    setStories((prev) =>
+      prev.map((s) =>
+        s.id === activeStory.id
+          ? { ...s, viewers: Array.from(new Set([...(s.viewers || []), profile.id])) }
+          : s
+      )
+    );
     void recordStoryView(activeStory.id, profile.id);
   }, [activeStory?.id, profile.id]);
 
@@ -733,11 +745,14 @@ export function StoriesBar({ profile }: StoriesBarProps) {
                 borderRadius: '50%',
                 padding: 2,
                 background: myGroup
-                  ? 'linear-gradient(135deg, #ffd400, #f59e0b, #ec4899)'
+                  ? (myGroup.hasUnviewed
+                      ? 'linear-gradient(135deg, #ffd400, #f59e0b, #ec4899)'
+                      : 'var(--border)')
                   : 'var(--border)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
+                transition: 'background 0.3s ease',
               }}
             >
               <div
@@ -756,35 +771,37 @@ export function StoriesBar({ profile }: StoriesBarProps) {
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                setShowCreateModal(true);
-              }}
-              title="Опубликовать фото или видео в историю"
-              style={{
-                position: 'absolute',
-                right: -2,
-                bottom: -2,
-                width: 22,
-                height: 22,
-                borderRadius: '50%',
-                background: 'var(--accent)',
-                color: '#09090b',
-                border: '2px solid var(--bg)',
-                fontWeight: 900,
-                fontSize: 14,
-                lineHeight: 1,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                cursor: 'pointer',
-                padding: 0,
-              }}
-            >
-              +
-            </button>
+            {!myGroup && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowCreateModal(true);
+                }}
+                title="Опубликовать фото или видео в историю"
+                style={{
+                  position: 'absolute',
+                  right: -2,
+                  bottom: -2,
+                  width: 22,
+                  height: 22,
+                  borderRadius: '50%',
+                  background: 'var(--accent)',
+                  color: '#09090b',
+                  border: '2px solid var(--bg)',
+                  fontWeight: 900,
+                  fontSize: 14,
+                  lineHeight: 1,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  cursor: 'pointer',
+                  padding: 0,
+                }}
+              >
+                +
+              </button>
+            )}
           </div>
           <span
             style={{
@@ -1547,32 +1564,22 @@ export function StoriesBar({ profile }: StoriesBarProps) {
       {/* Полноэкранный просмотрщик историй (с поддержкой видео, звука и слоёв редактора) */}
       {activeGroup && activeStory && (
         <div
-          className="modal-overlay"
-          style={{ zIndex: 9999, background: 'rgba(5, 5, 7, 0.94)', padding: 12 }}
+          className="modal-overlay story-viewer-overlay"
+          style={{ zIndex: 9999, background: 'rgba(5, 5, 7, 0.96)' }}
           onClick={closeViewer}
         >
           <div
+            className="story-viewer-dialog"
             onClick={(e) => e.stopPropagation()}
             onPointerDown={() => setPaused(true)}
             onPointerUp={() => setPaused(false)}
             style={{
-              position: 'relative',
-              width: '100%',
-              maxWidth: 420,
-              height: '84vh',
-              maxHeight: 720,
-              borderRadius: 20,
-              overflow: 'hidden',
               background: activeStory.bgGradient || STORY_GRADIENTS[0].css,
               border: '1px solid var(--border)',
-              boxShadow: '0 24px 64px rgba(0,0,0,0.85)',
-              display: 'flex',
-              flexDirection: 'column',
-              justifyContent: 'space-between',
             }}
           >
             {/* Полоски прогресса сверху */}
-            <div style={{ position: 'relative', zIndex: 10, padding: '12px 14px 0' }}>
+            <div style={{ position: 'relative', zIndex: 10, padding: 'calc(14px + env(safe-area-inset-top, 0px)) 16px 0' }}>
               <div style={{ display: 'flex', gap: 4, marginBottom: 10 }}>
                 {activeGroup.stories.map((st, idx) => {
                   const fillPct =
@@ -1892,7 +1899,7 @@ export function StoriesBar({ profile }: StoriesBarProps) {
               style={{
                 position: 'relative',
                 zIndex: 10,
-                padding: '10px 14px 14px',
+                padding: '10px 14px calc(14px + env(safe-area-inset-bottom, 0px))',
                 background: 'linear-gradient(to top, rgba(0,0,0,0.88), transparent)',
                 display: 'flex',
                 alignItems: 'center',

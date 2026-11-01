@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, useMemo, Suspense } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useMemo, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { resolveLastSeenLabel } from '../../lib/lastSeen';
@@ -10,6 +10,7 @@ import { buildAppUrl } from '../../lib/url';
 import { VerifiedBadge } from '../../components/VerifiedBadge';
 import { NameWithBadges } from '../../components/NameBadges';
 import { EmojiOrFlag } from '../../components/EmojiOrFlag';
+import { AttachmentPreviewCard } from '../../components/AttachmentPreviewCard';
 import { startPixChatsCall, startPixChatsGroupCall } from '../../components/CallManager';
 import {
   getSupabaseClient,
@@ -206,6 +207,9 @@ function ChatWindowInner() {
   const [draft, setDraft] = useState('');
   const [canWrite, setCanWrite] = useState(true);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement | null>(null);
+  const initialScrolledChatIdRef = useRef<string | null>(null);
+  const [isChatReady, setIsChatReady] = useState(false);
   const messageRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const audioRefs = useRef<Record<string, HTMLAudioElement | null>>({});
   const [audioRates, setAudioRates] = useState<Record<string, number>>({});
@@ -1022,6 +1026,8 @@ function ChatWindowInner() {
     setMyRole(null);
     setCanWrite(true);
     setCanModerate(false);
+    initialScrolledChatIdRef.current = null;
+    setIsChatReady(false);
     setMessages(getOfflineMessages(chatId));
     setChatNotFound(false);
     setPartnerLastReadAt(null);
@@ -1685,13 +1691,33 @@ function ChatWindowInner() {
     }
   }, [chatSearchQuery]);
 
-  useEffect(() => {
-    if (highlightMsgId && messages.length > 0) {
+  useLayoutEffect(() => {
+    if (!chatId || messages.length === 0) {
+      if (messages.length === 0) setIsChatReady(true);
+      return;
+    }
+
+    if (initialScrolledChatIdRef.current !== chatId) {
+      // Моментальный перенос вниз БЕЗ анимации прокрутки сверху вниз и без моргания первых сообщений
+      if (highlightMsgId) {
+        scrollToMessageById(highlightMsgId);
+      } else if (messagesContainerRef.current) {
+        messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
+      } else {
+        bottomRef.current?.scrollIntoView({ behavior: 'auto' });
+      }
+      initialScrolledChatIdRef.current = chatId;
+      setIsChatReady(true);
+      return;
+    }
+
+    // Последующие новые входящие или отправленные сообщения в уже открытом чате:
+    if (highlightMsgId) {
       scrollToMessageById(highlightMsgId);
     } else {
       bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [messages, highlightMsgId]);
+  }, [chatId, messages, highlightMsgId]);
 
   async function handleSend(e: React.FormEvent) {
     e.preventDefault();
@@ -2416,7 +2442,12 @@ function ChatWindowInner() {
       {notice && <div className="toast">{notice}</div>}
 
       <div
+        ref={messagesContainerRef}
         className="chat-messages"
+        style={{
+          opacity: !chatId || messages.length === 0 || isChatReady ? 1 : 0,
+          transition: 'opacity 0.08s ease',
+        }}
         onClick={() => {
           setOpenMenuId(null);
           setShowToolsMenu(false);
@@ -3290,49 +3321,15 @@ function ChatWindowInner() {
           )}
 
           {pendingFile && (
-            <div className="composer-context" style={{ flexWrap: 'wrap', gap: 8 }}>
-              <span>📎 {pendingFile.name} — подпись необязательна</span>
-              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                <span style={{ fontSize: 12 }}>Подпись:</span>
-                <button
-                  type="button"
-                  className="btn"
-                  style={{
-                    width: 'auto',
-                    padding: '4px 10px',
-                    fontSize: 12,
-                    borderColor: captionPosition === 'above' ? 'var(--accent)' : undefined,
-                  }}
-                  onClick={() => setCaptionPosition('above')}
-                >
-                  Сверху
-                </button>
-                <button
-                  type="button"
-                  className="btn"
-                  style={{
-                    width: 'auto',
-                    padding: '4px 10px',
-                    fontSize: 12,
-                    borderColor: captionPosition === 'below' ? 'var(--accent)' : undefined,
-                  }}
-                  onClick={() => setCaptionPosition('below')}
-                >
-                  Снизу
-                </button>
-                <button
-                  type="button"
-                  className="btn-ghost"
-                  style={{ width: 'auto' }}
-                  onClick={() => {
-                    setPendingFile(null);
-                    setDraft('');
-                  }}
-                >
-                  ✕
-                </button>
-              </div>
-            </div>
+            <AttachmentPreviewCard
+              file={pendingFile}
+              captionPosition={captionPosition}
+              onCaptionPositionChange={setCaptionPosition}
+              onRemove={() => {
+                setPendingFile(null);
+                setDraft('');
+              }}
+            />
           )}
 
           {showFormatToolbar && (
