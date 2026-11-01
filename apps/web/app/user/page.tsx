@@ -240,7 +240,7 @@ function UserProfileInner() {
   const linkedPixsetNick = getLinkedPixsetNickname(user, isSelf);
 
   return (
-    <main className="container-wide">
+    <main className="container-wide with-bottom-nav">
       <Link href="/chats/" style={{ color: 'var(--text-muted)', fontSize: 13, textDecoration: 'none' }}>
         ← Назад
       </Link>
@@ -276,23 +276,18 @@ function UserProfileInner() {
         )}
 
         {linkedPixsetNick && (
-          <div style={{ marginTop: 14, display: 'flex', justifyContent: 'center' }}>
+          <div style={{ marginTop: 12, display: 'flex', justifyContent: 'center' }}>
             <a
               href={getPixsetPublicProfileUrl(linkedPixsetNick)}
               target="_blank"
               rel="noopener noreferrer"
-              className="btn btn-primary"
+              className="btn btn-primary btn-compact"
               style={{
-                width: 'auto',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 8,
                 textDecoration: 'none',
-                padding: '9px 16px',
               }}
             >
               <span>⚡</span>
-              <span>Посмотреть публичный профиль на сайте Pixset Studio</span>
+              <span>Профиль Pixset Studio</span>
             </a>
           </div>
         )}
@@ -301,12 +296,12 @@ function UserProfileInner() {
         {notice && <p className="notice">{notice}</p>}
 
         {!isSelf && (
-          <div className="btn-row" style={{ maxWidth: 420, margin: '16px auto 0', flexDirection: 'row', flexWrap: 'wrap' }}>
-            <button className="btn btn-primary" onClick={handleMessage} disabled={isBlocked}>
-              Написать
+          <div className="profile-actions-row" style={{ marginTop: 14 }}>
+            <button className="btn btn-primary btn-compact" onClick={handleMessage} disabled={isBlocked}>
+              💬 Написать
             </button>
             <button
-              className="btn"
+              className="btn btn-compact"
               onClick={async () => {
                 const cid = await ensureDirectChatId();
                 startPixChatsCall({
@@ -322,7 +317,7 @@ function UserProfileInner() {
               📞 Позвонить
             </button>
             <button
-              className="btn"
+              className="btn btn-compact"
               onClick={async () => {
                 const cid = await ensureDirectChatId();
                 startPixChatsCall({
@@ -338,43 +333,42 @@ function UserProfileInner() {
               📹 Видеозвонок
             </button>
             {!isFriend && (
-              <button className="btn" onClick={handleAddFriend} disabled={isBlocked}>
-                + Добавить в друзья
+              <button className="btn btn-compact" onClick={handleAddFriend} disabled={isBlocked}>
+                + В друзья
               </button>
             )}
-            <button className="btn" onClick={handleToggleBlock} style={{ color: isBlocked ? undefined : 'var(--danger)' }}>
+            <button className="btn btn-compact" onClick={handleToggleBlock} style={{ color: isBlocked ? undefined : 'var(--danger)' }}>
               {isBlocked ? 'Разблокировать' : 'Заблокировать'}
             </button>
           </div>
         )}
 
         {!isSelf && (
-          <div className="btn-row" style={{ maxWidth: 420, margin: '8px auto 0', flexDirection: 'row', flexWrap: 'wrap' }}>
-            <button className="btn" onClick={handleTogglePin}>
-              {isPinned ? '📌 Открепить чат' : '📍 Закрепить чат'}
+          <div className="profile-actions-row" style={{ marginTop: 8 }}>
+            <button className="btn btn-compact" onClick={handleTogglePin}>
+              {isPinned ? '📌 Открепить' : '📍 Закрепить'}
             </button>
-            <button className="btn" onClick={handleToggleArchive}>
+            <button className="btn btn-compact" onClick={handleToggleArchive}>
               {isArchived ? '📦 Из архива' : '📦 В архив'}
             </button>
-            <button className="btn" onClick={handleToggleHidden}>
-              {isHidden ? '🔓 Показать чат' : '🔐 Скрыть под PIN'}
+            <button className="btn btn-compact" onClick={handleToggleHidden}>
+              {isHidden ? '🔓 Показать' : '🔐 Скрыть'}
             </button>
             {existingChatId && <MuteControl muteState={muteState} onMute={handleMute} onUnmute={handleUnmute} />}
           </div>
         )}
 
         {!isSelf && customFolders.length > 0 && (
-          <div style={{ maxWidth: 380, margin: '12px auto 0', display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'center' }}>
+          <div style={{ maxWidth: 380, margin: '10px auto 0', display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'center' }}>
             {customFolders.map((f) => {
               const inFolder = Boolean(existingChatId && f.chatIds.includes(existingChatId));
               return (
                 <button
                   key={f.id}
                   type="button"
-                  className="btn"
+                  className="btn btn-compact"
                   style={{
-                    width: 'auto',
-                    padding: '5px 10px',
+                    padding: '4px 10px',
                     fontSize: 12,
                     borderColor: inFolder ? 'var(--accent)' : undefined,
                     color: inFolder ? 'var(--accent)' : undefined,

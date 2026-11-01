@@ -73,11 +73,21 @@ class MainActivity : BridgeActivity() {
     }
 
     fun requestNotificationPermissionIfNeeded() {
+        val permsToRequest = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= 33) {
-            val perm = "android.permission.POST_NOTIFICATIONS"
-            if (ContextCompat.checkSelfPermission(this, perm) != PackageManager.PERMISSION_GRANTED) {
-                ActivityCompat.requestPermissions(this, arrayOf(perm), REQ_CODE_NOTIFICATIONS)
+            val notifPerm = "android.permission.POST_NOTIFICATIONS"
+            if (ContextCompat.checkSelfPermission(this, notifPerm) != PackageManager.PERMISSION_GRANTED) {
+                permsToRequest.add(notifPerm)
             }
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            permsToRequest.add(Manifest.permission.RECORD_AUDIO)
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            permsToRequest.add(Manifest.permission.CAMERA)
+        }
+        if (permsToRequest.isNotEmpty()) {
+            ActivityCompat.requestPermissions(this, permsToRequest.toTypedArray(), REQ_CODE_NOTIFICATIONS)
         }
     }
 

@@ -755,7 +755,7 @@ export function ChatListPanel() {
                     onClick={() => handleOpenUser(result.profile.id)}
                   >
                     <div
-                      className="avatar"
+                      className={`avatar ${!result.profile.avatar_url ? 'avatar-fallback' : ''}`}
                       style={{
                         backgroundImage: result.profile.avatar_url ? `url(${result.profile.avatar_url})` : undefined,
                         backgroundSize: 'cover',
@@ -785,7 +785,7 @@ export function ChatListPanel() {
                     onClick={() => handleOpenChat(result.chat)}
                   >
                     <div
-                      className="avatar"
+                      className={`avatar ${!result.chat.avatar_url ? 'avatar-fallback' : ''}`}
                       style={{
                         backgroundImage: result.chat.avatar_url ? `url(${result.chat.avatar_url})` : undefined,
                         backgroundSize: 'cover',
@@ -916,6 +916,8 @@ export function ChatListPanel() {
           })}
         </div>
       )}
+      <div style={{ height: 48, flexShrink: 0 }} aria-hidden="true" />
     </div>
   );
 }
+

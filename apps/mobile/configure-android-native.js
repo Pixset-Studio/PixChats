@@ -120,11 +120,21 @@ public class MainActivity extends BridgeActivity {
     }
 
     public void requestNotificationPermissionIfNeeded() {
+        java.util.List<String> perms = new java.util.ArrayList<>();
         if (Build.VERSION.SDK_INT >= 33) {
-            String perm = "android.permission.POST_NOTIFICATIONS";
-            if (ContextCompat.checkSelfPermission(this, perm) != PackageManager.PERMISSION_GRANTED) {
-                ActivityCompat.requestPermissions(this, new String[]{perm}, REQ_CODE_NOTIFICATIONS);
+            String notifPerm = "android.permission.POST_NOTIFICATIONS";
+            if (ContextCompat.checkSelfPermission(this, notifPerm) != PackageManager.PERMISSION_GRANTED) {
+                perms.add(notifPerm);
             }
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            perms.add(Manifest.permission.RECORD_AUDIO);
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            perms.add(Manifest.permission.CAMERA);
+        }
+        if (!perms.isEmpty()) {
+            ActivityCompat.requestPermissions(this, perms.toArray(new String[0]), REQ_CODE_NOTIFICATIONS);
         }
     }
 

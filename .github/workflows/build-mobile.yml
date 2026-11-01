@@ -3,12 +3,10 @@ name: Build PixChats Mobile (.apk)
 on:
   push:
     branches: [main]
-    paths:
-      - 'apps/mobile/**'
-      - 'apps/web/**'
-      - 'packages/core/**'
-      - '.github/workflows/build-mobile.yml'
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -39,9 +37,11 @@ jobs:
       - name: Собрать веб-версию (без basePath — упаковывается прямо в APK)
         working-directory: apps/web
         env:
-          NEXT_PUBLIC_SUPABASE_URL: https://kibhezfpafhitcvpkquu.supabase.co
-          NEXT_PUBLIC_SUPABASE_ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtpYmhlemZwYWZoaXRjdnBrcXV1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQxOTI4NjUsImV4cCI6MjA5OTc2ODg2NX0.HO1uskn4k7AWmFNFpFXd2vdgO8BKYz_bb8lpj2znSoI
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL || 'https://kibhezfpafhitcvpkquu.supabase.co' }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtpYmhlemZwYWZoaXRjdnBrcXV1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQxOTI4NjUsImV4cCI6MjA5OTc2ODg2NX0.HO1uskn4k7AWmFNFpFXd2vdgO8BKYz_bb8lpj2znSoI' }}
           NEXT_PUBLIC_BASE_PATH: ''
+          NEXT_PUBLIC_APP_VERSION: 0.1.${{ github.run_number }}
+          NEXT_PUBLIC_BUILD_SHA: ${{ github.sha }}
         run: npm run build
 
       - name: Скопировать веб-сборку в apps/mobile/www
@@ -66,8 +66,74 @@ jobs:
         working-directory: apps/mobile/android
         run: ./gradlew assembleDebug
 
+      - name: Подготовить единый файл PixChats.apk
+        run: |
+          APK_FILE=$(ls apps/mobile/android/app/build/outputs/apk/debug/*.apk | head -n 1)
+          if [ -n "$APK_FILE" ]; then
+            cp "$APK_FILE" apps/mobile/android/app/build/outputs/apk/debug/PixChats.apk
+          fi
+
       - uses: actions/upload-artifact@v4
         with:
           name: PixChats-Android-apk
-          path: apps/mobile/android/app/build/outputs/apk/debug/*.apk
+          path: apps/mobile/android/app/build/outputs/apk/debug/PixChats.apk
           retention-days: 30
+
+  publish-release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: pixchats-release-latest
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Скачать собранный .apk артефакт
+        uses: actions/download-artifact@v4
+        with:
+          name: PixChats-Android-apk
+          path: release-assets
+
+      - name: Удалить старый Release "Lastest Version" и опубликовать новый с .exe и .apk
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          RUN_NUM: ${{ github.run_number }}
+        run: |
+          mkdir -p release-assets
+
+          # 1. Сохраняем .exe из текущего релиза "Lastest Version" (чтобы в релизе всегда были и .exe, и .apk)
+          EXISTING_TAGS=$(gh api "repos/$REPO/releases" --jq '.[] | select(.name == "Lastest Version" or .name == "Latest Version" or .tag_name == "lastest-version" or .tag_name == "latest") | .tag_name' || true)
+          for TAG in $EXISTING_TAGS; do
+            gh release download "$TAG" --repo "$REPO" --pattern "*.exe" --dir release-assets --clobber || true
+          done
+
+          # 2. Удаляем все старые релизы "Lastest Version" и старый тег
+          OLD_IDS=$(gh api "repos/$REPO/releases" --jq '.[] | select(.name == "Lastest Version" or .name == "Latest Version" or .tag_name == "lastest-version" or .tag_name == "latest") | .id' || true)
+          for ID in $OLD_IDS; do
+            gh api -X DELETE "repos/$REPO/releases/$ID" || true
+          done
+          git push origin :refs/tags/lastest-version 2>/dev/null || true
+          git push origin :refs/tags/latest 2>/dev/null || true
+
+          # 3. Создаём новый Release "Lastest Version" с .apk (и .exe, если уже собран)
+          BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          NOTES=$(cat <<EOF
+          Актуальная сборка мессенджера PixChats для Windows (.exe) и Android (.apk).
+
+          - Версия: v0.1.${RUN_NUM}
+          - Commit: ${SHA}
+          - Build-Time: ${BUILD_TIME}
+          EOF
+          )
+
+          gh release create "lastest-version" release-assets/* \
+            --repo "$REPO" \
+            --target "$SHA" \
+            --title "Lastest Version" \
+            --notes "$NOTES" \
+            --latest
+

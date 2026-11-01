@@ -14,6 +14,7 @@ import {
 } from '@pixchats/core';
 import type { Chat, Profile } from '@pixchats/core';
 import { UserRow } from '../../components/UserRow';
+import { DesktopShell } from '../../components/DesktopShell';
 import { isBanned } from '../../lib/ban';
 import { Loading } from '../../components/Loading';
 import { BackIcon, PlusIcon } from '../../components/Icons';
@@ -32,7 +33,7 @@ function ChatMembersInner() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
-  async function reload(profile: Profile, chatRow: Chat) {
+  async function reload(profile: Profile, _chatRow: Chat) {
     const memberList = await getChatMembers(chatId);
     setMembers(memberList);
 
@@ -46,6 +47,8 @@ function ChatMembersInner() {
       router.push('/chats');
       return;
     }
+    let channel: any = null;
+
     (async () => {
       const profile = await getCurrentProfile();
       if (!profile) {
@@ -72,7 +75,7 @@ function ChatMembersInner() {
       if (chatRow) await reload(profile, chatRow);
 
       // Realtime subscription: обновление участников в реальном времени
-      const channel = supabase
+      channel = supabase
         .channel(`chat-members-${chatId}`)
         .on(
           'postgres_changes',
@@ -82,11 +85,13 @@ function ChatMembersInner() {
           }
         )
         .subscribe();
-
-      return () => {
-        supabase.removeChannel(channel);
-      };
     })();
+
+    return () => {
+      if (channel) {
+        getSupabaseClient().removeChannel(channel);
+      }
+    };
   }, [chatId, router]);
 
   async function handleAddFriend(friendId: string) {
@@ -103,7 +108,6 @@ function ChatMembersInner() {
 
   async function handleRemoveMember(targetId: string) {
     if (!me || !chat) return;
-    if (!confirm('Удалить из чата?')) return;
     setError(null);
     try {
       await removeMember(chatId, targetId);
@@ -130,7 +134,7 @@ function ChatMembersInner() {
   if (!chat) return <Loading />;
 
   return (
-    <main className="container-wide">
+    <main className="container-wide with-bottom-nav">
       <Link
         href={`/chat-info/?id=${chatId}`}
         style={{ color: 'var(--text-muted)', fontSize: 13, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 6 }}
@@ -149,8 +153,7 @@ function ChatMembersInner() {
         <div style={{ marginBottom: 20 }}>
           {!showAddPanel ? (
             <button
-              className="btn btn-primary"
-              style={{ width: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+              className="btn btn-primary btn-compact"
               onClick={() => setShowAddPanel(true)}
             >
               <PlusIcon size={16} />
@@ -174,7 +177,7 @@ function ChatMembersInner() {
                     key={f.id}
                     profile={f}
                     action={
-                      <button className="btn" style={{ width: 'auto', padding: '6px 12px' }} onClick={() => handleAddFriend(f.id)}>
+                      <button className="btn btn-compact" onClick={() => handleAddFriend(f.id)}>
                         Добавить
                       </button>
                     }
@@ -193,8 +196,8 @@ function ChatMembersInner() {
             action={
               canManage && me && m.id !== me.id ? (
                 <button
-                  className="btn"
-                  style={{ width: 'auto', padding: '6px 12px', color: 'var(--danger)' }}
+                  className="btn btn-compact"
+                  style={{ color: 'var(--danger)' }}
                   onClick={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
@@ -214,8 +217,11 @@ function ChatMembersInner() {
 
 export default function ChatMembersPage() {
   return (
-    <Suspense fallback={<Loading />}>
-      <ChatMembersInner />
-    </Suspense>
+    <DesktopShell>
+      <Suspense fallback={<Loading />}>
+        <ChatMembersInner />
+      </Suspense>
+    </DesktopShell>
   );
 }
+

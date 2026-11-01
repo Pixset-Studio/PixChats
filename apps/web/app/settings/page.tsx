@@ -22,6 +22,7 @@ import { DesktopShell } from '../../components/DesktopShell';
 import { isBanned } from '../../lib/ban';
 import { buildAppUrl } from '../../lib/url';
 import { PIXSET_THEMES, applyTheme, getCurrentTheme } from '../../components/ThemeManager';
+import { triggerManualUpdateCheck } from '../../components/UpdateNotifier';
 import { fileToBase64Image } from '../../lib/imageUtils';
 import {
   getNotificationPrefs,
@@ -324,7 +325,7 @@ export default function SettingsPage() {
       <div className="card" style={{ marginBottom: 24 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 20 }}>
           <div
-            className="avatar"
+            className={`avatar ${!profile.avatar_url ? 'avatar-fallback' : ''}`}
             style={{
               width: 64,
               height: 64,
@@ -1032,6 +1033,29 @@ export default function SettingsPage() {
             style={{ width: 18, height: 18, accentColor: 'var(--accent)' }}
           />
         </label>
+      </div>
+
+      <div className="section-title">🔄 Обновления и справка</div>
+      <div className="card" style={{ marginBottom: 24 }}>
+        <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 0, marginBottom: 12 }}>
+          Нативные клиенты Windows (.exe) и Android (.apk) автоматически проверяют выход новой версии в релизе <strong>«Lastest Version»</strong> и предлагают обновиться.
+        </p>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            className="btn btn-primary btn-compact"
+            onClick={() => {
+              triggerManualUpdateCheck();
+              setNotice('Запущена проверка обновлений Lastest Version…');
+              setTimeout(() => setNotice(null), 2000);
+            }}
+          >
+            🔄 Проверить обновления
+          </button>
+          <Link href="/faq" className="btn btn-compact" style={{ textDecoration: 'none' }}>
+            ❓ Вопросы и ответы (FAQ)
+          </Link>
+        </div>
       </div>
     </main>
     <BottomNav />

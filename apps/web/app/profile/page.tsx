@@ -88,48 +88,41 @@ export default function ProfilePage() {
           )}
 
           {linkedPixsetNick && (
-            <div style={{ marginTop: 14, display: 'flex', justifyContent: 'center' }}>
+            <div style={{ marginTop: 12, display: 'flex', justifyContent: 'center' }}>
               <a
                 href={getPixsetPublicProfileUrl(linkedPixsetNick)}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="btn btn-primary"
+                className="btn btn-primary btn-compact"
                 style={{
-                  width: 'auto',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 8,
                   textDecoration: 'none',
-                  padding: '9px 16px',
                 }}
               >
                 <span>⚡</span>
-                <span>Посмотреть публичный профиль на сайте Pixset Studio</span>
+                <span>Профиль Pixset Studio</span>
               </a>
             </div>
           )}
         </div>
 
-        <div className="btn-row" style={{ maxWidth: 460, margin: '0 auto', flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center' }}>
-          <Link href="/settings" className="btn btn-primary" style={{ width: 'auto', flex: '1 1 160px' }}>
-            Изменить профиль
+        <div className="profile-actions-row">
+          <Link href="/settings" className="btn btn-primary btn-compact" style={{ textDecoration: 'none' }}>
+            ✏️ Изменить профиль
           </Link>
           <button
             type="button"
-            className="btn"
-            style={{ width: 'auto', flex: '1 1 160px' }}
+            className="btn btn-compact"
             onClick={handleOpenSavedMessages}
           >
-            ⭐ Избранное (Заметки)
+            ⭐ Избранное
           </button>
           {(profile.role === 'admin' || profile.role === 'developer' || profile.role === 'moderator') && (
-            <Link href="/admin" className="btn" style={{ width: 'auto', flex: '1 1 160px' }}>
+            <Link href="/admin" className="btn btn-compact" style={{ textDecoration: 'none' }}>
               ⚙ Панель управления
             </Link>
           )}
           <button
-            className="btn"
-            style={{ width: 'auto', flex: '1 1 120px' }}
+            className="btn btn-compact"
             onClick={async () => {
               clearChatListCache();
               await signOut();
