@@ -21,9 +21,12 @@ function patchAndroidManifest() {
   const requiredPermissions = [
     'android.permission.INTERNET',
     'android.permission.POST_NOTIFICATIONS',
+    'android.permission.USE_FULL_SCREEN_INTENT',
+    'android.permission.FOREGROUND_SERVICE',
     'android.permission.VIBRATE',
     'android.permission.WAKE_LOCK',
     'android.permission.RECORD_AUDIO',
+    'android.permission.CAMERA',
     'android.permission.MODIFY_AUDIO_SETTINGS',
     'android.permission.REQUEST_INSTALL_PACKAGES',
   ];

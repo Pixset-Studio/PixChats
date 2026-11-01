@@ -2,6 +2,7 @@
 
 import { useEffect } from 'react';
 import { usePathname } from 'next/navigation';
+import { applyChatAppearance } from '../lib/chatAppearance';
 
 export const PIXSET_THEMES = [
   {
@@ -88,6 +89,7 @@ export function ThemeManager() {
       if (document.documentElement.getAttribute('data-theme') !== theme) {
         document.documentElement.setAttribute('data-theme', theme);
       }
+      applyChatAppearance();
     }
 
     syncTheme();

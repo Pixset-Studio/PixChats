@@ -5,7 +5,7 @@ import { getAllStickers, type StickerItem } from '../lib/stickers';
 
 export interface EmojiPickerProps {
   onSelect: (emoji: string) => void;
-  onSelectMedia?: (mediaUrl: string, caption?: string) => void;
+  onSelectMedia?: (mediaUrl: string, caption?: string, stickerId?: string) => void;
   onClose?: () => void;
   title?: string;
   className?: string;
@@ -377,7 +377,7 @@ export function EmojiPicker({
                 key={stk.id}
                 type="button"
                 className="sticker-item-btn"
-                onClick={() => onSelectMedia?.(stk.dataUrl, `Стикер: ${stk.title}`)}
+                onClick={() => onSelectMedia?.(stk.dataUrl, `Стикер: ${stk.title}`, stk.id)}
                 title={`${stk.title} (${stk.pack})`}
               >
                 <img src={stk.dataUrl} alt={stk.title} className="sticker-preview-img" />

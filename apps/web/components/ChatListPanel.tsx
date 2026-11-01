@@ -31,6 +31,9 @@ import {
   type CustomChatFolder,
 } from '../lib/chatFolders';
 import { parsePollMessage, extractSelfDestructInfo } from './FormattedMessageText';
+import { getHiddenChatIds, getAppLockConfig, lockSessionNow } from '../lib/appLock';
+import { isStickerTagText } from '../lib/stickers';
+import { extractTopicFromText } from '../lib/channelConfig';
 
 const TYPE_LABEL: Record<Chat['type'], string> = {
   direct: 'Личный чат',
@@ -49,6 +52,9 @@ function formatTime(iso: string): string {
 }
 
 function formatPreviewText(message: Message): string {
+  if (message.caption === '__VIDEONOTE__' || message.text?.startsWith('__VIDEONOTE__')) {
+    return '🎥 Видеосообщение (кружочек)';
+  }
   switch (message.message_type) {
     case 'image':
       return '📷 Фото';
@@ -62,11 +68,15 @@ function formatPreviewText(message: Message): string {
       return `📎 ${message.text}`;
     default: {
       const { expiresAt, cleanText } = extractSelfDestructInfo(message.text || '');
-      const poll = parsePollMessage(cleanText);
+      const { cleanText: topicCleaned } = extractTopicFromText(cleanText);
+      if (isStickerTagText(topicCleaned)) {
+        return '👾 Стикер';
+      }
+      const poll = parsePollMessage(topicCleaned);
       if (poll) {
         return `📊 Опрос: ${poll.question}`;
       }
-      return expiresAt ? `🔥 ${cleanText}` : cleanText;
+      return expiresAt ? `🔥 ${topicCleaned}` : topicCleaned;
     }
   }
 }
@@ -88,12 +98,16 @@ export function ChatListPanel() {
     typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('id') : null
   );
 
-  // Архив и кастомные папки (Пункт 8)
+  // Архив, скрытые чаты под PIN-кодом и кастомные папки (Пункты 6 и 8)
   const [archivedChatIds, setArchivedChatIds] = useState<string[]>([]);
+  const [hiddenChatIds, setHiddenChatIds] = useState<string[]>([]);
+  const [appLockEnabled, setAppLockEnabled] = useState(false);
+  const [appLockPin, setAppLockPin] = useState('');
   const [customFolders, setCustomFolders] = useState<CustomChatFolder[]>([]);
   const [showNewFolderModal, setShowNewFolderModal] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [selectedForNewFolder, setSelectedForNewFolder] = useState<string[]>([]);
+  const [liveActivities, setLiveActivities] = useState<Record<string, string>>({});
 
   useEffect(() => {
     const syncActiveChat = () => {
@@ -109,13 +123,19 @@ export function ChatListPanel() {
   useEffect(() => {
     const syncFolders = () => {
       setArchivedChatIds(getArchivedChatIds());
+      setHiddenChatIds(getHiddenChatIds());
       setCustomFolders(getCustomFolders());
+      const lockCfg = getAppLockConfig();
+      setAppLockEnabled(Boolean(lockCfg.enabled && lockCfg.pinCode));
+      setAppLockPin(lockCfg.pinCode || '');
     };
     syncFolders();
     window.addEventListener('pixchats:folders_changed', syncFolders);
+    window.addEventListener('pixchats:applock_changed', syncFolders);
     window.addEventListener('storage', syncFolders);
     return () => {
       window.removeEventListener('pixchats:folders_changed', syncFolders);
+      window.removeEventListener('pixchats:applock_changed', syncFolders);
       window.removeEventListener('storage', syncFolders);
     };
   }, []);
@@ -271,10 +291,33 @@ export function ChatListPanel() {
       )
       .subscribe();
 
+    const typingGlobalChannel = supabase
+      .channel('pixchats-typing-global')
+      .on('broadcast', { event: 'activity' }, ({ payload }: any) => {
+        if (!payload?.chatId || !payload?.userId || payload.userId === profile.id) return;
+        const label =
+          payload.status === 'recording_voice'
+            ? `🎤 ${payload.name || 'Собеседник'} записывает голосовое…`
+            : payload.status === 'recording_video'
+              ? `🎥 ${payload.name || 'Собеседник'} записывает кружочек…`
+              : `✍️ ${payload.name || 'Собеседник'} печатает…`;
+
+        setLiveActivities((prev) => ({ ...prev, [payload.chatId]: label }));
+        setTimeout(() => {
+          setLiveActivities((prev) => {
+            const copy = { ...prev };
+            delete copy[payload.chatId];
+            return copy;
+          });
+        }, 3800);
+      })
+      .subscribe();
+
     return () => {
       supabase.removeChannel(messagesChannel);
       supabase.removeChannel(readStateChannel);
       supabase.removeChannel(membersChannel);
+      supabase.removeChannel(typingGlobalChannel);
     };
   }, [profile]);
 
@@ -339,9 +382,12 @@ export function ChatListPanel() {
 
   if (loading || !profile) return <ChatListSkeleton />;
 
-  const archivedCount = chats.filter((c) => archivedChatIds.includes(c.id)).length;
+  const archivedCount = chats.filter((c) => archivedChatIds.includes(c.id) && !hiddenChatIds.includes(c.id)).length;
 
   const filtered = chats.filter((c) => {
+    // Скрытые под PIN-кодом чаты не видны в обычном списке
+    if (hiddenChatIds.includes(c.id)) return false;
+
     const isArch = archivedChatIds.includes(c.id);
     if (folder === 'archive') return isArch;
     // Кастомная папка
@@ -368,8 +414,17 @@ export function ChatListPanel() {
   });
 
   const q = query.trim().toLowerCase();
+  const isSecretPinEntered = Boolean(appLockPin && query.trim() === appLockPin.trim());
+
   const matchedLocalChats = q
     ? chats.filter((c) => {
+        const isHidden = hiddenChatIds.includes(c.id);
+        // Если введён секретный PIN-код в строку поиска — показываем скрытые чаты!
+        if (isSecretPinEntered) {
+          return isHidden;
+        }
+        if (isHidden) return false;
+
         const isSaved = isSavedMessagesChat(c, profile.id);
         const partner = c.type === 'direct' && !isSaved ? partners[c.id] : null;
         const titleMatch = (isSaved ? 'избранное заметки' : c.title?.toLowerCase() ?? '').includes(q);
@@ -399,6 +454,17 @@ export function ChatListPanel() {
             placeholder="Поиск по чатам, сообщениям или @username…"
           />
         </div>
+        {appLockEnabled && (
+          <button
+            type="button"
+            className="btn"
+            style={{ width: 'auto', padding: '0 11px', display: 'inline-flex', alignItems: 'center' }}
+            onClick={() => lockSessionNow()}
+            title="Заблокировать экран под PIN-код"
+          >
+            <span>🔒</span>
+          </button>
+        )}
         <button
           type="button"
           className="btn"
@@ -761,12 +827,22 @@ export function ChatListPanel() {
                     </span>
                   </div>
                   <div className="chat-item-preview-text" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {preview
-                        ? formatPreviewText(preview)
-                        : isSaved
-                          ? 'Личное облако заметок и файлов'
-                          : `${TYPE_LABEL[chat.type]}${chat.visibility ? ` · ${chat.visibility === 'public' ? 'публичный' : 'приватный'}` : ''}`}
+                    <span
+                      style={{
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                        color: liveActivities[chat.id] ? 'var(--accent)' : undefined,
+                        fontWeight: liveActivities[chat.id] ? 600 : undefined,
+                      }}
+                    >
+                      {liveActivities[chat.id]
+                        ? liveActivities[chat.id]
+                        : preview
+                          ? formatPreviewText(preview)
+                          : isSaved
+                            ? 'Личное облако заметок и файлов'
+                            : `${TYPE_LABEL[chat.type]}${chat.visibility ? ` · ${chat.visibility === 'public' ? 'публичный' : 'приватный'}` : ''}`}
                     </span>
                     {folder === 'archive' && (
                       <button

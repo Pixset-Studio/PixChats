@@ -29,6 +29,8 @@ export interface NativeAndroidBridge {
   hasNotificationPermission?: () => boolean;
   requestNotificationPermission?: () => void;
   showNotification?: (title: string, body: string, targetUrl: string) => void;
+  showIncomingCallNotification?: (callerName: string, mode: string, targetUrl: string) => void;
+  stopIncomingCallAlert?: () => void;
   downloadAndInstallApk?: (apkUrl: string) => void;
 }
 
@@ -248,36 +250,110 @@ export async function sendNativeOrWebNotification(options: {
     }
     if (Notification.permission === 'granted') {
       const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
-      const iconUrl = `${basePath}/logo/icon.png`;
+      const iconUrl = `${basePath}/icon.svg`;
+
+      try {
+        if ('serviceWorker' in navigator) {
+          const reg = await navigator.serviceWorker.getRegistration();
+          if (reg && typeof reg.showNotification === 'function') {
+            await reg.showNotification(title, {
+              body,
+              icon: iconUrl,
+              badge: iconUrl,
+              silent,
+              data: { url },
+            });
+            return;
+          }
+        }
+      } catch {
+        // fallback к конструктору Notification
+      }
+
       try {
         const notif = new Notification(title, {
           body,
           icon: iconUrl,
-          badge: iconUrl,
           silent,
         });
-        if (url && onNavigate) {
-          notif.onclick = () => {
-            window.focus();
-            onNavigate(url);
-          };
-        }
-        return;
+        notif.onclick = () => {
+          window.focus();
+          if (onNavigate) onNavigate(url);
+        };
       } catch {
-        if ('serviceWorker' in navigator) {
-          try {
-            const reg = await navigator.serviceWorker.getRegistration();
-            if (reg) {
-              await reg.showNotification(title, {
-                body,
-                icon: iconUrl,
-                badge: iconUrl,
-                data: { url },
-              });
-            }
-          } catch {}
-        }
+        // ignore
       }
     }
   }
+}
+
+/**
+ * Вызывает нативный входящий звонок на всех платформах:
+ * - На Android (.apk): запускает системный рингтон телефона, вибрацию, будит экран и разворачивает окно поверх блокировки
+ * - На Windows (.exe): разворачивает окно из системного трея на передний план и показывает системный Toast
+ * - В браузере (Web / Mobile Web): включает вибрацию и показывает неотключаемое уведомление о звонке
+ */
+export async function triggerIncomingCallNativeAlert(options: {
+  callerName: string;
+  mode: 'audio' | 'video';
+  chatId?: string;
+  silent?: boolean;
+}): Promise<void> {
+  if (typeof window === 'undefined') return;
+
+  const targetUrl = options.chatId ? `/chat/?id=${options.chatId}` : '/chats/';
+
+  // Вибрация на мобильных браузерах и Android
+  try {
+    if (typeof navigator !== 'undefined' && navigator.vibrate) {
+      navigator.vibrate([700, 350, 700, 350, 700, 350, 700]);
+    }
+  } catch {}
+
+  // 1. Android APK: нативный рингтон телефона + FullScreen Intent + пробуждение экрана
+  if (window.PixChatsAndroid?.showIncomingCallNotification) {
+    try {
+      window.PixChatsAndroid.showIncomingCallNotification(
+        options.callerName,
+        options.mode,
+        targetUrl
+      );
+      return;
+    } catch {}
+  }
+
+  // 2. Windows EXE: выход из системного трея на передний план + Toast
+  if (window.pixchatsDesktop?.notifyIncomingCall) {
+    try {
+      await window.pixchatsDesktop.notifyIncomingCall({
+        callerName: options.callerName,
+        mode: options.mode,
+        chatId: options.chatId,
+      });
+      return;
+    } catch {}
+  }
+
+  // 3. Web / Mobile Web: системное уведомление с requireInteraction
+  await sendNativeOrWebNotification({
+    title: options.mode === 'video' ? '📹 Входящий видеозвонок' : '📞 Входящий звонок',
+    body: `${options.callerName} звонит вам в PixChats — нажмите, чтобы ответить`,
+    url: targetUrl,
+    silent: options.silent,
+  });
+}
+
+/**
+ * Останавливает нативный рингтон и вибрацию входящего звонка на телефоне.
+ */
+export function stopIncomingCallNativeAlert(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (typeof navigator !== 'undefined' && navigator.vibrate) {
+      navigator.vibrate(0);
+    }
+  } catch {}
+  try {
+    window.PixChatsAndroid?.stopIncomingCallAlert?.();
+  } catch {}
 }

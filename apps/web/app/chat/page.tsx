@@ -9,7 +9,7 @@ import { DesktopShell } from '../../components/DesktopShell';
 import { buildAppUrl } from '../../lib/url';
 import { VerifiedBadge } from '../../components/VerifiedBadge';
 import { NameWithBadges } from '../../components/NameBadges';
-import { startPixChatsCall } from '../../components/CallManager';
+import { startPixChatsCall, startPixChatsGroupCall } from '../../components/CallManager';
 import {
   getSupabaseClient,
   getCurrentProfile,
@@ -35,6 +35,7 @@ import {
   setChatCustomPassphrase,
   getOrCreateSavedMessagesChat,
   isSavedMessagesChat,
+  updateChatInfo,
 } from '@pixchats/core';
 import type { Message, Chat, Profile, ChatSafetyFingerprint } from '@pixchats/core';
 import { Loading } from '../../components/Loading';
@@ -61,6 +62,21 @@ import {
   LinkIcon,
   SearchIcon,
 } from '../../components/Icons';
+import {
+  encodeStickerTag,
+  resolveStickerFromText,
+} from '../../lib/stickers';
+import {
+  parseChatDescriptionAndConfig,
+  encodeChatDescriptionWithConfig,
+  encodeTopicPrefix,
+  extractTopicFromText,
+  encodePostCommentPayload,
+  extractPostCommentsFromReactions,
+  DEFAULT_CHANNEL_GROUP_CONFIG,
+  type ChannelGroupConfig,
+} from '../../lib/channelConfig';
+import { exportChatHistory } from '../../lib/chatExport';
 
 interface ScheduledMessageItem {
   id: string;
@@ -137,11 +153,39 @@ function ChatWindowInner() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [showEmoji, setShowEmoji] = useState(false);
+  const [showToolsMenu, setShowToolsMenu] = useState(false);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [captionPosition, setCaptionPosition] = useState<'above' | 'below'>('below');
   const [isRecording, setIsRecording] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+
+  // Пункт 1: Видеосообщения в кружочках (Video Notes)
+  const [showVideoNoteModal, setShowVideoNoteModal] = useState(false);
+  const [videoNoteRecording, setVideoNoteRecording] = useState(false);
+  const [videoNoteSeconds, setVideoNoteSeconds] = useState(0);
+  const videoNotePreviewRef = useRef<HTMLVideoElement | null>(null);
+  const videoNoteStreamRef = useRef<MediaStream | null>(null);
+  const videoNoteRecorderRef = useRef<MediaRecorder | null>(null);
+  const videoNoteChunksRef = useRef<Blob[]>([]);
+  const [expandedVideoNoteIds, setExpandedVideoNoteIds] = useState<Record<string, boolean>>({});
+
+  // Пункт 2: Живые статусы набора текста / записи аудио / записи видеокружка
+  const [typingUsers, setTypingUsers] = useState<Record<string, string>>({});
+  const lastBroadcastTypingRef = useRef<number>(0);
+  const typingChannelRef = useRef<any>(null);
+  const globalTypingChannelRef = useRef<any>(null);
+
+  // Пункт 3: Статусы прочтения (✓ и ✓✓)
+  const [partnerLastReadAt, setPartnerLastReadAt] = useState<string | null>(null);
+
+  // Пункт 8: Темы (Топики) в группах/каналах и Комментарии к постам в каналах
+  const [channelGroupCfg, setChannelGroupCfg] = useState<ChannelGroupConfig>(DEFAULT_CHANNEL_GROUP_CONFIG);
+  const [activeTopicId, setActiveTopicId] = useState<string>('all');
+  const [activeCommentsPost, setActiveCommentsPost] = useState<Message | null>(null);
+  const [commentDraft, setCommentDraft] = useState('');
+  const [showNewTopicQuickModal, setShowNewTopicQuickModal] = useState(false);
+  const [quickTopicName, setQuickTopicName] = useState('');
 
   // Пункт 5: Панель быстрого форматирования текста (Markdown + Спойлер)
   const [showFormatToolbar, setShowFormatToolbar] = useState(false);
@@ -173,9 +217,6 @@ function ChatWindowInner() {
   const [e2eeFingerprint, setE2eeFingerprint] = useState<ChatSafetyFingerprint | null>(null);
   const [customPassInput, setCustomPassInput] = useState('');
 
-  const [typingUsers, setTypingUsers] = useState<Record<string, string>>({});
-  const lastBroadcastTypingRef = useRef<number>(0);
-
   function insertEmoji(emoji: string) {
     setDraft((prev) => prev + emoji);
   }
@@ -185,6 +226,26 @@ function ChatWindowInner() {
       if (!prev.trim()) return `${prefix}${placeholder}${suffix}`;
       return `${prev} ${prefix}${placeholder}${suffix}`;
     });
+  }
+
+  function broadcastLiveActivity(status: 'typing' | 'recording_voice' | 'recording_video') {
+    if (!chatId || !me) return;
+    const now = Date.now();
+    if (status === 'typing' && now - lastBroadcastTypingRef.current < 2200) return;
+    lastBroadcastTypingRef.current = now;
+
+    try {
+      typingChannelRef.current?.send({
+        type: 'broadcast',
+        event: 'typing',
+        payload: { userId: me.id, name: me.display_name, status },
+      });
+      globalTypingChannelRef.current?.send({
+        type: 'broadcast',
+        event: 'activity',
+        payload: { chatId, userId: me.id, name: me.display_name, status },
+      });
+    } catch {}
   }
 
   // Загрузка и проверка очереди отложенных сообщений для этого чата (Пункт 9)
@@ -229,7 +290,11 @@ function ChatWindowInner() {
 
   function scheduleCurrentDraft(delayMs: number) {
     if (!draft.trim() || !chatId) return;
-    const textToSend = ttlSeconds > 0 ? encodeSelfDestructPrefix(ttlSeconds, draft.trim()) : draft.trim();
+    const baseText =
+      channelGroupCfg.structureMode === 'topics' && activeTopicId !== 'all'
+        ? encodeTopicPrefix(activeTopicId, draft.trim())
+        : draft.trim();
+    const textToSend = ttlSeconds > 0 ? encodeSelfDestructPrefix(ttlSeconds, baseText) : baseText;
     const item: ScheduledMessageItem = {
       id: `sched-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       text: textToSend,
@@ -262,30 +327,30 @@ function ChatWindowInner() {
 
   function handleDraftChange(text: string) {
     setDraft(text);
-    if (!chatId || !me) return;
-    const now = Date.now();
-    if (now - lastBroadcastTypingRef.current > 2500) {
-      lastBroadcastTypingRef.current = now;
-      try {
-        const supabase = getSupabaseClient();
-        const ch = supabase.channel(`typing:${chatId}`);
-        ch.send({
-          type: 'broadcast',
-          event: 'typing',
-          payload: { userId: me.id, name: me.display_name },
-        });
-      } catch {}
+    if (text.trim()) {
+      broadcastLiveActivity('typing');
     }
   }
 
-  async function handleSendMedia(mediaUrl: string, caption?: string) {
+  // Пункт 10: Отправка стикера с дедупликацией по ID ([STICKER:id]) или GIF
+  async function handleSendMedia(mediaUrl: string, caption?: string, stickerId?: string) {
     setShowEmoji(false);
     if (!chatId) return;
     try {
-      await sendMessage(chatId, caption || 'Стикер', {
-        messageType: 'image',
-        mediaPath: mediaUrl,
-      });
+      if (stickerId) {
+        // Вместо записи 30 КБ base64 в каждую строку messages, сохраняем только тег [STICKER:id] (~35 байт!)
+        const stickerTag = encodeStickerTag(stickerId, caption || 'Стикер');
+        const payload =
+          channelGroupCfg.structureMode === 'topics' && activeTopicId !== 'all'
+            ? encodeTopicPrefix(activeTopicId, stickerTag)
+            : stickerTag;
+        await sendMessage(chatId, payload, { messageType: 'text' });
+      } else {
+        await sendMessage(chatId, caption || 'GIF', {
+          messageType: 'image',
+          mediaPath: mediaUrl,
+        });
+      }
     } catch {
       setNotice('Не удалось отправить стикер/GIF');
       setTimeout(() => setNotice(null), 2000);
@@ -306,7 +371,11 @@ function ChatWindowInner() {
       options: opts,
       multi: pollMulti,
     });
-    const finalPayload = ttlSeconds > 0 ? encodeSelfDestructPrefix(ttlSeconds, encoded) : encoded;
+    const withTopic =
+      channelGroupCfg.structureMode === 'topics' && activeTopicId !== 'all'
+        ? encodeTopicPrefix(activeTopicId, encoded)
+        : encoded;
+    const finalPayload = ttlSeconds > 0 ? encodeSelfDestructPrefix(ttlSeconds, withTopic) : withTopic;
     await sendMessage(chatId, finalPayload);
     setShowPollModal(false);
     setPollQuestion('');
@@ -338,6 +407,7 @@ function ChatWindowInner() {
       recorder.start();
       mediaRecorderRef.current = recorder;
       setIsRecording(true);
+      broadcastLiveActivity('recording_voice');
     } catch {
       setNotice('Нет доступа к микрофону');
       setTimeout(() => setNotice(null), 2000);
@@ -347,6 +417,97 @@ function ChatWindowInner() {
   function stopRecording() {
     mediaRecorderRef.current?.stop();
     setIsRecording(false);
+  }
+
+  // Пункт 1: Запись круглого видеосообщения (Video Note)
+  async function openVideoNoteRecorder() {
+    setShowVideoNoteModal(true);
+    setVideoNoteSeconds(0);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 360 }, height: { ideal: 360 }, facingMode: 'user' },
+        audio: true,
+      });
+      videoNoteStreamRef.current = stream;
+      setTimeout(() => {
+        if (videoNotePreviewRef.current) {
+          videoNotePreviewRef.current.srcObject = stream;
+        }
+      }, 60);
+
+      const recorder = new MediaRecorder(stream);
+      videoNoteChunksRef.current = [];
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) videoNoteChunksRef.current.push(e.data);
+      };
+      recorder.start();
+      videoNoteRecorderRef.current = recorder;
+      setVideoNoteRecording(true);
+      broadcastLiveActivity('recording_video');
+    } catch {
+      setShowVideoNoteModal(false);
+      setNotice('Нет доступа к камере и микрофону для записи видеокружка');
+      setTimeout(() => setNotice(null), 2500);
+    }
+  }
+
+  useEffect(() => {
+    if (!videoNoteRecording) return;
+    const t = setInterval(() => {
+      setVideoNoteSeconds((prev) => {
+        if (prev >= 59) {
+          void finishAndSendVideoNote();
+          return 60;
+        }
+        return prev + 1;
+      });
+    }, 1000);
+    return () => clearInterval(t);
+  }, [videoNoteRecording]);
+
+  function cleanupVideoNoteStream() {
+    if (videoNoteStreamRef.current) {
+      videoNoteStreamRef.current.getTracks().forEach((t) => t.stop());
+      videoNoteStreamRef.current = null;
+    }
+    videoNoteRecorderRef.current = null;
+    setVideoNoteRecording(false);
+    setShowVideoNoteModal(false);
+    setVideoNoteSeconds(0);
+  }
+
+  async function finishAndSendVideoNote() {
+    const rec = videoNoteRecorderRef.current;
+    if (!rec) {
+      cleanupVideoNoteStream();
+      return;
+    }
+    rec.onstop = async () => {
+      const blob = new Blob(videoNoteChunksRef.current, { type: 'video/webm' });
+      cleanupVideoNoteStream();
+      if (blob.size < 200) return;
+
+      const file = new File([blob], `videonote-${Date.now()}.webm`, { type: 'video/webm' });
+      setUploading(true);
+      try {
+        const { url } = await uploadMessageFile(chatId, file);
+        await sendMessage(chatId, '__VIDEONOTE__:Видеосообщение', {
+          messageType: 'video',
+          mediaPath: url,
+          caption: '__VIDEONOTE__',
+        });
+      } catch (err: any) {
+        setNotice(err.message ?? 'Не удалось отправить видеокружок');
+        setTimeout(() => setNotice(null), 2000);
+      } finally {
+        setUploading(false);
+      }
+    };
+    try {
+      rec.stop();
+    } catch {
+      cleanupVideoNoteStream();
+    }
   }
 
   function cycleAudioSpeed(messageId: string) {
@@ -376,6 +537,7 @@ function ChatWindowInner() {
     const file = e.target.files?.[0];
     if (!file) return;
     setPendingFile(file);
+    setShowToolsMenu(false);
     if (fileInputRef.current) fileInputRef.current.value = '';
   }
 
@@ -400,6 +562,45 @@ function ChatWindowInner() {
     }
   }
 
+  // Пункт 8: Добавление новой темы (Топика) прямо из чата для создателя
+  async function handleQuickAddTopic(e: React.FormEvent) {
+    e.preventDefault();
+    const clean = quickTopicName.trim();
+    if (!clean || !chat) return;
+    const newTopic = { id: `topic-${Date.now().toString(36)}`, title: clean, icon: '📌' };
+    const nextTopics = [...channelGroupCfg.topics, newTopic];
+    const nextCfg: ChannelGroupConfig = {
+      ...channelGroupCfg,
+      structureMode: 'topics',
+      topics: nextTopics,
+    };
+    setChannelGroupCfg(nextCfg);
+    setActiveTopicId(newTopic.id);
+    setQuickTopicName('');
+    setShowNewTopicQuickModal(false);
+
+    try {
+      const { cleanDescription } = parseChatDescriptionAndConfig(chat.description);
+      const encoded = encodeChatDescriptionWithConfig(cleanDescription, nextCfg);
+      await updateChatInfo(chat.id, { description: encoded });
+      setChat({ ...chat, description: encoded });
+    } catch {}
+  }
+
+  // Пункт 8: Отправка комментария к посту в канале (работает и для подписчиков!)
+  async function handleSendPostComment(e: React.FormEvent) {
+    e.preventDefault();
+    if (!activeCommentsPost || !me || !commentDraft.trim()) return;
+    const payloadStr = encodePostCommentPayload({
+      id: `cmt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      userName: me.display_name,
+      text: commentDraft.trim(),
+      createdAt: new Date().toISOString(),
+    });
+    setCommentDraft('');
+    await handleToggleReaction(activeCommentsPost.id, payloadStr);
+  }
+
   useEffect(() => {
     if (!chatId) {
       router.push('/chats');
@@ -417,6 +618,8 @@ function ChatWindowInner() {
     setCanModerate(false);
     setMessages([]);
     setChatNotFound(false);
+    setPartnerLastReadAt(null);
+    setActiveTopicId('all');
     initialIdsRef.current = new Set();
 
     (async () => {
@@ -438,6 +641,8 @@ function ChatWindowInner() {
         return;
       }
       setChat(chatRow);
+      const parsedCfg = parseChatDescriptionAndConfig(chatRow.description);
+      setChannelGroupCfg(parsedCfg.config);
 
       if (chatRow?.pinned_message_id) {
         setPinnedMessage(await getMessageById(chatRow.pinned_message_id));
@@ -460,6 +665,23 @@ function ChatWindowInner() {
       } else if (chatRow?.type !== 'direct') {
         setMemberCount(await getChatMemberCount(chatId));
       }
+
+      // Пункт 3: Загружаем время последнего прочтения собеседником/участниками из chat_read_state
+      try {
+        const { data: readRows } = await supabase
+          .from('chat_read_state')
+          .select('user_id, last_read_at')
+          .eq('chat_id', chatId)
+          .neq('user_id', profile.id);
+        if (readRows && readRows.length > 0) {
+          const latest = readRows
+            .map((r: any) => r.last_read_at)
+            .filter(Boolean)
+            .sort()
+            .pop();
+          if (latest) setPartnerLastReadAt(latest);
+        }
+      } catch {}
 
       const { data: memberRow } = await supabase
         .from('chat_members')
@@ -504,7 +726,15 @@ function ChatWindowInner() {
           chatId,
           async (msg) => {
             setMessages((prev) => (prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]));
-            markChatAsRead(profile.id, chatId);
+            await markChatAsRead(profile.id, chatId);
+            // Мгновенно оповещаем собеседника о прочтении (✓✓)
+            try {
+              typingChannelRef.current?.send({
+                type: 'broadcast',
+                event: 'read-receipt',
+                payload: { userId: profile.id, readAt: new Date().toISOString() },
+              });
+            } catch {}
 
             if (chatRow.type !== 'direct' && msg.sender_id !== profile.id) {
               setSenderProfiles((prev) => {
@@ -546,29 +776,73 @@ function ChatWindowInner() {
     return () => unsubscribe?.();
   }, [chatId, router]);
 
+  // Пункты 2 и 3: Канал живого набора текста / записи голосового и мгновенного статуса прочтения (✓✓)
   useEffect(() => {
     if (!chatId || !me) return;
     const supabase = getSupabaseClient();
     const typingChannel = supabase.channel(`typing:${chatId}`);
+    const globalTypingCh = supabase.channel('pixchats-typing-global');
+    typingChannelRef.current = typingChannel;
+    globalTypingChannelRef.current = globalTypingCh;
 
     typingChannel
       .on('broadcast', { event: 'typing' }, ({ payload }) => {
         if (payload && payload.userId && payload.userId !== me.id) {
-          const userName = payload.name || 'Пользователь';
-          setTypingUsers((prev) => ({ ...prev, [payload.userId]: userName }));
+          const userName = payload.name || 'Собеседник';
+          const label =
+            payload.status === 'recording_voice'
+              ? `${userName} записывает голосовое…`
+              : payload.status === 'recording_video'
+                ? `${userName} записывает кружочек…`
+                : `${userName} печатает…`;
+          setTypingUsers((prev) => ({ ...prev, [payload.userId]: label }));
           setTimeout(() => {
             setTypingUsers((prev) => {
               const copy = { ...prev };
               delete copy[payload.userId];
               return copy;
             });
-          }, 3500);
+          }, 3600);
         }
       })
+      .on('broadcast', { event: 'read-receipt' }, ({ payload }) => {
+        if (payload && payload.userId && payload.userId !== me.id && payload.readAt) {
+          setPartnerLastReadAt(payload.readAt);
+        }
+      })
+      .subscribe((st) => {
+        if (st === 'SUBSCRIBED') {
+          // Сообщаем собеседнику, что мы открыли чат и прочитали сообщения
+          typingChannel.send({
+            type: 'broadcast',
+            event: 'read-receipt',
+            payload: { userId: me.id, readAt: new Date().toISOString() },
+          });
+        }
+      });
+
+    globalTypingCh.subscribe();
+
+    const readDbChannel = supabase
+      .channel(`read-db:${chatId}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'chat_read_state', filter: `chat_id=eq.${chatId}` },
+        (payload: any) => {
+          const row = payload.new;
+          if (row && row.user_id !== me.id && row.last_read_at) {
+            setPartnerLastReadAt(row.last_read_at);
+          }
+        }
+      )
       .subscribe();
 
     return () => {
       supabase.removeChannel(typingChannel);
+      supabase.removeChannel(globalTypingCh);
+      supabase.removeChannel(readDbChannel);
+      typingChannelRef.current = null;
+      globalTypingChannelRef.current = null;
     };
   }, [chatId, me?.id]);
 
@@ -594,14 +868,29 @@ function ChatWindowInner() {
     } catch {}
   }
 
+  // Фильтрация сообщений по выбранной теме (Топику), если включён режим с темами (Пункт 8)
+  const visibleMessages = useMemo(() => {
+    if (channelGroupCfg.structureMode !== 'topics' || activeTopicId === 'all') {
+      return messages;
+    }
+    return messages.filter((m) => {
+      const { cleanText } = extractSelfDestructInfo(m.text || '');
+      const { topicId } = extractTopicFromText(cleanText);
+      if (!topicId) {
+        return activeTopicId === channelGroupCfg.topics[0]?.id || activeTopicId === 'general';
+      }
+      return topicId === activeTopicId;
+    });
+  }, [messages, channelGroupCfg, activeTopicId]);
+
   // Поиск внутри чата (Пункт 6)
   const searchMatchedMessageIds = useMemo(() => {
     const q = chatSearchQuery.trim().toLowerCase();
     if (!q) return [];
-    return messages
+    return visibleMessages
       .filter((m) => !m.is_deleted && m.text?.toLowerCase().includes(q))
       .map((m) => m.id);
-  }, [messages, chatSearchQuery]);
+  }, [visibleMessages, chatSearchQuery]);
 
   function scrollToMessageById(msgId: string) {
     const el = messageRefs.current[msgId];
@@ -657,7 +946,11 @@ function ChatWindowInner() {
       return;
     }
 
-    const finalText = ttlSeconds > 0 ? encodeSelfDestructPrefix(ttlSeconds, rawDraft) : rawDraft;
+    const withTopic =
+      channelGroupCfg.structureMode === 'topics' && activeTopicId !== 'all'
+        ? encodeTopicPrefix(activeTopicId, rawDraft)
+        : rawDraft;
+    const finalText = ttlSeconds > 0 ? encodeSelfDestructPrefix(ttlSeconds, withTopic) : withTopic;
     setDraft('');
     await sendMessage(chatId, finalText, { replyToId: replyingTo?.id });
     setReplyingTo(null);
@@ -694,7 +987,8 @@ function ChatWindowInner() {
 
   async function handleCopy(message: Message) {
     const { cleanText } = extractSelfDestructInfo(message.text);
-    await navigator.clipboard.writeText(cleanText);
+    const { cleanText: withoutTopic } = extractTopicFromText(cleanText);
+    await navigator.clipboard.writeText(withoutTopic);
     setOpenMenuId(null);
     setNotice('Скопировано');
     setTimeout(() => setNotice(null), 1500);
@@ -772,6 +1066,7 @@ function ChatWindowInner() {
   const isSavedChat = isSavedMessagesChat(chat, me.id);
   const isGroupOrChannel = chat.type !== 'direct';
   const canPin = !isGroupOrChannel || myRole === 'owner';
+  const liveHeaderActivity = Object.values(typingUsers)[0] || null;
 
   return (
     <main
@@ -870,7 +1165,15 @@ function ChatWindowInner() {
                   isFrozen={otherProfile.frozen}
                 />
               </h2>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{otherLastSeen}</div>
+              <div
+                style={{
+                  fontSize: 12,
+                  color: liveHeaderActivity ? 'var(--accent)' : 'var(--text-muted)',
+                  fontWeight: liveHeaderActivity ? 600 : 400,
+                }}
+              >
+                {liveHeaderActivity ? `✍️ ${liveHeaderActivity}` : otherLastSeen}
+              </div>
             </div>
           </Link>
         ) : (
@@ -897,8 +1200,16 @@ function ChatWindowInner() {
                 {chat.title ?? 'Чат'}
                 {chat.is_verified && <VerifiedBadge size={14} />}
               </h2>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-                {memberCount} {chat.type === 'channel' ? 'подписчиков' : 'участников'}
+              <div
+                style={{
+                  fontSize: 12,
+                  color: liveHeaderActivity ? 'var(--accent)' : 'var(--text-muted)',
+                  fontWeight: liveHeaderActivity ? 600 : 400,
+                }}
+              >
+                {liveHeaderActivity
+                  ? `✍️ ${liveHeaderActivity}`
+                  : `${memberCount} ${chat.type === 'channel' ? 'подписчиков' : 'участников'}`}
               </div>
             </div>
           </Link>
@@ -942,6 +1253,26 @@ function ChatWindowInner() {
             </>
           )}
 
+          {/* Пункт 4: Голосовой чат в группах (звонит всем участникам группы) */}
+          {chat.type === 'group' && (
+            <button
+              type="button"
+              className="e2ee-badge-btn"
+              onClick={() =>
+                startPixChatsGroupCall({
+                  chatId: chat.id,
+                  chatTitle: chat.title || 'Группа',
+                  chatAvatar: chat.avatar_url,
+                  mode: 'audio',
+                })
+              }
+              title="Начать голосовой чат группы (вызов поступит всем участникам)"
+            >
+              <span>🔊</span>
+              <span>Голосовой чат</span>
+            </button>
+          )}
+
           <button
             type="button"
             className="e2ee-badge-btn"
@@ -972,6 +1303,49 @@ function ChatWindowInner() {
           </button>
         </div>
       </header>
+
+      {/* Пункт 8: Горизонтальная панель тем (Топиков), если создатель выбрал режим «С темами» */}
+      {isGroupOrChannel && channelGroupCfg.structureMode === 'topics' && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '7px 14px',
+            background: 'var(--surface)',
+            borderBottom: '1px solid var(--border)',
+            overflowX: 'auto',
+          }}
+        >
+          <button
+            type="button"
+            className={`folder-tab ${activeTopicId === 'all' ? 'active' : ''}`}
+            onClick={() => setActiveTopicId('all')}
+          >
+            🗂️ Все темы
+          </button>
+          {channelGroupCfg.topics.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              className={`folder-tab ${activeTopicId === t.id ? 'active' : ''}`}
+              onClick={() => setActiveTopicId(t.id)}
+            >
+              {t.icon} #{t.title}
+            </button>
+          ))}
+          {canModerate && (
+            <button
+              type="button"
+              className="folder-tab"
+              onClick={() => setShowNewTopicQuickModal(true)}
+              title="Добавить новую тему"
+            >
+              + Тема
+            </button>
+          )}
+        </div>
+      )}
 
       {showChatSearch && (
         <div
@@ -1046,7 +1420,7 @@ function ChatWindowInner() {
           style={{ cursor: 'pointer' }}
           onClick={() => scrollToMessageById(pinnedMessage.id)}
         >
-          <span>📌 {extractSelfDestructInfo(pinnedMessage.text).cleanText}</span>
+          <span>📌 {extractTopicFromText(extractSelfDestructInfo(pinnedMessage.text).cleanText).cleanText}</span>
           {canPin && (
             <button
               className="btn-ghost"
@@ -1064,20 +1438,52 @@ function ChatWindowInner() {
 
       {notice && <div className="toast">{notice}</div>}
 
-      <div className="chat-messages" onClick={() => setOpenMenuId(null)}>
-        {messages.map((m, i) => {
-          const prev = messages[i - 1];
+      <div
+        className="chat-messages"
+        onClick={() => {
+          setOpenMenuId(null);
+          setShowToolsMenu(false);
+        }}
+      >
+        {visibleMessages.map((m, i) => {
+          const prev = visibleMessages[i - 1];
           const showDateDivider = !prev || new Date(prev.sent_at).toDateString() !== new Date(m.sent_at).toDateString();
           const isMine = m.sender_id === me.id;
           const replySource = m.reply_to_id ? messages.find((x) => x.id === m.reply_to_id) : null;
           const sender = isGroupOrChannel && !isMine ? senderProfiles[m.sender_id] : null;
           const showSenderHeader = sender && (!prev || prev.sender_id !== m.sender_id || showDateDivider);
 
-          // Отделяем служебные голоса опросов (📊1, 📊2...) от обычных эмодзи-реакций
+          // Отделяем служебные голоса опросов (📊1, 📊2...) и комментарии (💬:...) от обычных эмодзи-реакций
           const msgReactions = reactions[m.id] || {};
           const regularReactionsEntries = Object.entries(msgReactions).filter(
-            ([emoji]) => !emoji.startsWith('📊')
+            ([emoji]) => !emoji.startsWith('📊') && !emoji.startsWith('💬:')
           );
+          const postComments =
+            chat.type === 'channel' && channelGroupCfg.commentsEnabled
+              ? extractPostCommentsFromReactions(m.id, msgReactions)
+              : [];
+
+          // Извлекаем тему и проверяем тег дедуплицированного стикера [STICKER:id]
+          const { cleanText: afterTtl } = extractSelfDestructInfo(m.text || '');
+          const { topicId: msgTopicId, cleanText: cleanTopicText } = extractTopicFromText(afterTtl);
+          const msgTopicObj = msgTopicId
+            ? channelGroupCfg.topics.find((t) => t.id === msgTopicId)
+            : null;
+          const deduplicatedSticker = resolveStickerFromText(cleanTopicText);
+          const isVideoNote =
+            m.message_type === 'video' &&
+            Boolean(m.media_path) &&
+            (m.caption === '__VIDEONOTE__' || m.text?.startsWith('__VIDEONOTE__'));
+
+          const isReadByPartner =
+            isSavedChat ||
+            Boolean(partnerLastReadAt && new Date(partnerLastReadAt).getTime() >= new Date(m.sent_at).getTime());
+
+          // Пересобираем текст без префикса [TOPIC:id] для рендера
+          const displayRawText =
+            msgTopicId && m.text
+              ? m.text.replace(`[TOPIC:${msgTopicId}]`, '')
+              : m.text;
 
           return (
             <div key={m.id}>
@@ -1113,6 +1519,22 @@ function ChatWindowInner() {
                       {sender!.display_name}
                     </Link>
                   )}
+
+                  {msgTopicObj && activeTopicId === 'all' && (
+                    <div
+                      style={{
+                        fontSize: 11,
+                        color: 'var(--accent)',
+                        fontWeight: 700,
+                        marginBottom: 3,
+                        cursor: 'pointer',
+                      }}
+                      onClick={() => setActiveTopicId(msgTopicObj.id)}
+                    >
+                      {msgTopicObj.icon} #{msgTopicObj.title}
+                    </div>
+                  )}
+
                   <div
                     onClick={(e) => {
                       e.stopPropagation();
@@ -1130,14 +1552,45 @@ function ChatWindowInner() {
                           scrollToMessageById(replySource.id);
                         }}
                       >
-                        ↩ {extractSelfDestructInfo(replySource.text).cleanText}
+                        ↩ {extractTopicFromText(extractSelfDestructInfo(replySource.text).cleanText).cleanText}
                       </div>
                     )}
                     {m.forwarded_from_chat_id && <div className="forwarded-label">Переслано</div>}
 
-                    {m.caption && m.caption_position === 'above' && <div className="media-caption">{m.caption}</div>}
+                    {m.caption && m.caption !== '__VIDEONOTE__' && m.caption_position === 'above' && (
+                      <div className="media-caption">{m.caption}</div>
+                    )}
 
-                    {m.message_type === 'image' && m.media_path ? (
+                    {/* Пункт 10: Дедуплицированный по ID стикер ([STICKER:id]) */}
+                    {deduplicatedSticker ? (
+                      <img
+                        src={deduplicatedSticker.dataUrl}
+                        alt={deduplicatedSticker.title}
+                        className="media-sticker"
+                        title={deduplicatedSticker.title}
+                      />
+                    ) : isVideoNote && m.media_path ? (
+                      /* Пункт 1: Видеосообщение в кружочке (Video Note) */
+                      <div
+                        className={`video-note-bubble ${expandedVideoNoteIds[m.id] ? 'expanded' : ''}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setExpandedVideoNoteIds((prev) => ({ ...prev, [m.id]: !prev[m.id] }));
+                        }}
+                        title="Нажмите, чтобы включить/выключить звук и увеличить кружочек"
+                      >
+                        <video
+                          src={m.media_path}
+                          autoPlay
+                          loop
+                          playsInline
+                          muted={!expandedVideoNoteIds[m.id]}
+                        />
+                        <span className="video-note-badge">
+                          {expandedVideoNoteIds[m.id] ? '🔊 Звук вкл' : '🔇 Нажмите для звука'}
+                        </span>
+                      </div>
+                    ) : m.message_type === 'image' && m.media_path ? (
                       <img
                         src={m.media_path}
                         alt={m.text}
@@ -1199,7 +1652,7 @@ function ChatWindowInner() {
                     ) : (
                       <FormattedMessageText
                         messageId={m.id}
-                        rawText={m.text}
+                        rawText={displayRawText}
                         editedAt={m.edited_at}
                         isDeleted={m.is_deleted}
                         myUserId={me.id}
@@ -1209,10 +1662,47 @@ function ChatWindowInner() {
                       />
                     )}
 
-                    {m.caption && m.caption_position === 'below' && <div className="media-caption">{m.caption}</div>}
+                    {m.caption && m.caption !== '__VIDEONOTE__' && m.caption_position === 'below' && (
+                      <div className="media-caption">{m.caption}</div>
+                    )}
 
-                    <div className="bubble-time-standalone">{formatMessageTime(m.sent_at)}</div>
+                    <div className="bubble-time-standalone">
+                      <span>{formatMessageTime(m.sent_at)}</span>
+                      {/* Пункт 3: Статус прочтения (✓ доставлено / ✓✓ прочитано) */}
+                      {isMine && !m.is_deleted && (
+                        <span
+                          className={`read-receipt-ticks ${isReadByPartner ? 'read' : 'sent'}`}
+                          title={isReadByPartner ? 'Прочитано' : 'Доставлено'}
+                        >
+                          {isReadByPartner ? '✓✓' : '✓'}
+                        </span>
+                      )}
+                    </div>
                   </div>
+
+                  {/* Пункт 8: Кнопка комментариев под постами канала (если комментарии включены создателем) */}
+                  {chat.type === 'channel' && channelGroupCfg.commentsEnabled && !m.is_deleted && (
+                    <div style={{ marginTop: 6 }}>
+                      <button
+                        type="button"
+                        className="btn"
+                        style={{
+                          width: 'auto',
+                          padding: '4px 10px',
+                          fontSize: 12,
+                          borderRadius: 999,
+                          borderColor: postComments.length > 0 ? 'var(--accent)' : undefined,
+                          color: postComments.length > 0 ? 'var(--accent)' : 'var(--text-muted)',
+                        }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActiveCommentsPost(m);
+                        }}
+                      >
+                        💬 Комментарии ({postComments.length})
+                      </button>
+                    </div>
+                  )}
 
                   {regularReactionsEntries.length > 0 && (
                     <div className={`reactions-row ${isMine ? 'mine' : ''}`}>
@@ -1316,7 +1806,13 @@ function ChatWindowInner() {
                         </button>
                       )}
                       {isMine && (
-                        <button onClick={() => { setEditingMessage(m); setDraft(extractSelfDestructInfo(m.text).cleanText); setOpenMenuId(null); }}>
+                        <button
+                          onClick={() => {
+                            setEditingMessage(m);
+                            setDraft(extractTopicFromText(extractSelfDestructInfo(m.text).cleanText).cleanText);
+                            setOpenMenuId(null);
+                          }}
+                        >
                           <EditIcon size={15} /> Изменить
                         </button>
                       )}
@@ -1384,7 +1880,7 @@ function ChatWindowInner() {
                       hour: '2-digit',
                       minute: '2-digit',
                     })}
-                    ] {extractSelfDestructInfo(sm.text).cleanText}
+                    ] {extractTopicFromText(extractSelfDestructInfo(sm.text).cleanText).cleanText}
                   </span>
                   <span style={{ display: 'inline-flex', gap: 6, flexShrink: 0 }}>
                     <button
@@ -1414,7 +1910,7 @@ function ChatWindowInner() {
               <span>
                 {editingMessage
                   ? '✎ Редактирование'
-                  : `↩ Ответ: ${extractSelfDestructInfo(replyingTo?.text || '').cleanText}`}
+                  : `↩ Ответ: ${extractTopicFromText(extractSelfDestructInfo(replyingTo?.text || '').cleanText).cleanText}`}
               </span>
               <button
                 className="btn-ghost"
@@ -1522,6 +2018,14 @@ function ChatWindowInner() {
               >
                 || Спойлер ||
               </button>
+              <button
+                type="button"
+                className="btn-ghost"
+                style={{ width: 'auto', marginLeft: 'auto', fontSize: 12 }}
+                onClick={() => setShowFormatToolbar(false)}
+              >
+                ✕
+              </button>
             </div>
           )}
 
@@ -1532,7 +2036,7 @@ function ChatWindowInner() {
                 <span className="dot" />
                 <span className="dot" />
               </span>
-              <span>{Object.values(typingUsers).join(', ')} печатает...</span>
+              <span>{Object.values(typingUsers).join(', ')}</span>
             </div>
           )}
 
@@ -1549,13 +2053,130 @@ function ChatWindowInner() {
               </div>
             )}
 
+            {/* Компактное всплывающее меню «+» со всеми инструментами (освобождает 80% ширины под поле текста!) */}
+            {showToolsMenu && (
+              <div
+                className="card"
+                style={{
+                  position: 'absolute',
+                  bottom: 'calc(100% + 8px)',
+                  left: 10,
+                  zIndex: 85,
+                  width: 280,
+                  padding: 8,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 4,
+                  boxShadow: '0 12px 32px rgba(0,0,0,0.65)',
+                }}
+              >
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ justifyContent: 'flex-start', gap: 10, fontSize: 13 }}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <span>📎</span>
+                  <span>Фото, видео или файл</span>
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ justifyContent: 'flex-start', gap: 10, fontSize: 13 }}
+                  onClick={() => {
+                    setShowToolsMenu(false);
+                    void openVideoNoteRecorder();
+                  }}
+                >
+                  <span>🎥</span>
+                  <span>Видеокружок (Video Note)</span>
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ justifyContent: 'flex-start', gap: 10, fontSize: 13 }}
+                  onClick={() => {
+                    setShowToolsMenu(false);
+                    setShowPollModal(true);
+                  }}
+                >
+                  <span>📊</span>
+                  <span>Создать опрос</span>
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ justifyContent: 'flex-start', gap: 10, fontSize: 13 }}
+                  onClick={() => {
+                    setShowToolsMenu(false);
+                    setShowFormatToolbar((v) => !v);
+                  }}
+                >
+                  <span>Aa</span>
+                  <span>Форматирование текста</span>
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ justifyContent: 'flex-start', gap: 10, fontSize: 13 }}
+                  onClick={() => {
+                    setShowToolsMenu(false);
+                    setShowTimerPopover((v) => !v);
+                  }}
+                >
+                  <span>{ttlSeconds > 0 ? '🔥' : '⏱️'}</span>
+                  <span>
+                    Таймер автоудаления {ttlSeconds > 0 ? `(${ttlSeconds}с)` : ''} и отложенные
+                  </span>
+                </button>
+                <div style={{ display: 'flex', gap: 6, marginTop: 2 }}>
+                  <button
+                    type="button"
+                    className="btn"
+                    style={{ flex: 1, fontSize: 11.5, padding: '6px 8px' }}
+                    onClick={() => {
+                      setShowToolsMenu(false);
+                      exportChatHistory(
+                        isSavedChat ? 'Избранное' : otherProfile?.display_name || chat.title || 'Чат',
+                        messages,
+                        me,
+                        senderProfiles,
+                        otherProfile,
+                        'html'
+                      );
+                    }}
+                  >
+                    📥 Экспорт HTML
+                  </button>
+                  <button
+                    type="button"
+                    className="btn"
+                    style={{ flex: 1, fontSize: 11.5, padding: '6px 8px' }}
+                    onClick={() => {
+                      setShowToolsMenu(false);
+                      exportChatHistory(
+                        isSavedChat ? 'Избранное' : otherProfile?.display_name || chat.title || 'Чат',
+                        messages,
+                        me,
+                        senderProfiles,
+                        otherProfile,
+                        'json'
+                      );
+                    }}
+                  >
+                    📥 Экспорт JSON
+                  </button>
+                </div>
+              </div>
+            )}
+
             {showTimerPopover && (
               <div
                 className="card"
                 style={{
                   position: 'absolute',
                   bottom: 'calc(100% + 8px)',
-                  right: 12,
+                  left: 12,
                   zIndex: 80,
                   width: 300,
                   padding: 14,
@@ -1645,37 +2266,22 @@ function ChatWindowInner() {
               </div>
             )}
 
+            {/* Оптимизированная широкая панель ввода: только 1 кнопка «+» слева, огромное текстовое поле по центру и эмодзи + отправка/запись справа */}
             <form onSubmit={handleSend} className="chat-composer-unified-bar">
               <button
                 type="button"
-                className="composer-inner-btn"
-                onClick={() => fileInputRef.current?.click()}
+                className={`composer-inner-btn ${showToolsMenu || ttlSeconds > 0 ? 'active' : ''}`}
+                onClick={() => {
+                  setShowEmoji(false);
+                  setShowTimerPopover(false);
+                  setShowToolsMenu((v) => !v);
+                }}
                 disabled={uploading}
-                title="Прикрепить файл (или перетащите файл в чат)"
+                title="Вложения, опросы, кружочки, таймер и инструменты"
               >
-                <PaperclipIcon size={18} />
+                {ttlSeconds > 0 ? <span style={{ fontSize: 15 }}>🔥</span> : <PaperclipIcon size={18} />}
               </button>
               <input ref={fileInputRef} type="file" style={{ display: 'none' }} onChange={handleFileSelected} />
-
-              <button
-                type="button"
-                className="composer-inner-btn"
-                onClick={() => setShowPollModal(true)}
-                title="Создать опрос / голосование"
-                style={{ fontSize: 15 }}
-              >
-                📊
-              </button>
-
-              <button
-                type="button"
-                className={`composer-inner-btn ${showFormatToolbar ? 'active' : ''}`}
-                onClick={() => setShowFormatToolbar((v) => !v)}
-                title="Форматирование текста (Жирный, Курсив, Код, Спойлер)"
-                style={{ fontSize: 12, fontWeight: 800 }}
-              >
-                Aa
-              </button>
 
               <textarea
                 className="composer-unified-textarea"
@@ -1692,25 +2298,21 @@ function ChatWindowInner() {
                     ? 'Подпись к файлу…'
                     : ttlSeconds > 0
                       ? `🔥 Исчезающее сообщение (${ttlSeconds}с)…`
-                      : 'Сообщение…'
+                      : channelGroupCfg.structureMode === 'topics' && activeTopicId !== 'all'
+                        ? `Сообщение в #${channelGroupCfg.topics.find((t) => t.id === activeTopicId)?.title || 'тему'}…`
+                        : 'Написать сообщение…'
                 }
                 rows={1}
               />
 
               <button
                 type="button"
-                className={`composer-inner-btn ${showTimerPopover || ttlSeconds > 0 ? 'active' : ''}`}
-                onClick={() => setShowTimerPopover((v) => !v)}
-                title="Таймер исчезающих сообщений и отложенная отправка"
-                style={{ fontSize: 14 }}
-              >
-                {ttlSeconds > 0 ? '🔥' : '⏱️'}
-              </button>
-
-              <button
-                type="button"
                 className={`composer-inner-btn ${showEmoji ? 'active' : ''}`}
-                onClick={() => setShowEmoji((v) => !v)}
+                onClick={() => {
+                  setShowToolsMenu(false);
+                  setShowTimerPopover(false);
+                  setShowEmoji((v) => !v);
+                }}
                 title="Эмодзи, стикеры и GIF"
               >
                 <SmileIcon size={18} />
@@ -1725,25 +2327,213 @@ function ChatWindowInner() {
                   <SendIcon size={16} />
                 </button>
               ) : (
-                <button
-                  type="button"
-                  className={`composer-inner-btn ${isRecording ? 'recording' : ''}`}
-                  onClick={isRecording ? stopRecording : startRecording}
-                  disabled={uploading}
-                  title={isRecording ? 'Остановить запись' : 'Голосовое сообщение'}
-                >
-                  {isRecording ? <StopIcon size={18} /> : <MicIcon size={18} />}
-                </button>
+                <>
+                  <button
+                    type="button"
+                    className="composer-inner-btn"
+                    onClick={() => void openVideoNoteRecorder()}
+                    disabled={uploading || isRecording}
+                    title="Записать круглое видеосообщение (кружочек)"
+                    style={{ fontSize: 15 }}
+                  >
+                    🎥
+                  </button>
+                  <button
+                    type="button"
+                    className={`composer-inner-btn ${isRecording ? 'recording' : ''}`}
+                    onClick={isRecording ? stopRecording : startRecording}
+                    disabled={uploading}
+                    title={isRecording ? 'Остановить запись' : 'Голосовое сообщение'}
+                  >
+                    {isRecording ? <StopIcon size={18} /> : <MicIcon size={18} />}
+                  </button>
+                </>
               )}
             </form>
           </div>
         </>
       ) : (
         <div className="subscriber-notice" style={{ display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'center' }}>
-          <span>Вы подписчик канала — писать могут только владелец и администраторы</span>
+          <span>
+            Вы подписчик канала — публиковать посты могут владелец и администраторы
+            {channelGroupCfg.commentsEnabled ? ' (вы можете оставлять комментарии под постами 💬)' : ''}
+          </span>
           <button className="btn" style={{ width: 'auto' }} onClick={handleUnsubscribe}>
             Отписаться
           </button>
+        </div>
+      )}
+
+      {/* Пункт 1: Модальное окно записи видеосообщения в кружочке (Video Note) */}
+      {showVideoNoteModal && (
+        <div className="modal-overlay" style={{ zIndex: 9999 }} onClick={() => cleanupVideoNoteStream()}>
+          <div
+            className="modal-card"
+            style={{ maxWidth: 340, textAlign: 'center', padding: 24 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--accent)', marginBottom: 12 }}>
+              🎥 Запись видеокружка · 00:{String(videoNoteSeconds).padStart(2, '0')}
+            </div>
+
+            <div
+              style={{
+                width: 224,
+                height: 224,
+                borderRadius: '50%',
+                overflow: 'hidden',
+                margin: '0 auto 18px',
+                border: '4px solid var(--accent)',
+                boxShadow: '0 0 0 8px rgba(255, 212, 0, 0.16)',
+                background: '#000',
+              }}
+            >
+              <video
+                ref={videoNotePreviewRef}
+                autoPlay
+                muted
+                playsInline
+                style={{ width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)' }}
+              />
+            </div>
+
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
+              <button
+                type="button"
+                className="btn"
+                style={{ flex: 1 }}
+                onClick={() => cleanupVideoNoteStream()}
+              >
+                ✕ Отмена
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                style={{ flex: 1 }}
+                onClick={() => void finishAndSendVideoNote()}
+              >
+                ➤ Отправить
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Пункт 8: Модальное окно комментариев к посту в канале */}
+      {activeCommentsPost && (
+        <div className="modal-overlay" onClick={() => setActiveCommentsPost(null)}>
+          <div
+            className="modal-card"
+            style={{ maxWidth: 460, width: '100%', maxHeight: '82vh', display: 'flex', flexDirection: 'column' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+              <h3 style={{ margin: 0, fontSize: 17 }}>💬 Комментарии к записи</h3>
+              <button
+                type="button"
+                className="btn-ghost"
+                style={{ width: 'auto', padding: '4px 8px' }}
+                onClick={() => setActiveCommentsPost(null)}
+              >
+                ✕
+              </button>
+            </div>
+
+            <div
+              style={{
+                padding: '8px 12px',
+                borderRadius: 8,
+                background: 'var(--bg-secondary)',
+                borderLeft: '3px solid var(--accent)',
+                fontSize: 12.5,
+                color: 'var(--text-muted)',
+                marginBottom: 12,
+                maxHeight: 64,
+                overflow: 'hidden',
+              }}
+            >
+              {extractTopicFromText(extractSelfDestructInfo(activeCommentsPost.text).cleanText).cleanText}
+            </div>
+
+            <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
+              {extractPostCommentsFromReactions(
+                activeCommentsPost.id,
+                reactions[activeCommentsPost.id] || {}
+              ).length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '24px 12px', color: 'var(--text-muted)', fontSize: 13 }}>
+                  Пока нет комментариев. Будьте первым!
+                </div>
+              ) : (
+                extractPostCommentsFromReactions(
+                  activeCommentsPost.id,
+                  reactions[activeCommentsPost.id] || {}
+                ).map((cmt) => (
+                  <div
+                    key={cmt.id}
+                    style={{
+                      padding: '8px 12px',
+                      borderRadius: 10,
+                      background: 'var(--surface-raised)',
+                      border: '1px solid var(--border)',
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11.5, marginBottom: 4 }}>
+                      <strong style={{ color: 'var(--accent)' }}>{cmt.userName}</strong>
+                      <span style={{ color: 'var(--text-muted)' }}>
+                        {new Date(cmt.createdAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 13.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{cmt.text}</div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <form onSubmit={handleSendPostComment} style={{ display: 'flex', gap: 8 }}>
+              <input
+                type="text"
+                className="input"
+                style={{ flex: 1 }}
+                placeholder="Написать комментарий…"
+                value={commentDraft}
+                onChange={(e) => setCommentDraft(e.target.value)}
+                required
+              />
+              <button type="submit" className="btn btn-primary" style={{ width: 'auto', padding: '0 16px' }}>
+                ➤
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Пункт 8: Быстрое добавление новой темы (Топика) из шапки */}
+      {showNewTopicQuickModal && (
+        <div className="modal-overlay" onClick={() => setShowNewTopicQuickModal(false)}>
+          <div className="modal-card" style={{ maxWidth: 360 }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ marginTop: 0 }}>🗂️ Новая тема (Топик)</h3>
+            <form onSubmit={handleQuickAddTopic}>
+              <div className="field">
+                <label>Название темы</label>
+                <input
+                  className="input"
+                  placeholder="Например: Мероприятия, Мемы, Важное"
+                  value={quickTopicName}
+                  onChange={(e) => setQuickTopicName(e.target.value)}
+                  required
+                  autoFocus
+                />
+              </div>
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                <button type="button" className="btn" style={{ width: 'auto' }} onClick={() => setShowNewTopicQuickModal(false)}>
+                  Отмена
+                </button>
+                <button type="submit" className="btn btn-primary" style={{ width: 'auto' }}>
+                  Создать
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
 
@@ -2011,7 +2801,7 @@ function ChatWindowInner() {
                 style={{ width: 'auto' }}
                 onClick={() => setShowE2EEModal(false)}
               >
-                Закрыть
+                Отмена
               </button>
               <button
                 type="button"
@@ -2019,14 +2809,15 @@ function ChatWindowInner() {
                 style={{ width: 'auto' }}
                 onClick={async () => {
                   setChatCustomPassphrase(chatId, customPassInput);
+                  setShowE2EEModal(false);
                   const refreshed = await getMessages(chatId);
                   setMessages(refreshed);
-                  if (me) {
-                    setE2eeFingerprint(await getChatSafetyFingerprint(chatId, me.id, otherProfile?.id));
-                  }
-                  setShowE2EEModal(false);
-                  setNotice(customPassInput.trim() ? 'Личный ключ E2EE применён' : 'Включён стандартный ключ E2EE');
-                  setTimeout(() => setNotice(null), 2000);
+                  setNotice(
+                    customPassInput.trim()
+                      ? '🔒 Секретный пароль шифрования применён'
+                      : '🔒 Используется стандартный ключ шифрования чата'
+                  );
+                  setTimeout(() => setNotice(null), 2200);
                 }}
               >
                 Сохранить ключ
@@ -2039,7 +2830,7 @@ function ChatWindowInner() {
   );
 }
 
-export default function ChatWindowPage() {
+export default function ChatPage() {
   return (
     <DesktopShell>
       <Suspense fallback={<Loading />}>

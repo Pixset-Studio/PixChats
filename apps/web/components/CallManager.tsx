@@ -4,7 +4,10 @@ import React, { useEffect, useRef, useState } from 'react';
 import { getCurrentProfile, getSupabaseClient, sendMessage } from '@pixchats/core';
 import type { Profile } from '@pixchats/core';
 import { getNotificationPrefs } from '../lib/notificationPrefs';
-import { sendNativeOrWebNotification } from '../lib/nativePlatform';
+import {
+  triggerIncomingCallNativeAlert,
+  stopIncomingCallNativeAlert,
+} from '../lib/nativePlatform';
 
 export interface StartCallParams {
   targetUserId: string;
@@ -14,9 +17,29 @@ export interface StartCallParams {
   mode: 'audio' | 'video';
 }
 
+export interface StartGroupCallParams {
+  chatId: string;
+  chatTitle: string;
+  chatAvatar?: string | null;
+  mode?: 'audio' | 'video';
+}
+
 export function startPixChatsCall(params: StartCallParams): void {
   if (typeof window === 'undefined') return;
   window.dispatchEvent(new CustomEvent<StartCallParams>('pixchats:start_call', { detail: params }));
+}
+
+export function startPixChatsGroupCall(params: StartGroupCallParams): void {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(
+    new CustomEvent<StartGroupCallParams>('pixchats:start_group_call', { detail: params })
+  );
+}
+
+interface CallParticipant {
+  id: string;
+  name: string;
+  avatar?: string | null;
 }
 
 interface ActiveCallSession {
@@ -28,6 +51,7 @@ interface ActiveCallSession {
   mode: 'audio' | 'video';
   direction: 'outgoing' | 'incoming';
   status: 'ringing' | 'connecting' | 'connected';
+  isGroup?: boolean;
 }
 
 const RTC_CONFIG: RTCConfiguration = {
@@ -46,6 +70,73 @@ function formatDuration(sec: number): string {
   return `${m}:${s}`;
 }
 
+/**
+ * Генерирует компактный WAV-файл мелодии вызова в памяти (Data URI),
+ * чтобы рингтон гарантированно звучал через HTML5 <audio> на мобильных устройствах и ПК.
+ */
+function createRingtoneWavDataUrl(isIncoming: boolean): string {
+  try {
+    const sampleRate = 8000;
+    const durationSec = 1.6;
+    const numSamples = Math.floor(sampleRate * durationSec);
+    const buffer = new ArrayBuffer(44 + numSamples * 2);
+    const view = new DataView(buffer);
+
+    const writeStr = (offset: number, str: string) => {
+      for (let i = 0; i < str.length; i++) {
+        view.setUint8(offset + i, str.charCodeAt(i));
+      }
+    };
+
+    writeStr(0, 'RIFF');
+    view.setUint32(4, 36 + numSamples * 2, true);
+    writeStr(8, 'WAVE');
+    writeStr(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true); // PCM
+    view.setUint16(22, 1, true); // Mono
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeStr(36, 'data');
+    view.setUint32(40, numSamples * 2, true);
+
+    for (let i = 0; i < numSamples; i++) {
+      const t = i / sampleRate;
+      let sample = 0;
+      if (isIncoming) {
+        // Фирменная трёхнотная мелодия звонка PixChats (C5 -> E5 -> G5 -> C6)
+        if (t < 0.22) {
+          sample = Math.sin(2 * Math.PI * 523.25 * t) * 0.35;
+        } else if (t >= 0.24 && t < 0.46) {
+          sample = Math.sin(2 * Math.PI * 659.25 * t) * 0.35;
+        } else if (t >= 0.48 && t < 0.72) {
+          sample = Math.sin(2 * Math.PI * 783.99 * t) * 0.38;
+        } else if (t >= 0.75 && t < 1.1) {
+          sample = Math.sin(2 * Math.PI * 1046.5 * t) * Math.exp(-(t - 0.75) * 4) * 0.4;
+        }
+      } else {
+        // Гудок исходящего вызова (440 Гц)
+        if (t < 0.7) {
+          sample = Math.sin(2 * Math.PI * 440 * t) * 0.25;
+        }
+      }
+      const pcm = Math.max(-1, Math.min(1, sample));
+      view.setInt16(44 + i * 2, pcm * 32767, true);
+    }
+
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    for (let i = 0; i < bytes.byteLength; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return `data:audio/wav;base64,${btoa(binary)}`;
+  } catch {
+    return '';
+  }
+}
+
 export function CallManager() {
   const [me, setMe] = useState<Profile | null>(null);
   const [session, setSession] = useState<ActiveCallSession | null>(null);
@@ -55,6 +146,7 @@ export function CallManager() {
   const [screenSharing, setScreenSharing] = useState(false);
   const [durationSec, setDurationSec] = useState(0);
   const [hasRemoteVideo, setHasRemoteVideo] = useState(false);
+  const [groupParticipants, setGroupParticipants] = useState<CallParticipant[]>([]);
 
   const sessionRef = useRef<ActiveCallSession | null>(null);
   sessionRef.current = session;
@@ -69,19 +161,65 @@ export function CallManager() {
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const ringtoneTimerRef = useRef<any>(null);
+  const ringtoneAudioElRef = useRef<HTMLAudioElement | null>(null);
+  const sharedAudioCtxRef = useRef<AudioContext | null>(null);
   const durationRef = useRef<number>(0);
 
-  // Звуковой сигнал вызова (Web Audio API)
+  // Разблокируем аудио-движок при первом касании экрана на телефоне/ПК
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const unlockAudio = () => {
+      try {
+        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+        if (AudioCtx && !sharedAudioCtxRef.current) {
+          sharedAudioCtxRef.current = new AudioCtx();
+        }
+        if (sharedAudioCtxRef.current?.state === 'suspended') {
+          void sharedAudioCtxRef.current.resume();
+        }
+      } catch {}
+    };
+    window.addEventListener('pointerdown', unlockAudio, { passive: true });
+    window.addEventListener('touchstart', unlockAudio, { passive: true });
+    window.addEventListener('keydown', unlockAudio, { passive: true });
+    return () => {
+      window.removeEventListener('pointerdown', unlockAudio);
+      window.removeEventListener('touchstart', unlockAudio);
+      window.removeEventListener('keydown', unlockAudio);
+    };
+  }, []);
+
+  // Звуковой сигнал вызова (HTML5 WAV + Web Audio API + Вибрация)
   function startRingtone(isIncoming: boolean) {
     stopRingtone();
     const prefs = getNotificationPrefs();
     if (!prefs.sound) return;
 
+    // 1. HTML5 Audio loop (надёжно работает на мобильных браузерах и в WebView)
+    try {
+      const wavUrl = createRingtoneWavDataUrl(isIncoming);
+      if (wavUrl) {
+        const audio = new Audio(wavUrl);
+        audio.loop = true;
+        audio.volume = 0.85;
+        void audio.play().catch(() => {});
+        ringtoneAudioElRef.current = audio;
+      }
+    } catch {}
+
+    // 2. Дублирующий синтезатор Web Audio API + периодическая вибрация на телефонах
     const playTone = () => {
       try {
+        if (isIncoming && typeof navigator !== 'undefined' && navigator.vibrate) {
+          navigator.vibrate([500, 250, 500]);
+        }
         const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
         if (!AudioCtx) return;
-        const ctx = new AudioCtx();
+        const ctx = sharedAudioCtxRef.current || new AudioCtx();
+        sharedAudioCtxRef.current = ctx;
+        if (ctx.state === 'suspended') {
+          void ctx.resume();
+        }
         const now = ctx.currentTime;
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
@@ -96,7 +234,7 @@ export function CallManager() {
         }
 
         gain.gain.setValueAtTime(0.001, now);
-        gain.gain.linearRampToValueAtTime(0.14, now + 0.04);
+        gain.gain.linearRampToValueAtTime(0.16, now + 0.04);
         gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.65);
 
         osc.connect(gain);
@@ -107,7 +245,7 @@ export function CallManager() {
     };
 
     playTone();
-    ringtoneTimerRef.current = setInterval(playTone, 2200);
+    ringtoneTimerRef.current = setInterval(playTone, 2000);
   }
 
   function stopRingtone() {
@@ -115,6 +253,14 @@ export function CallManager() {
       clearInterval(ringtoneTimerRef.current);
       ringtoneTimerRef.current = null;
     }
+    if (ringtoneAudioElRef.current) {
+      try {
+        ringtoneAudioElRef.current.pause();
+        ringtoneAudioElRef.current.src = '';
+      } catch {}
+      ringtoneAudioElRef.current = null;
+    }
+    stopIncomingCallNativeAlert();
   }
 
   // Таймер длительности активного разговора
@@ -207,6 +353,7 @@ export function CallManager() {
     setCameraEnabled(false);
     setScreenSharing(false);
     setHasRemoteVideo(false);
+    setGroupParticipants([]);
   }
 
   function createPeerConnection(callId: string, localStream: MediaStream): RTCPeerConnection {
@@ -250,8 +397,6 @@ export function CallManager() {
       if (pc.connectionState === 'connected') {
         stopRingtone();
         setSession((prev) => (prev ? { ...prev, status: 'connected' } : null));
-      } else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
-        // удерживаем сессию до явного завершения или восстановления
       }
     };
 
@@ -261,14 +406,36 @@ export function CallManager() {
 
   function joinSignalingRoom(activeSess: ActiveCallSession, isInitiator: boolean, localStream: MediaStream) {
     const supabase = getSupabaseClient();
-    const room = supabase.channel(`pixchats-call-room:${activeSess.callId}`);
+    const room = supabase.channel(`pixchats-call-room:${activeSess.callId}`, {
+      config: { presence: { key: me?.id || 'anon' } },
+    });
     roomChannelRef.current = room;
 
     const pc = createPeerConnection(activeSess.callId, localStream);
 
     room
+      .on('presence', { event: 'sync' }, () => {
+        try {
+          const state = room.presenceState();
+          const list: CallParticipant[] = [];
+          Object.values(state).forEach((entries: any) => {
+            if (Array.isArray(entries) && entries[0]) {
+              list.push({
+                id: entries[0].id,
+                name: entries[0].name,
+                avatar: entries[0].avatar,
+              });
+            }
+          });
+          setGroupParticipants(list);
+          if (activeSess.isGroup && list.length >= 1) {
+            stopRingtone();
+            setSession((prev) => (prev ? { ...prev, status: 'connected' } : null));
+          }
+        } catch {}
+      })
       .on('broadcast', { event: 'call-accepted' }, async ({ payload }) => {
-        if (!isInitiator || payload?.senderId === me?.id) return;
+        if (payload?.senderId === me?.id) return;
         stopRingtone();
         setSession((prev) => (prev ? { ...prev, status: 'connecting' } : null));
         try {
@@ -317,20 +484,31 @@ export function CallManager() {
         }
       })
       .on('broadcast', { event: 'hangup' }, () => {
-        cleanupCallResources();
+        if (!activeSess.isGroup) {
+          cleanupCallResources();
+        }
       })
-      .subscribe((status) => {
-        if (status === 'SUBSCRIBED' && !isInitiator) {
-          room.send({
-            type: 'broadcast',
-            event: 'call-accepted',
-            payload: { senderId: me?.id },
-          });
+      .subscribe(async (status) => {
+        if (status === 'SUBSCRIBED') {
+          if (me) {
+            await room.track({
+              id: me.id,
+              name: me.display_name,
+              avatar: me.avatar_url,
+            });
+          }
+          if (!isInitiator || activeSess.isGroup) {
+            room.send({
+              type: 'broadcast',
+              event: 'call-accepted',
+              payload: { senderId: me?.id },
+            });
+          }
         }
       });
   }
 
-  // Начать исходящий звонок
+  // Начать исходящий личный звонок
   async function handleStartOutgoingCall(params: StartCallParams) {
     if (!me || sessionRef.current) return;
 
@@ -344,6 +522,7 @@ export function CallManager() {
       mode: params.mode,
       direction: 'outgoing',
       status: 'ringing',
+      isGroup: false,
     };
 
     setSession(newSession);
@@ -369,6 +548,7 @@ export function CallManager() {
             callerName: me.display_name,
             callerAvatar: me.avatar_url,
             mode: params.mode,
+            isGroup: false,
           },
         });
         setTimeout(() => {
@@ -378,13 +558,82 @@ export function CallManager() {
     });
   }
 
+  // Начать групповой голосовой чат (Пункт 4: всем участникам группы приходит входящий вызов)
+  async function handleStartGroupCall(params: StartGroupCallParams) {
+    if (!me || sessionRef.current) return;
+
+    const callId = `group-call-${params.chatId}`;
+    const mode = params.mode ?? 'audio';
+    const newSession: ActiveCallSession = {
+      callId,
+      chatId: params.chatId,
+      peerId: params.chatId,
+      peerName: params.chatTitle || 'Голосовой чат группы',
+      peerAvatar: params.chatAvatar,
+      mode,
+      direction: 'outgoing',
+      status: 'connected',
+      isGroup: true,
+    };
+
+    setSession(newSession);
+
+    const localStream = await acquireLocalMedia(mode === 'video');
+    localStreamRef.current = localStream;
+
+    joinSignalingRoom(newSession, true, localStream);
+
+    // Оповещаем ВСЕХ участников группы: каждому отправляется входящий вызов с мелодией!
+    try {
+      const supabase = getSupabaseClient();
+      const { data: members } = await supabase
+        .from('chat_members')
+        .select('user_id')
+        .eq('chat_id', params.chatId);
+
+      const targetIds = (members ?? [])
+        .map((r: any) => r.user_id)
+        .filter((uid: string) => uid && uid !== me.id);
+
+      for (const uid of targetIds) {
+        const ch = supabase.channel(`pixchats-calls:${uid}`);
+        ch.subscribe((st) => {
+          if (st === 'SUBSCRIBED') {
+            ch.send({
+              type: 'broadcast',
+              event: 'call-invite',
+              payload: {
+                callId,
+                chatId: params.chatId,
+                callerId: me.id,
+                callerName: `🔊 ${params.chatTitle} (${me.display_name})`,
+                callerAvatar: params.chatAvatar || me.avatar_url,
+                mode,
+                isGroup: true,
+              },
+            });
+            setTimeout(() => {
+              supabase.removeChannel(ch);
+            }, 2500);
+          }
+        });
+      }
+
+      // Также отправляем сервисное уведомление в ленту группы
+      sendMessage(
+        params.chatId,
+        `🔊 ${me.display_name} запустил(а) голосовой чат группы — нажмите «🔊 Голосовой чат» в шапке, чтобы присоединиться!`
+      ).catch(() => {});
+    } catch {}
+  }
+
   // Принять входящий звонок
   async function handleAcceptIncomingCall() {
     const current = sessionRef.current;
     if (!current || !me) return;
 
     stopRingtone();
-    setSession({ ...current, status: 'connecting' });
+    setSession({ ...current, status: current.isGroup ? 'connected' : 'connecting' });
 
     const localStream = await acquireLocalMedia(current.mode === 'video');
     localStreamRef.current = localStream;
@@ -397,7 +646,7 @@ export function CallManager() {
     const current = sessionRef.current;
     const elapsed = durationRef.current;
 
-    if (roomChannelRef.current) {
+    if (roomChannelRef.current && !current?.isGroup) {
       try {
         roomChannelRef.current.send({
           type: 'broadcast',
@@ -407,8 +656,7 @@ export function CallManager() {
       } catch {}
     }
 
-    // Если звонок ещё на стадии вызова — уведомляем собеседника об отмене/отклонении
-    if (current && current.status === 'ringing') {
+    if (current && current.status === 'ringing' && !current.isGroup) {
       try {
         const supabase = getSupabaseClient();
         const peerCh = supabase.channel(`pixchats-calls:${current.peerId}`);
@@ -425,8 +673,7 @@ export function CallManager() {
       } catch {}
     }
 
-    // Записываем системное сообщение о звонке в чат, если была инициация из чата
-    if (current?.chatId && current.direction === 'outgoing') {
+    if (current?.chatId && current.direction === 'outgoing' && !current.isGroup) {
       const icon = current.mode === 'video' ? '📹' : '📞';
       const label = current.mode === 'video' ? 'Видеозвонок' : 'Аудиозвонок';
       const msgText =
@@ -464,7 +711,6 @@ export function CallManager() {
         payload: { senderId: me?.id, video: nextEnabled },
       });
     } else {
-      // Если звонок начинался как аудио — динамически включаем камеру и добавляем трек
       try {
         const camStream = await navigator.mediaDevices.getUserMedia({ video: true });
         const camTrack = camStream.getVideoTracks()[0];
@@ -499,7 +745,6 @@ export function CallManager() {
       }
       setScreenSharing(false);
 
-      // Возвращаем видео с камеры, если она была включена
       const camTrack = localStreamRef.current?.getVideoTracks()?.[0] || null;
       const sender = pcRef.current?.getSenders().find((s) => s.track?.kind === 'video');
       if (sender && camTrack) {
@@ -542,12 +787,10 @@ export function CallManager() {
         event: 'media-update',
         payload: { senderId: me?.id, video: true },
       });
-    } catch {
-      // пользователь отменил выбор экрана
-    }
+    } catch {}
   }
 
-  // Глобальная подписка на входящие звонки и локальные события старта звонка
+  // Глобальная подписка на входящие звонки (личные и групповые)
   useEffect(() => {
     let personalCallChannel: any = null;
 
@@ -571,6 +814,7 @@ export function CallManager() {
             mode: payload.mode === 'video' ? 'video' : 'audio',
             direction: 'incoming',
             status: 'ringing',
+            isGroup: Boolean(payload.isGroup),
           };
 
           setSession(incoming);
@@ -578,21 +822,12 @@ export function CallManager() {
 
           const prefs = getNotificationPrefs();
           if (prefs.enabled && prefs.incomingCalls !== false) {
-            // Если это нативная .exe версия в фоне — будим окно и показываем системный Toast
-            if (window.pixchatsDesktop?.notifyIncomingCall) {
-              void window.pixchatsDesktop.notifyIncomingCall({
-                callerName: incoming.peerName,
-                mode: incoming.mode,
-                chatId: incoming.chatId,
-              });
-            } else {
-              void sendNativeOrWebNotification({
-                title: incoming.mode === 'video' ? '📹 Входящий видеозвонок' : '📞 Входящий аудиозвонок',
-                body: `${incoming.peerName} звонит вам в PixChats`,
-                url: incoming.chatId ? `/chat/?id=${incoming.chatId}` : '/chats/',
-                silent: !prefs.sound,
-              });
-            }
+            void triggerIncomingCallNativeAlert({
+              callerName: incoming.peerName,
+              mode: incoming.mode,
+              chatId: incoming.chatId,
+              silent: !prefs.sound,
+            });
           }
         })
         .on('broadcast', { event: 'call-cancelled' }, ({ payload }) => {
@@ -610,9 +845,18 @@ export function CallManager() {
       }
     };
 
+    const onStartGroupCallEvent = (e: Event) => {
+      const custom = e as CustomEvent<StartGroupCallParams>;
+      if (custom.detail) {
+        void handleStartGroupCall(custom.detail);
+      }
+    };
+
     window.addEventListener('pixchats:start_call', onStartCallEvent);
+    window.addEventListener('pixchats:start_group_call', onStartGroupCallEvent);
     return () => {
       window.removeEventListener('pixchats:start_call', onStartCallEvent);
+      window.removeEventListener('pixchats:start_group_call', onStartGroupCallEvent);
       if (personalCallChannel) {
         getSupabaseClient().removeChannel(personalCallChannel);
       }
@@ -648,7 +892,11 @@ export function CallManager() {
               marginBottom: 14,
             }}
           >
-            {session.mode === 'video' ? '📹 Входящий видеозвонок' : '📞 Входящий аудиозвонок'}
+            {session.isGroup
+              ? '🔊 Вызов в голосовой чат группы'
+              : session.mode === 'video'
+                ? '📹 Входящий видеозвонок'
+                : '📞 Входящий аудиозвонок'}
           </div>
 
           <div
@@ -665,12 +913,14 @@ export function CallManager() {
               backgroundPosition: 'center',
             }}
           >
-            {!session.peerAvatar && session.peerName.slice(0, 1).toUpperCase()}
+            {!session.peerAvatar && session.peerName.replace('🔊 ', '').slice(0, 1).toUpperCase()}
           </div>
 
           <h3 style={{ margin: '0 0 6px', fontSize: 20 }}>{session.peerName}</h3>
           <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 24 }}>
-            Вызывает вас в PixChats…
+            {session.isGroup
+              ? 'Приглашает всех участников подключиться к голосовому чату…'
+              : 'Вызывает вас в PixChats…'}
           </div>
 
           <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
@@ -702,7 +952,7 @@ export function CallManager() {
               }}
               onClick={handleAcceptIncomingCall}
             >
-              📞 Принять
+              📞 {session.isGroup ? 'Войти' : 'Принять'}
             </button>
           </div>
         </div>
@@ -710,7 +960,7 @@ export function CallManager() {
     );
   }
 
-  // 2. Свёрнутое плавающее мини-окно звонка (позволяет переписываться в чатах во время разговора)
+  // 2. Свёрнутое плавающее мини-окно звонка
   if (minimized) {
     return (
       <div
@@ -745,7 +995,7 @@ export function CallManager() {
               backgroundPosition: 'center',
             }}
           >
-            {!session.peerAvatar && session.peerName.slice(0, 1).toUpperCase()}
+            {!session.peerAvatar && session.peerName.replace('🔊 ', '').slice(0, 1).toUpperCase()}
           </div>
           <div style={{ minWidth: 0 }}>
             <div style={{ fontWeight: 700, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -781,7 +1031,7 @@ export function CallManager() {
     );
   }
 
-  // 3. Полноэкранное окно активного звонка (аудио / видео / демонстрация экрана)
+  // 3. Полноэкранное окно активного звонка (личного или группового голосового чата)
   return (
     <div
       className="modal-overlay"
@@ -809,7 +1059,9 @@ export function CallManager() {
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--accent)' }}>
-            🔒 Зашифрованный звонок PixChats (WebRTC)
+            {session.isGroup
+              ? `🔊 Голосовая комната группы (${groupParticipants.length || 1} уч.)`
+              : '🔒 Зашифрованный звонок PixChats (WebRTC)'}
           </span>
           <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>
             · {session.status === 'connected' ? formatDuration(durationSec) : session.status === 'ringing' ? 'Вызов…' : 'Соединение…'}
@@ -826,7 +1078,7 @@ export function CallManager() {
         </button>
       </div>
 
-      {/* Центральная область (видео или аватар собеседника) */}
+      {/* Центральная область */}
       <div
         style={{
           position: 'relative',
@@ -839,8 +1091,10 @@ export function CallManager() {
           border: '1px solid var(--border)',
           overflow: 'hidden',
           display: 'flex',
+          flexDirection: 'column',
           alignItems: 'center',
           justifyContent: 'center',
+          gap: 18,
         }}
       >
         {hasRemoteVideo ? (
@@ -869,7 +1123,7 @@ export function CallManager() {
                 backgroundPosition: 'center',
               }}
             >
-              {!session.peerAvatar && session.peerName.slice(0, 1).toUpperCase()}
+              {!session.peerAvatar && session.peerName.replace('🔊 ', '').slice(0, 1).toUpperCase()}
             </div>
             <h2 style={{ margin: '0 0 6px', fontSize: 22 }}>{session.peerName}</h2>
             <div style={{ fontSize: 14, color: 'var(--text-muted)' }}>
@@ -879,10 +1133,52 @@ export function CallManager() {
                   ? 'Установка защищённого аудио/видео канала…'
                   : `В разговоре · ${formatDuration(durationSec)}`}
             </div>
+
+            {session.isGroup && groupParticipants.length > 0 && (
+              <div
+                style={{
+                  marginTop: 22,
+                  display: 'flex',
+                  gap: 12,
+                  flexWrap: 'wrap',
+                  justifyContent: 'center',
+                }}
+              >
+                {groupParticipants.map((part) => (
+                  <div
+                    key={part.id}
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      gap: 6,
+                      padding: '10px 14px',
+                      borderRadius: 12,
+                      background: 'var(--bg-secondary)',
+                      border: '1px solid var(--accent)',
+                    }}
+                  >
+                    <div
+                      className={`avatar ${!part.avatar ? 'avatar-fallback' : ''}`}
+                      style={{
+                        width: 44,
+                        height: 44,
+                        fontSize: 16,
+                        backgroundImage: part.avatar ? `url(${part.avatar})` : undefined,
+                        backgroundSize: 'cover',
+                        backgroundPosition: 'center',
+                      }}
+                    >
+                      {!part.avatar && part.name.slice(0, 1).toUpperCase()}
+                    </div>
+                    <span style={{ fontSize: 12, fontWeight: 600 }}>{part.name}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
-        {/* Превью собственной камеры или демонстрации экрана (Picture-in-Picture) */}
         {(cameraEnabled || screenSharing) && (
           <div
             style={{
@@ -974,7 +1270,7 @@ export function CallManager() {
           }}
           onClick={handleEndCall}
         >
-          📵 Завершить звонок
+          📵 {session.isGroup ? 'Покинуть голосовой чат' : 'Завершить звонок'}
         </button>
       </div>
     </div>

@@ -9,8 +9,6 @@ import {
   getChatMemberCount,
   getMyChatRole,
   updateChatInfo,
-  joinPublicChat,
-  leaveChat,
   getMuteStates,
   muteChat,
   unmuteChat,
@@ -33,6 +31,14 @@ import {
   toggleChatInCustomFolder,
   type CustomChatFolder,
 } from '../../lib/chatFolders';
+import {
+  parseChatDescriptionAndConfig,
+  encodeChatDescriptionWithConfig,
+  DEFAULT_TOPICS,
+  type ChatTopicItem,
+} from '../../lib/channelConfig';
+import { isChatHidden, toggleHiddenChat } from '../../lib/appLock';
+import { startPixChatsGroupCall } from '../../components/CallManager';
 
 const TYPE_LABEL: Record<Chat['type'], string> = {
   direct: 'Личный чат',
@@ -57,11 +63,19 @@ function ChatInfoInner() {
 
   const [isPinned, setIsPinned] = useState(false);
   const [isArchived, setIsArchived] = useState(false);
+  const [isHidden, setIsHidden] = useState(false);
   const [customFolders, setCustomFolders] = useState<CustomChatFolder[]>([]);
 
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [username, setUsername] = useState('');
+
+  // Пункт 8: Настройки создателя (Комментарии к постам и Темы)
+  const [commentsEnabled, setCommentsEnabled] = useState(true);
+  const [structureMode, setStructureMode] = useState<'standard' | 'topics'>('standard');
+  const [topics, setTopics] = useState<ChatTopicItem[]>(DEFAULT_TOPICS);
+  const [newTopicTitle, setNewTopicTitle] = useState('');
+
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -73,6 +87,7 @@ function ChatInfoInner() {
       const list: string[] = JSON.parse(localStorage.getItem('pixchats:pinned_chats') || '[]');
       setIsPinned(list.includes(chatId));
       setIsArchived(isChatArchived(chatId));
+      setIsHidden(isChatHidden(chatId));
     } catch {}
   }, [chatId]);
 
@@ -95,6 +110,18 @@ function ChatInfoInner() {
     setIsArchived(nowArchived);
     setNotice(nowArchived ? 'Чат перемещён в Архив 📦' : 'Чат возвращён из Архива');
     setTimeout(() => setNotice(null), 1500);
+  }
+
+  function handleToggleHidden() {
+    if (!chatId) return;
+    const nowHidden = toggleHiddenChat(chatId);
+    setIsHidden(nowHidden);
+    setNotice(
+      nowHidden
+        ? '🔐 Чат скрыт под PIN-кодом (введите свой PIN в поиск чатов, чтобы увидеть его)'
+        : '🔓 Чат снова отображается в общем списке'
+    );
+    setTimeout(() => setNotice(null), 2500);
   }
 
   function handleToggleFolder(folderId: string) {
@@ -128,7 +155,12 @@ function ChatInfoInner() {
       }
       setChat(chatRow);
       setTitle(chatRow?.title ?? '');
-      setDescription(chatRow?.description ?? '');
+
+      const parsedCfg = parseChatDescriptionAndConfig(chatRow?.description);
+      setDescription(parsedCfg.cleanDescription);
+      setCommentsEnabled(parsedCfg.config.commentsEnabled);
+      setStructureMode(parsedCfg.config.structureMode);
+      setTopics(parsedCfg.config.topics);
       setUsername(chatRow?.username ?? '');
 
       setMemberCount(await getChatMemberCount(chatId));
@@ -169,17 +201,39 @@ function ChatInfoInner() {
     }
   }
 
+  function handleAddTopic() {
+    const clean = newTopicTitle.trim();
+    if (!clean) return;
+    setTopics((prev) => [...prev, { id: `topic-${Date.now().toString(36)}`, title: clean, icon: '📌' }]);
+    setNewTopicTitle('');
+  }
+
+  function handleRemoveTopic(id: string) {
+    if (topics.length <= 1) return;
+    setTopics((prev) => prev.filter((t) => t.id !== id));
+  }
+
   async function handleSave() {
     if (!chat) return;
     setError(null);
     try {
+      const encodedDescription = encodeChatDescriptionWithConfig(description, {
+        commentsEnabled,
+        structureMode,
+        topics,
+      });
       await updateChatInfo(chat.id, {
         title,
-        description,
+        description: encodedDescription,
         username: chat.visibility === 'public' ? username : null,
       });
-      setChat({ ...chat, title, description, username: chat.visibility === 'public' ? username : null });
-      setNotice('Изменения сохранены');
+      setChat({
+        ...chat,
+        title,
+        description: encodedDescription,
+        username: chat.visibility === 'public' ? username : null,
+      });
+      setNotice('Изменения и настройки структуры сохранены');
       setEditing(false);
     } catch (err: any) {
       setError(err.message ?? 'Не удалось сохранить');
@@ -210,6 +264,8 @@ function ChatInfoInner() {
 
   if (!chat || !me) return <Loading />;
 
+  const { cleanDescription, config: currentCfg } = parseChatDescriptionAndConfig(chat.description);
+
   return (
     <main className="container-wide">
       <Link
@@ -238,18 +294,37 @@ function ChatInfoInner() {
         <div className="username">
           {TYPE_LABEL[chat.type]} · {memberCount} {chat.type === 'channel' ? 'подписчиков' : 'участников'}
           {chat.username ? ` · @${chat.username}` : ''}
+          {currentCfg.structureMode === 'topics' ? ' · 🗂️ С темами' : ''}
         </div>
 
-        <div className="btn-row" style={{ maxWidth: 380, margin: '12px auto 0', flexDirection: 'row', flexWrap: 'wrap' }}>
+        <div className="btn-row" style={{ maxWidth: 440, margin: '12px auto 0', flexDirection: 'row', flexWrap: 'wrap' }}>
+          {chat.type === 'group' && (
+            <button
+              className="btn btn-primary"
+              onClick={() =>
+                startPixChatsGroupCall({
+                  chatId: chat.id,
+                  chatTitle: chat.title || 'Группа',
+                  chatAvatar: chat.avatar_url,
+                  mode: 'audio',
+                })
+              }
+            >
+              🔊 Начать голосовой чат
+            </button>
+          )}
           <button className="btn" onClick={handleTogglePin}>
             {isPinned ? '📌 Открепить чат' : '📍 Закрепить чат'}
           </button>
           <button className="btn" onClick={handleToggleArchive}>
             {isArchived ? '📦 Из архива' : '📦 В архив'}
           </button>
+          <button className="btn" onClick={handleToggleHidden}>
+            {isHidden ? '🔓 Показать чат' : '🔐 Скрыть под PIN'}
+          </button>
           {canEdit && !editing && (
             <button className="btn" onClick={() => setEditing(true)}>
-              ✎ Редактировать
+              ✎ Настроить {chat.type === 'channel' ? 'канал' : 'группу'}
             </button>
           )}
           {canEdit && (
@@ -304,7 +379,7 @@ function ChatInfoInner() {
       {error && <p className="error">{error}</p>}
 
       {editing ? (
-        <div className="card" style={{ maxWidth: 420, margin: '0 auto 16px' }}>
+        <div className="card" style={{ maxWidth: 460, margin: '0 auto 16px' }}>
           <div style={{ textAlign: 'center', marginBottom: 16 }}>
             <button className="btn" style={{ width: 'auto' }} onClick={() => fileInputRef.current?.click()} disabled={uploading}>
               {uploading ? 'Загружаем…' : '📷 Сменить аватар'}
@@ -335,6 +410,117 @@ function ChatInfoInner() {
             </div>
           )}
 
+          <div className="field">
+            <label>Тип структуры {chat.type === 'channel' ? 'канала' : 'группы'}</label>
+            <select
+              className="input"
+              value={structureMode}
+              onChange={(e) => setStructureMode(e.target.value as 'standard' | 'topics')}
+            >
+              <option value="standard">Обычный (единая лента)</option>
+              <option value="topics">С темами / Топиками (#Темы)</option>
+            </select>
+          </div>
+
+          {structureMode === 'topics' && (
+            <div
+              className="field"
+              style={{
+                background: 'var(--bg-secondary)',
+                border: '1px solid var(--border)',
+                borderRadius: 10,
+                padding: 12,
+              }}
+            >
+              <label style={{ display: 'block', marginBottom: 8 }}>Темы (Топики)</label>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+                {topics.map((t) => (
+                  <span
+                    key={t.id}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      padding: '4px 10px',
+                      borderRadius: 999,
+                      background: 'var(--surface-raised)',
+                      border: '1px solid var(--accent)',
+                      fontSize: 12,
+                    }}
+                  >
+                    <span>
+                      {t.icon} #{t.title}
+                    </span>
+                    {topics.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveTopic(t.id)}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          color: 'var(--text-muted)',
+                          cursor: 'pointer',
+                          padding: 0,
+                          fontSize: 12,
+                        }}
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </span>
+                ))}
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <input
+                  type="text"
+                  className="input"
+                  style={{ flex: 1, height: 34, fontSize: 13 }}
+                  placeholder="Новая тема…"
+                  value={newTopicTitle}
+                  onChange={(e) => setNewTopicTitle(e.target.value)}
+                />
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ width: 'auto', padding: '4px 12px', fontSize: 12 }}
+                  onClick={handleAddTopic}
+                >
+                  + Добавить
+                </button>
+              </div>
+            </div>
+          )}
+
+          {chat.type === 'channel' && (
+            <label
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 12,
+                padding: '10px 12px',
+                borderRadius: 10,
+                background: 'var(--bg-secondary)',
+                border: `1px solid ${commentsEnabled ? 'var(--accent)' : 'var(--border)'}`,
+                marginBottom: 16,
+                cursor: 'pointer',
+              }}
+            >
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 13.5 }}>💬 Комментарии к постам</div>
+                <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>
+                  Разрешить подписчикам комментировать посты в канале
+                </div>
+              </div>
+              <input
+                type="checkbox"
+                checked={commentsEnabled}
+                onChange={(e) => setCommentsEnabled(e.target.checked)}
+                style={{ width: 18, height: 18, accentColor: 'var(--accent)' }}
+              />
+            </label>
+          )}
+
           <div className="btn-row" style={{ flexDirection: 'row' }}>
             <button className="btn btn-primary" onClick={handleSave}>
               Сохранить
@@ -346,9 +532,10 @@ function ChatInfoInner() {
         </div>
       ) : null}
 
-      {chat.description && (
+      {cleanDescription && (
         <div className="card" style={{ maxWidth: 420, margin: '0 auto 16px' }}>
-          <p style={{ margin: 0, fontSize: 14, color: 'var(--text-muted)' }}>{chat.description}</p>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 4 }}>Описание</div>
+          <div style={{ whiteSpace: 'pre-wrap' }}>{cleanDescription}</div>
         </div>
       )}
 

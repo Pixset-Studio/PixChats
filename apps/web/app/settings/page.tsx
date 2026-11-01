@@ -30,10 +30,26 @@ import {
   DEFAULT_NOTIFICATION_PREFS,
 } from '../../lib/notificationPrefs';
 import { ensureNotificationPermissionEverywhere, requestPermissionNow } from '../../lib/nativePlatform';
+import {
+  WALLPAPER_PRESETS,
+  getChatAppearance,
+  saveChatAppearance,
+  DEFAULT_CHAT_APPEARANCE,
+  type ChatAppearanceSettings,
+  type WallpaperPresetId,
+} from '../../lib/chatAppearance';
+import {
+  getAppLockConfig,
+  saveAppLockConfig,
+  lockSessionNow,
+  DEFAULT_APP_LOCK,
+  type AppLockConfig,
+} from '../../lib/appLock';
 
 export default function SettingsPage() {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const wallpaperInputRef = useRef<HTMLInputElement>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
 
   const [displayName, setDisplayName] = useState('');
@@ -59,6 +75,9 @@ export default function SettingsPage() {
   const [avatarUploading, setAvatarUploading] = useState(false);
   const [notifPrefs, setNotifPrefs] = useState<NotificationPreferences>(DEFAULT_NOTIFICATION_PREFS);
   const [desktopAutoStart, setDesktopAutoStart] = useState(true);
+  const [appearance, setAppearance] = useState<ChatAppearanceSettings>(DEFAULT_CHAT_APPEARANCE);
+  const [appLock, setAppLock] = useState<AppLockConfig>(DEFAULT_APP_LOCK);
+  const [pinDraft, setPinDraft] = useState('');
 
   useEffect(() => {
     (async () => {
@@ -92,6 +111,10 @@ export default function SettingsPage() {
       }
       setPixsetAccount(getSavedPixsetStudioAccount());
       setNotifPrefs(getNotificationPrefs());
+      setAppearance(getChatAppearance());
+      const lockCfg = getAppLockConfig();
+      setAppLock(lockCfg);
+      setPinDraft(lockCfg.pinCode || '');
       ensureNotificationPermissionEverywhere();
 
       try {
@@ -169,6 +192,46 @@ export default function SettingsPage() {
     }
     setNotice('Тема обновлена');
     setTimeout(() => setNotice(null), 1500);
+  }
+
+  function handleUpdateAppearance(patch: Partial<ChatAppearanceSettings>) {
+    const next = saveChatAppearance(patch);
+    setAppearance(next);
+    setNotice('Внешний вид чата обновлён');
+    setTimeout(() => setNotice(null), 1400);
+  }
+
+  async function handleCustomWallpaperUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const dataUrl = await fileToBase64Image(file, 960, 0.82, { cropSquare: false });
+      handleUpdateAppearance({ wallpaper: 'custom', customWallpaperDataUrl: dataUrl });
+    } catch {
+      setError('Не удалось загрузить фоновое изображение');
+    }
+  }
+
+  function handleSaveAppLock(e: React.FormEvent) {
+    e.preventDefault();
+    const cleanPin = pinDraft.trim();
+    if (appLock.enabled && cleanPin.length < 4) {
+      setError('PIN-код должен содержать минимум 4 символа');
+      return;
+    }
+    setError(null);
+    const saved = saveAppLockConfig({
+      enabled: appLock.enabled && cleanPin.length >= 4,
+      pinCode: cleanPin,
+      autoLockMinutes: appLock.autoLockMinutes,
+    });
+    setAppLock(saved);
+    setNotice(
+      saved.enabled
+        ? '🔐 Защита входа PIN-кодом активирована'
+        : '🔓 Защита входа PIN-кодом отключена'
+    );
+    setTimeout(() => setNotice(null), 1800);
   }
 
   async function handleLinkProvider(provider: 'google') {
@@ -342,6 +405,203 @@ export default function SettingsPage() {
             );
           })}
         </div>
+      </div>
+
+      <div className="section-title">Внешний вид чатов и обои</div>
+      <div className="card" style={{ marginBottom: 24 }}>
+        <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 0, marginBottom: 14 }}>
+          Настройте фоновые обои в диалогах, размер шрифта и скругление углов пузырей сообщений:
+        </p>
+
+        <div className="theme-picker-grid" style={{ marginBottom: 16 }}>
+          {WALLPAPER_PRESETS.map((wp) => {
+            const active = appearance.wallpaper === wp.id;
+            return (
+              <button
+                key={wp.id}
+                type="button"
+                className={`theme-card ${active ? 'active' : ''}`}
+                onClick={() => handleUpdateAppearance({ wallpaper: wp.id as WallpaperPresetId })}
+              >
+                <div
+                  style={{
+                    height: 36,
+                    borderRadius: 8,
+                    marginBottom: 8,
+                    border: '1px solid var(--border)',
+                    background: wp.previewCss,
+                    backgroundSize: wp.id === 'starfield' ? '18px 18px' : 'cover',
+                  }}
+                />
+                <div className="theme-card-name">
+                  {wp.name}
+                  {active && <span style={{ color: 'var(--accent)', marginLeft: 6 }}>✓</span>}
+                </div>
+                <div className="theme-card-desc">{wp.desc}</div>
+              </button>
+            );
+          })}
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
+          <button
+            type="button"
+            className={`btn ${appearance.wallpaper === 'custom' ? 'btn-primary' : ''}`}
+            style={{ width: 'auto' }}
+            onClick={() => wallpaperInputRef.current?.click()}
+          >
+            🖼️ Загрузить свои обои чата (Base64)
+          </button>
+          <input
+            ref={wallpaperInputRef}
+            type="file"
+            accept="image/*"
+            style={{ display: 'none' }}
+            onChange={handleCustomWallpaperUpload}
+          />
+          {appearance.wallpaper === 'custom' && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12 }}>
+              <span>Затемнение фона: {appearance.wallpaperDimming}%</span>
+              <input
+                type="range"
+                min={0}
+                max={85}
+                value={appearance.wallpaperDimming}
+                onChange={(e) => handleUpdateAppearance({ wallpaperDimming: Number(e.target.value) })}
+              />
+            </div>
+          )}
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 12 }}>
+          <div className="field" style={{ marginBottom: 0 }}>
+            <label>Размер текста сообщений</label>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {([13, 14, 16] as const).map((sz) => (
+                <button
+                  key={sz}
+                  type="button"
+                  className="btn"
+                  style={{
+                    flex: 1,
+                    borderColor: appearance.fontSize === sz ? 'var(--accent)' : undefined,
+                    color: appearance.fontSize === sz ? 'var(--accent)' : undefined,
+                  }}
+                  onClick={() => handleUpdateAppearance({ fontSize: sz })}
+                >
+                  {sz === 13 ? 'Компакт (13)' : sz === 14 ? 'Стандарт (14)' : 'Крупный (16)'}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="field" style={{ marginBottom: 0 }}>
+            <label>Углы пузырей сообщений</label>
+            <div style={{ display: 'flex', gap: 6 }}>
+              {([8, 14, 20] as const).map((rad) => (
+                <button
+                  key={rad}
+                  type="button"
+                  className="btn"
+                  style={{
+                    flex: 1,
+                    borderColor: appearance.bubbleRadius === rad ? 'var(--accent)' : undefined,
+                    color: appearance.bubbleRadius === rad ? 'var(--accent)' : undefined,
+                  }}
+                  onClick={() => handleUpdateAppearance({ bubbleRadius: rad })}
+                >
+                  {rad === 8 ? 'Строгие' : rad === 14 ? 'Стандарт' : 'Мягкие'}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="section-title">Защита входа PIN-кодом (App Lock) и Скрытые чаты</div>
+      <div className="card" style={{ marginBottom: 24 }}>
+        <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 0, marginBottom: 14 }}>
+          Установите секретный PIN-код для входа в приложение и автоблокировки экрана. Также этот PIN-код открывает ваши скрытые чаты, если ввести его в строку поиска чатов.
+        </p>
+
+        <form onSubmit={handleSaveAppLock}>
+          <label
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 12,
+              padding: '10px 12px',
+              borderRadius: 10,
+              background: 'var(--bg-secondary)',
+              border: `1px solid ${appLock.enabled ? 'var(--accent)' : 'var(--border)'}`,
+              marginBottom: 14,
+              cursor: 'pointer',
+            }}
+          >
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 14 }}>🔐 Включить блокировку приложения по PIN-коду</div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                Запрашивать PIN-код при запуске и после бездействия
+              </div>
+            </div>
+            <input
+              type="checkbox"
+              checked={appLock.enabled}
+              onChange={(e) => setAppLock((prev) => ({ ...prev, enabled: e.target.checked }))}
+              style={{ width: 20, height: 20, accentColor: 'var(--accent)' }}
+            />
+          </label>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12, marginBottom: 14 }}>
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label>Секретный PIN-код (4–8 символов)</label>
+              <input
+                type="password"
+                className="input"
+                maxLength={8}
+                placeholder="Например: 2580"
+                value={pinDraft}
+                onChange={(e) => setPinDraft(e.target.value)}
+              />
+            </div>
+
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label>Автоблокировка при бездействии</label>
+              <select
+                className="input"
+                value={appLock.autoLockMinutes}
+                onChange={(e) =>
+                  setAppLock((prev) => ({
+                    ...prev,
+                    autoLockMinutes: Number(e.target.value) as 0 | 1 | 5 | 15,
+                  }))
+                }
+              >
+                <option value={1}>Через 1 минуту</option>
+                <option value={5}>Через 5 минут</option>
+                <option value={15}>Через 15 минут</option>
+                <option value={0}>Только при перезапуске или по кнопке 🔒</option>
+              </select>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button type="submit" className="btn btn-primary" style={{ width: 'auto' }}>
+              Сохранить настройки PIN
+            </button>
+            {appLock.enabled && appLock.pinCode && (
+              <button
+                type="button"
+                className="btn"
+                style={{ width: 'auto' }}
+                onClick={() => lockSessionNow()}
+              >
+                🔒 Заблокировать экран сейчас
+              </button>
+            )}
+          </div>
+        </form>
       </div>
 
       <div className="section-title">Уведомления</div>

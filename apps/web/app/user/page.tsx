@@ -35,6 +35,7 @@ import {
   toggleChatInCustomFolder,
   type CustomChatFolder,
 } from '../../lib/chatFolders';
+import { isChatHidden, toggleHiddenChat } from '../../lib/appLock';
 
 function UserProfileInner() {
   const searchParams = useSearchParams();
@@ -53,6 +54,7 @@ function UserProfileInner() {
   const [notice, setNotice] = useState<string | null>(null);
   const [isPinned, setIsPinned] = useState(false);
   const [isArchived, setIsArchived] = useState(false);
+  const [isHidden, setIsHidden] = useState(false);
   const [customFolders, setCustomFolders] = useState<CustomChatFolder[]>([]);
 
   useEffect(() => {
@@ -62,6 +64,7 @@ function UserProfileInner() {
       const list: string[] = JSON.parse(localStorage.getItem('pixchats:pinned_chats') || '[]');
       setIsPinned(list.includes(existingChatId));
       setIsArchived(isChatArchived(existingChatId));
+      setIsHidden(isChatHidden(existingChatId));
     } catch {}
   }, [existingChatId]);
 
@@ -102,6 +105,19 @@ function UserProfileInner() {
     setIsArchived(nowArchived);
     setNotice(nowArchived ? 'Чат перемещён в Архив 📦' : 'Чат возвращён из Архива');
     setTimeout(() => setNotice(null), 1500);
+  }
+
+  async function handleToggleHidden() {
+    const targetChatId = await ensureDirectChatId();
+    if (!targetChatId) return;
+    const nowHidden = toggleHiddenChat(targetChatId);
+    setIsHidden(nowHidden);
+    setNotice(
+      nowHidden
+        ? '🔐 Чат скрыт под PIN-кодом (введите свой PIN в поиск чатов)'
+        : '🔓 Чат возвращён в общий список'
+    );
+    setTimeout(() => setNotice(null), 2200);
   }
 
   async function handleToggleFolder(folderId: string) {
@@ -333,12 +349,15 @@ function UserProfileInner() {
         )}
 
         {!isSelf && (
-          <div className="btn-row" style={{ maxWidth: 380, margin: '8px auto 0', flexDirection: 'row', flexWrap: 'wrap' }}>
+          <div className="btn-row" style={{ maxWidth: 420, margin: '8px auto 0', flexDirection: 'row', flexWrap: 'wrap' }}>
             <button className="btn" onClick={handleTogglePin}>
               {isPinned ? '📌 Открепить чат' : '📍 Закрепить чат'}
             </button>
             <button className="btn" onClick={handleToggleArchive}>
               {isArchived ? '📦 Из архива' : '📦 В архив'}
+            </button>
+            <button className="btn" onClick={handleToggleHidden}>
+              {isHidden ? '🔓 Показать чат' : '🔐 Скрыть под PIN'}
             </button>
             {existingChatId && <MuteControl muteState={muteState} onMute={handleMute} onUnmute={handleUnmute} />}
           </div>

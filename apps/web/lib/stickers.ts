@@ -80,3 +80,27 @@ export function removeCustomSticker(id: string): void {
   const current = getCustomStickers().filter((s) => s.id !== id);
   saveCustomStickers(current);
 }
+
+/**
+ * Дедупликация стикеров по ID (Пункт 10):
+ * Вместо повторной записи длинного Base64 в каждое сообщение БД, в текст сообщения
+ * записывается компактный тег `[STICKER:<id>]` (около 30 байт вместо 30 КБ!).
+ */
+const STICKER_TAG_REGEX = /^\[STICKER:([a-zA-Z0-9_-]+)\]/;
+
+export function encodeStickerTag(stickerId: string, title = 'Стикер'): string {
+  return `[STICKER:${stickerId}]${title}`;
+}
+
+export function resolveStickerFromText(rawText?: string | null): StickerItem | null {
+  if (!rawText) return null;
+  const match = rawText.match(STICKER_TAG_REGEX);
+  if (!match) return null;
+  const stickerId = match[1];
+  const all = getAllStickers();
+  return all.find((s) => s.id === stickerId) ?? null;
+}
+
+export function isStickerTagText(rawText?: string | null): boolean {
+  return Boolean(rawText && STICKER_TAG_REGEX.test(rawText));
+}

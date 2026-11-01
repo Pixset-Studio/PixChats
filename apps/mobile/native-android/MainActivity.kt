@@ -6,33 +6,39 @@ import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioAttributes
+import android.media.RingtoneManager
 import android.os.Build
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.getcapacitor.BridgeActivity
 
 /**
  * Нативная Android-активность PixChats (Kotlin).
- * - Создаёт системный канал уведомлений высокой важности (звук + вибрация)
+ * - Создаёт системные каналы уведомлений (сообщения + входящие звонки с мелодией вызова)
+ * - Разрешает пробуждение экрана и показ входящего звонка поверх блокировки
  * - Автоматически запрашивает системное разрешение POST_NOTIFICATIONS (Android 13+) при запуске
- * - Подключает нативный Kotlin-мост window.PixChatsAndroid для показа системных уведомлений и автообновления APK
+ * - Подключает нативный Kotlin-мост window.PixChatsAndroid
  */
 class MainActivity : BridgeActivity() {
 
     companion object {
         const val CHANNEL_ID = "pixchats_alerts"
         const val CHANNEL_NAME = "Уведомления PixChats"
+        const val CALL_CHANNEL_ID = "pixchats_incoming_calls"
+        const val CALL_CHANNEL_NAME = "Входящие звонки PixChats"
         const val REQ_CODE_NOTIFICATIONS = 1001
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        createNotificationChannel()
+        enableWakeAndLockScreenDisplay()
+        createNotificationChannels()
         requestNotificationPermissionIfNeeded()
 
-        // Подключаем нативный Kotlin-мост к WebView
         bridge?.webView?.let { webView ->
             webView.settings.javaScriptEnabled = true
             webView.settings.domStorageEnabled = true
@@ -46,7 +52,24 @@ class MainActivity : BridgeActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        enableWakeAndLockScreenDisplay()
         handleNotificationIntent(intent)
+    }
+
+    @Suppress("DEPRECATION")
+    fun enableWakeAndLockScreenDisplay() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                setShowWhenLocked(true)
+                setTurnScreenOn(true)
+            } else {
+                window.addFlags(
+                    WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                        WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                        WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                )
+            }
+        } catch (_: Exception) {}
     }
 
     fun requestNotificationPermissionIfNeeded() {
@@ -56,22 +79,41 @@ class MainActivity : BridgeActivity() {
                 ActivityCompat.requestPermissions(this, arrayOf(perm), REQ_CODE_NOTIFICATIONS)
             }
         }
-        // Также запрашиваем микрофон при необходимости записи голосовых сообщений
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            // Запросится автоматически при первом обращении или вместе с уведомлениями
-        }
     }
 
-    private fun createNotificationChannel() {
+    private fun createNotificationChannels() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val importance = NotificationManager.IMPORTANCE_HIGH
-            val channel = NotificationChannel(CHANNEL_ID, CHANNEL_NAME, importance).apply {
+            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+            val msgChannel = NotificationChannel(
+                CHANNEL_ID,
+                CHANNEL_NAME,
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
                 description = "Мгновенные уведомления о сообщениях, упоминаниях и заявках в друзья в PixChats"
                 enableVibration(true)
                 enableLights(true)
             }
-            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            manager.createNotificationChannel(channel)
+            manager.createNotificationChannel(msgChannel)
+
+            val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+            val audioAttrs = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build()
+
+            val callChannel = NotificationChannel(
+                CALL_CHANNEL_ID,
+                CALL_CHANNEL_NAME,
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Входящие аудио- и видеозвонки в PixChats с рингтоном"
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0, 800, 400, 800, 400, 800)
+                enableLights(true)
+                setSound(ringtoneUri, audioAttrs)
+            }
+            manager.createNotificationChannel(callChannel)
         }
     }
 
