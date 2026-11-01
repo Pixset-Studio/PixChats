@@ -82,6 +82,16 @@ import { isChatHidden, toggleHiddenChat } from '../../lib/appLock';
 import { ReactionParticles } from '../../components/ReactionParticles';
 import { translateText, detectLanguage, getAutoTranslatePref } from '../../lib/translator';
 import { AvatarWithStatus } from '../../components/AvatarWithStatus';
+import { saveOfflineMessages, getOfflineMessages } from '../../lib/offlineMessagesStore';
+import {
+  parseSecretMediaCaption,
+  encodeSecretMediaCaption,
+  isSecretMediaOpened,
+  markSecretMediaOpened,
+  getSecretMediaRuleLabel,
+  type SecretMediaRule,
+} from '../../lib/secretMedia';
+import { applyScreenshotGuardProtection } from '../../lib/screenshotGuard';
 
 interface ScheduledMessageItem {
   id: string;
@@ -227,6 +237,9 @@ function ChatWindowInner() {
   const [liveStreamActive, setLiveStreamActive] = useState(false);
   const [raisedHands, setRaisedHands] = useState<{ userId: string; userName: string }[]>([]);
   const [hasRaisedHand, setHasRaisedHand] = useState(false);
+  const [inLiveStreamStage, setInLiveStreamStage] = useState(false);
+  const [liveStreamMuted, setLiveStreamMuted] = useState(false);
+  const [allowedSpeakers, setAllowedSpeakers] = useState<string[]>([]);
 
   // Пункт 2: Частицы реакций (Reaction Particles)
   const [particleMsgId, setParticleMsgId] = useState<string | null>(null);
@@ -234,6 +247,26 @@ function ChatWindowInner() {
 
   // Пункт 9: Умный автопереводчик сообщений
   const [translatedMessages, setTranslatedMessages] = useState<Record<string, string>>({});
+
+  // Пункт 8: Одноразовые («View Once») и сгорающие медиа
+  const [showSecretMediaModal, setShowSecretMediaModal] = useState(false);
+  const [secretMediaRule, setSecretMediaRule] = useState<SecretMediaRule>('view_once');
+  const [secretMediaFile, setSecretMediaFile] = useState<File | null>(null);
+  const [secretMediaCaptionDraft, setSecretMediaCaptionDraft] = useState('');
+  const [activeSecretMediaTimers, setActiveSecretMediaTimers] = useState<Record<string, number>>({});
+  const [openedSecretMediaIds, setOpenedSecretMediaIds] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    const handleHashtag = (e: Event) => {
+      const custom = e as CustomEvent<{ tag: string }>;
+      if (custom.detail?.tag) {
+        setShowChatSearch(true);
+        setChatSearchQuery(custom.detail.tag);
+      }
+    };
+    window.addEventListener('pixchats:hashtag_click', handleHashtag);
+    return () => window.removeEventListener('pixchats:hashtag_click', handleHashtag);
+  }, []);
 
   function insertEmoji(emoji: string) {
     setDraft((prev) => prev + emoji);
@@ -711,10 +744,21 @@ function ChatWindowInner() {
       setCanWrite(memberRow?.member_role !== 'subscriber');
       setCanModerate(memberRow?.member_role === 'owner' || memberRow?.member_role === 'admin');
 
-      const initialMessages = await getMessages(chatId);
-      initialIdsRef.current = new Set(initialMessages.map((m) => m.id));
-      setMessages(initialMessages);
-      await markChatAsRead(profile.id, chatId);
+      let loadedMessages: Message[] = [];
+      try {
+        loadedMessages = await getMessages(chatId);
+        if (loadedMessages.length > 0) {
+          saveOfflineMessages(chatId, loadedMessages);
+        } else {
+          loadedMessages = getOfflineMessages(chatId);
+        }
+      } catch {
+        loadedMessages = getOfflineMessages(chatId);
+      }
+
+      initialIdsRef.current = new Set(loadedMessages.map((m) => m.id));
+      setMessages(loadedMessages);
+      await markChatAsRead(profile.id, chatId).catch(() => {});
 
       try {
         setCustomPassInput(getChatCustomPassphrase(chatId));
@@ -722,15 +766,15 @@ function ChatWindowInner() {
         setE2eeFingerprint(fp);
       } catch {}
 
-      if (initialMessages.length > 0) {
+      if (loadedMessages.length > 0) {
         try {
-          const initialReactions = await getChatReactions(chatId, initialMessages.map((m) => m.id));
+          const initialReactions = await getChatReactions(chatId, loadedMessages.map((m) => m.id));
           setReactions(initialReactions);
         } catch {}
       }
 
       if (chatRow.type !== 'direct') {
-        const uniqueSenderIds = Array.from(new Set(initialMessages.map((m) => m.sender_id))).filter((id) => id !== profile.id);
+        const uniqueSenderIds = Array.from(new Set(loadedMessages.map((m) => m.sender_id))).filter((id) => id !== profile.id);
         if (uniqueSenderIds.length > 0) {
           const { data: senders } = await supabase.from('profiles').select('*').in('id', uniqueSenderIds);
           const map: Record<string, Profile> = {};
@@ -743,7 +787,11 @@ function ChatWindowInner() {
         unsubscribe = subscribeToMessages(
           chatId,
           async (msg) => {
-            setMessages((prev) => (prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]));
+            setMessages((prev) => {
+              const next = prev.some((m) => m.id === msg.id) ? prev : [...prev, msg];
+              saveOfflineMessages(chatId, next);
+              return next;
+            });
             await markChatAsRead(profile.id, chatId);
             // Мгновенно оповещаем собеседника о прочтении (✓✓)
             try {
@@ -1221,12 +1269,26 @@ function ChatWindowInner() {
           </Link>
         )}
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, position: 'relative' }}>
-          {/* Обычный звонок — стоит ЛЕВЕЕ трёх точек и не входит в меню */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, position: 'relative' }}>
+          {/* Обычный звонок — ровно 40x40px как аватарка, слева от трёх точек */}
           {chat.type === 'direct' && otherProfile && !isSavedChat && !blockedEitherWay && (
             <button
               type="button"
-              className="e2ee-badge-btn"
+              style={{
+                width: 40,
+                height: 40,
+                borderRadius: '50%',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                background: 'var(--surface-raised)',
+                border: '1px solid var(--border)',
+                color: 'var(--accent)',
+                fontSize: 18,
+                cursor: 'pointer',
+                flexShrink: 0,
+                transition: 'all 0.15s ease',
+              }}
               onClick={() =>
                 startPixChatsCall({
                   targetUserId: otherProfile.id,
@@ -1238,15 +1300,28 @@ function ChatWindowInner() {
               }
               title="Позвонить собеседнику"
             >
-              <span>📞</span>
-              <span>Звонок</span>
+              📞
             </button>
           )}
 
           {chat.type === 'group' && (
             <button
               type="button"
-              className="e2ee-badge-btn"
+              style={{
+                width: 40,
+                height: 40,
+                borderRadius: '50%',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                background: 'var(--surface-raised)',
+                border: '1px solid var(--border)',
+                color: 'var(--accent)',
+                fontSize: 18,
+                cursor: 'pointer',
+                flexShrink: 0,
+                transition: 'all 0.15s ease',
+              }}
               onClick={() =>
                 startPixChatsGroupCall({
                   chatId: chat.id,
@@ -1257,34 +1332,64 @@ function ChatWindowInner() {
               }
               title="Начать голосовой чат группы"
             >
-              <span>🔊</span>
-              <span>Голосовой чат</span>
+              🔊
             </button>
           )}
 
-          {/* Пункт 1: Прямой эфир в каналах */}
+          {/* Прямой эфир в каналах */}
           {chat.type === 'channel' && canModerate && (
             <button
               type="button"
-              className="e2ee-badge-btn"
-              style={{ background: liveStreamActive ? 'var(--danger)' : undefined, color: liveStreamActive ? '#fff' : undefined }}
-              onClick={() => {
-                setLiveStreamActive((v) => !v);
-                setNotice(liveStreamActive ? 'Прямой эфир завершён' : '🔴 Прямой эфир запущен! Подписчики могут поднять руку ✋');
-                setTimeout(() => setNotice(null), 2000);
+              style={{
+                width: 40,
+                height: 40,
+                borderRadius: '50%',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                background: liveStreamActive ? 'var(--danger)' : 'var(--surface-raised)',
+                border: `1px solid ${liveStreamActive ? 'var(--danger)' : 'var(--border)'}`,
+                color: liveStreamActive ? '#fff' : 'var(--accent)',
+                fontSize: 18,
+                cursor: 'pointer',
+                flexShrink: 0,
+                transition: 'all 0.15s ease',
               }}
-              title="Запустить/завершить прямой эфир канала"
+              onClick={() => {
+                if (!liveStreamActive) {
+                  setLiveStreamActive(true);
+                  setInLiveStreamStage(true);
+                  setNotice('🔴 Прямой эфир запущен! Подписчики могут присоединяться и поднимать руку ✋');
+                  setTimeout(() => setNotice(null), 2200);
+                } else {
+                  setInLiveStreamStage(true);
+                }
+              }}
+              title={liveStreamActive ? 'Открыть прямой эфир' : 'Запустить прямой эфир'}
             >
-              <span>🎙️</span>
-              <span>{liveStreamActive ? 'Завершить эфир' : 'Прямой эфир'}</span>
+              🎙️
             </button>
           )}
 
-          {/* Единая кнопка «Три точки» ⋮ */}
+          {/* Единая кнопка «Три точки» ⋮ — ровно 40x40px как аватарка */}
           <button
             type="button"
-            className="e2ee-badge-btn"
-            style={{ fontSize: 18, padding: '4px 10px', lineHeight: 1 }}
+            style={{
+              width: 40,
+              height: 40,
+              borderRadius: '50%',
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              background: 'var(--surface-raised)',
+              border: '1px solid var(--border)',
+              color: 'var(--text)',
+              fontSize: 20,
+              fontWeight: 700,
+              cursor: 'pointer',
+              flexShrink: 0,
+              transition: 'all 0.15s ease',
+            }}
             onClick={() => setShowHeaderMenu((prev) => !prev)}
             title="Ещё опции"
           >
@@ -1500,45 +1605,55 @@ function ChatWindowInner() {
         <div className="frozen-banner">❄️ Ваш аккаунт заморожен — доступно только чтение сообщений</div>
       )}
 
-      {/* Пункт 1: Плашка активного прямого эфира канала для подписчиков */}
-      {chat.type === 'channel' && (liveStreamActive || !canModerate) && (
+      {/* Плашка активного прямого эфира канала */}
+      {chat.type === 'channel' && liveStreamActive && (
         <div
           style={{
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            padding: '8px 16px',
-            background: 'rgba(239, 68, 68, 0.12)',
-            borderBottom: '1px solid rgba(239, 68, 68, 0.3)',
+            padding: '10px 16px',
+            background: 'linear-gradient(90deg, rgba(239, 68, 68, 0.18), rgba(245, 158, 11, 0.15))',
+            borderBottom: '1px solid rgba(239, 68, 68, 0.35)',
             fontSize: 13,
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--danger)', fontWeight: 700 }}>
-            <span style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--danger)', display: 'inline-block' }} className="online-dot-glow" />
-            <span>🔴 ИДЁТ ПРЯМОЙ ЭФИР КАНАЛА</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span className="online-dot-glow" style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--danger)', display: 'inline-block' }} />
+            <div>
+              <div style={{ fontWeight: 700, color: 'var(--danger)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span>🔴 ИДЁТ ПРЯМОЙ ЭФИР КАНАЛА</span>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>• 👥 {8 + raisedHands.length} слушают</span>
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                Ведущий: {chat.title || 'Канал'}
+              </div>
+            </div>
           </div>
+
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            {!canModerate && (
+            <button
+              type="button"
+              className="btn btn-primary"
+              style={{ width: 'auto', padding: '5px 12px', fontSize: 12, background: 'var(--danger)', borderColor: 'var(--danger)' }}
+              onClick={() => setInLiveStreamStage(true)}
+            >
+              ▶ Открыть эфир
+            </button>
+            {canModerate && (
               <button
                 type="button"
                 className="btn"
-                style={{ width: 'auto', padding: '4px 12px', fontSize: 12 }}
+                style={{ width: 'auto', padding: '5px 10px', fontSize: 12 }}
                 onClick={() => {
-                  setHasRaisedHand((v) => !v);
-                  if (!hasRaisedHand && me) {
-                    setRaisedHands((prev) => [...prev, { userId: me.id, userName: me.display_name }]);
-                    setNotice('Вы подняли руку ✋. Админ может дать вам слово!');
-                    setTimeout(() => setNotice(null), 2000);
-                  }
+                  setLiveStreamActive(false);
+                  setInLiveStreamStage(false);
+                  setNotice('Прямой эфир завершён');
+                  setTimeout(() => setNotice(null), 1800);
                 }}
               >
-                {hasRaisedHand ? '✋ Рука поднята' : '✋ Поднять руку'}
+                ⏹ Завершить
               </button>
-            )}
-            {canModerate && raisedHands.length > 0 && (
-              <span style={{ fontSize: 12, color: 'var(--accent)', fontWeight: 700 }}>
-                ✋ Рук поднято: {raisedHands.length}
-              </span>
             )}
           </div>
         </div>
@@ -1693,9 +1808,122 @@ function ChatWindowInner() {
                     )}
                     {m.forwarded_from_chat_id && <div className="forwarded-label">Переслано</div>}
 
-                    {m.caption && m.caption !== '__VIDEONOTE__' && m.caption_position === 'above' && (
+                    {m.caption && m.caption !== '__VIDEONOTE__' && m.caption_position === 'above' && !parseSecretMediaCaption(m.caption || m.text).isSecret && (
                       <div className="media-caption">{m.caption}</div>
                     )}
+
+                    {/* Пункт 8: Проверка на секретное («View Once» или сгорающее) медиа */}
+                    {(() => {
+                      const secretInfo = parseSecretMediaCaption(m.caption || m.text);
+                      const isAlreadyOpened = isSecretMediaOpened(m.id) || openedSecretMediaIds[m.id];
+                      const activeTimer = activeSecretMediaTimers[m.id];
+
+                      if (secretInfo.isSecret) {
+                        if (isAlreadyOpened && activeTimer === undefined) {
+                          return (
+                            <div
+                              style={{
+                                padding: '12px 16px',
+                                borderRadius: 12,
+                                background: 'rgba(239, 68, 68, 0.12)',
+                                border: '1px dashed var(--danger)',
+                                color: 'var(--danger)',
+                                fontWeight: 700,
+                                fontSize: 13,
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 8,
+                              }}
+                            >
+                              🔥 <span>Секретное медиа просмотрено и удалено</span>
+                            </div>
+                          );
+                        }
+
+                        if (!isAlreadyOpened) {
+                          return (
+                            <div
+                              style={{
+                                padding: '16px 20px',
+                                borderRadius: 14,
+                                background: 'linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(239, 68, 68, 0.25))',
+                                border: '1px solid var(--accent)',
+                                backdropFilter: 'blur(10px)',
+                                cursor: 'pointer',
+                                textAlign: 'center',
+                                display: 'flex',
+                                flexDirection: 'column',
+                                alignItems: 'center',
+                                gap: 6,
+                              }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (secretInfo.rule === 'view_once') {
+                                  setLightboxZoom(1);
+                                  setLightboxImage(m.media_path!);
+                                  markSecretMediaOpened(m.id);
+                                  setOpenedSecretMediaIds((prev) => ({ ...prev, [m.id]: true }));
+                                } else {
+                                  const duration = parseInt(secretInfo.rule, 10) || 5;
+                                  setActiveSecretMediaTimers((prev) => ({ ...prev, [m.id]: duration }));
+                                  setOpenedSecretMediaIds((prev) => ({ ...prev, [m.id]: true }));
+                                  const interval = setInterval(() => {
+                                    setActiveSecretMediaTimers((prev) => {
+                                      const current = prev[m.id] ?? duration;
+                                      if (current <= 1) {
+                                        clearInterval(interval);
+                                        markSecretMediaOpened(m.id);
+                                        return { ...prev, [m.id]: undefined as any };
+                                      }
+                                      return { ...prev, [m.id]: current - 1 };
+                                    });
+                                  }, 1000);
+                                }
+                              }}
+                            >
+                              <span style={{ fontSize: 26 }}>🔥</span>
+                              <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--accent)' }}>
+                                Секретное медиа ({getSecretMediaRuleLabel(secretInfo.rule)})
+                              </div>
+                              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                                Нажмите, чтобы посмотреть
+                              </div>
+                            </div>
+                          );
+                        }
+
+                        // Идёт таймер отсчёта перед удалением
+                        if (activeTimer !== undefined && activeTimer > 0) {
+                          return (
+                            <div style={{ position: 'relative' }}>
+                              <div
+                                style={{
+                                  position: 'absolute',
+                                  top: 8,
+                                  right: 8,
+                                  zIndex: 10,
+                                  background: 'rgba(239, 68, 68, 0.9)',
+                                  color: '#fff',
+                                  padding: '4px 10px',
+                                  borderRadius: 20,
+                                  fontWeight: 800,
+                                  fontSize: 12,
+                                  boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+                                }}
+                              >
+                                🔥 {activeTimer}с
+                              </div>
+                              {m.message_type === 'image' ? (
+                                <img src={m.media_path!} alt={m.text} className="media-image" />
+                              ) : (
+                                <video src={m.media_path!} autoPlay controls className="media-video" />
+                              )}
+                            </div>
+                          );
+                        }
+                      }
+                      return null;
+                    })()}
 
                     {/* Пункт 10: Дедуплицированный по ID стикер ([STICKER:id]) */}
                     {deduplicatedSticker ? (
@@ -1726,7 +1954,7 @@ function ChatWindowInner() {
                           {expandedVideoNoteIds[m.id] ? '🔊 Звук вкл' : '🔇 Нажмите для звука'}
                         </span>
                       </div>
-                    ) : m.message_type === 'image' && m.media_path ? (
+                    ) : m.message_type === 'image' && m.media_path && !parseSecretMediaCaption(m.caption || m.text).isSecret ? (
                       <img
                         src={m.media_path}
                         alt={m.text}
@@ -1744,7 +1972,7 @@ function ChatWindowInner() {
                         }}
                         title="Нажмите для полноэкранного просмотра"
                       />
-                    ) : m.message_type === 'video' && m.media_path ? (
+                    ) : m.message_type === 'video' && m.media_path && !parseSecretMediaCaption(m.caption || m.text).isSecret ? (
                       <video src={m.media_path} controls className="media-video" onClick={(e) => e.stopPropagation()} />
                     ) : (m.message_type === 'audio' || m.message_type === 'voice') && m.media_path ? (
                       <div
@@ -2218,6 +2446,18 @@ function ChatWindowInner() {
                   boxShadow: '0 12px 32px rgba(0,0,0,0.65)',
                 }}
               >
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ justifyContent: 'flex-start', gap: 10, fontSize: 13 }}
+                  onClick={() => {
+                    setShowToolsMenu(false);
+                    setShowSecretMediaModal(true);
+                  }}
+                >
+                  <span>🔥</span>
+                  <span>Секретное медиа (View Once / 3–30с)</span>
+                </button>
                 <button
                   type="button"
                   className="btn"
@@ -2970,6 +3210,307 @@ function ChatWindowInner() {
               >
                 Сохранить ключ
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showSecretMediaModal && (
+        <div className="modal-overlay" onClick={() => setShowSecretMediaModal(false)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 420 }}>
+            <h3 style={{ margin: '0 0 12px 0', fontSize: 18, color: 'var(--accent)' }}>
+              🔥 Отправить секретное медиа
+            </h3>
+            <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16 }}>
+              Медиафайл автоудалится сразу после просмотра (1 раз) или по истечении таймера обратного отсчёта.
+            </p>
+
+            <div className="field">
+              <label>Выбрать фото или видео</label>
+              <input
+                type="file"
+                className="input"
+                accept="image/*,video/*"
+                onChange={(e) => {
+                  if (e.target.files?.[0]) setSecretMediaFile(e.target.files[0]);
+                }}
+              />
+            </div>
+
+            <div className="field">
+              <label>Режим самоуничтожения</label>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                {(
+                  [
+                    { id: 'view_once', label: '👁️ 1 раз (View Once)' },
+                    { id: '3', label: '⏱️ 3 секунды' },
+                    { id: '5', label: '⏱️ 5 секунд' },
+                    { id: '10', label: '⏱️ 10 секунд' },
+                    { id: '15', label: '⏱️ 15 секунд' },
+                    { id: '30', label: '⏱️ 30 секунд' },
+                  ] as const
+                ).map((opt) => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    className="btn"
+                    style={{
+                      fontSize: 12,
+                      borderColor: secretMediaRule === opt.id ? 'var(--accent)' : undefined,
+                      color: secretMediaRule === opt.id ? 'var(--accent)' : undefined,
+                    }}
+                    onClick={() => setSecretMediaRule(opt.id as SecretMediaRule)}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="field">
+              <label>Подпись к фото (необязательно)</label>
+              <input
+                type="text"
+                className="input"
+                placeholder="Подпись…"
+                value={secretMediaCaptionDraft}
+                onChange={(e) => setSecretMediaCaptionDraft(e.target.value)}
+              />
+            </div>
+
+            <div style={{ display: 'flex', gap: 8, marginTop: 20 }}>
+              <button
+                type="button"
+                className="btn btn-primary"
+                style={{ flex: 1 }}
+                disabled={!secretMediaFile || uploading}
+                onClick={async () => {
+                  if (!secretMediaFile || !chatId) return;
+                  setUploading(true);
+                  try {
+                    const processed = await processZeroStorageFileAttachment(secretMediaFile);
+                    const encodedCaption = encodeSecretMediaCaption(
+                      secretMediaRule,
+                      secretMediaCaptionDraft.trim() || undefined
+                    );
+                    await sendMessage(chatId, processed.name, {
+                      messageType: detectMessageType(secretMediaFile),
+                      mediaPath: processed.url,
+                      caption: encodedCaption,
+                    });
+                    setShowSecretMediaModal(false);
+                    setSecretMediaFile(null);
+                    setSecretMediaCaptionDraft('');
+                    setNotice('🔥 Секретное медиа успешно отправлено!');
+                    setTimeout(() => setNotice(null), 2000);
+                  } catch (err: any) {
+                    setNotice(err.message ?? 'Не удалось отправить медиа');
+                    setTimeout(() => setNotice(null), 2000);
+                  } finally {
+                    setUploading(false);
+                  }
+                }}
+              >
+                {uploading ? 'Загружаем…' : 'Отправить 🔥'}
+              </button>
+              <button
+                type="button"
+                className="btn"
+                style={{ width: 'auto' }}
+                onClick={() => {
+                  setShowSecretMediaModal(false);
+                  setSecretMediaFile(null);
+                }}
+              >
+                Отмена
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {inLiveStreamStage && (
+        <div className="modal-overlay" onClick={() => setInLiveStreamStage(false)}>
+          <div
+            className="modal-card"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              maxWidth: 500,
+              width: '94%',
+              background: 'var(--surface-raised)',
+              border: '1px solid var(--border)',
+              borderRadius: 20,
+              padding: 20,
+              boxShadow: '0 20px 60px rgba(0,0,0,0.7)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span className="online-dot-glow" style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--danger)' }} />
+                <h3 style={{ margin: 0, fontSize: 17, fontWeight: 700 }}>Прямой эфир: {chat.title}</h3>
+              </div>
+              <button
+                type="button"
+                className="btn-ghost"
+                style={{ width: 'auto', padding: '4px 8px' }}
+                onClick={() => setInLiveStreamStage(false)}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Ведущий / Сцена */}
+            <div
+              style={{
+                background: 'var(--bg)',
+                borderRadius: 16,
+                padding: 24,
+                textAlign: 'center',
+                marginBottom: 16,
+                border: '1px solid var(--border)',
+                position: 'relative',
+              }}
+            >
+              <div style={{ position: 'relative', width: 80, height: 80, margin: '0 auto 12px' }}>
+                <div
+                  className="avatar"
+                  style={{
+                    width: 80,
+                    height: 80,
+                    fontSize: 32,
+                    backgroundImage: chat.avatar_url ? `url(${chat.avatar_url})` : undefined,
+                    backgroundSize: 'cover',
+                    backgroundPosition: 'center',
+                    border: '3px solid var(--accent)',
+                  }}
+                >
+                  {!chat.avatar_url && (chat.title || 'К').slice(0, 1).toUpperCase()}
+                </div>
+                <span
+                  style={{
+                    position: 'absolute',
+                    bottom: -2,
+                    right: -2,
+                    background: 'var(--accent)',
+                    color: '#000',
+                    fontSize: 11,
+                    fontWeight: 800,
+                    padding: '2px 6px',
+                    borderRadius: 10,
+                  }}
+                >
+                  🎙️ Спикер
+                </span>
+              </div>
+              <div style={{ fontWeight: 700, fontSize: 16 }}>{chat.title}</div>
+              <div style={{ fontSize: 12, color: 'var(--accent)', marginTop: 4, fontWeight: 600 }}>
+                🔊 Акустический эфир прямого вещания (HD Stereo)
+              </div>
+            </div>
+
+            {/* Поднятые руки (для администратора) */}
+            {canModerate && raisedHands.length > 0 && (
+              <div
+                style={{
+                  background: 'rgba(245, 158, 11, 0.12)',
+                  border: '1px solid var(--accent)',
+                  borderRadius: 12,
+                  padding: 12,
+                  marginBottom: 16,
+                }}
+              >
+                <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--accent)', marginBottom: 8 }}>
+                  ✋ Запросы на выступление ({raisedHands.length}):
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {raisedHands.map((rh) => (
+                    <div
+                      key={rh.userId}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        fontSize: 13,
+                        background: 'var(--surface)',
+                        padding: '6px 10px',
+                        borderRadius: 8,
+                      }}
+                    >
+                      <span>👤 {rh.userName}</span>
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <button
+                          type="button"
+                          className="btn btn-primary"
+                          style={{ width: 'auto', padding: '3px 8px', fontSize: 11 }}
+                          onClick={() => {
+                            setAllowedSpeakers((prev) => [...prev, rh.userId]);
+                            setRaisedHands((prev) => prev.filter((x) => x.userId !== rh.userId));
+                            setNotice(`Вы дали слово участнику ${rh.userName} 🎙️`);
+                            setTimeout(() => setNotice(null), 2000);
+                          }}
+                        >
+                          🎙️ Дать слово
+                        </button>
+                        <button
+                          type="button"
+                          className="btn"
+                          style={{ width: 'auto', padding: '3px 8px', fontSize: 11 }}
+                          onClick={() => setRaisedHands((prev) => prev.filter((x) => x.userId !== rh.userId))}
+                        >
+                          Отклонить
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Управление для участника */}
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              {!canModerate && (
+                <button
+                  type="button"
+                  className={`btn ${hasRaisedHand ? 'btn-primary' : ''}`}
+                  style={{ flex: 1, padding: '10px' }}
+                  onClick={() => {
+                    const next = !hasRaisedHand;
+                    setHasRaisedHand(next);
+                    if (next && me) {
+                      setRaisedHands((prev) => [...prev, { userId: me.id, userName: me.display_name }]);
+                      setNotice('Вы подняли руку ✋. Организатор трансляции увидит ваш запрос');
+                      setTimeout(() => setNotice(null), 2000);
+                    }
+                  }}
+                >
+                  {hasRaisedHand ? '✋ Рука поднята' : '✋ Поднять руку'}
+                </button>
+              )}
+
+              <button
+                type="button"
+                className="btn"
+                style={{ flex: 1, padding: '10px' }}
+                onClick={() => setLiveStreamMuted((v) => !v)}
+              >
+                {liveStreamMuted ? '🔇 Включить звук' : '🔊 Выключить звук'}
+              </button>
+
+              {canModerate && (
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ flex: 1, padding: '10px', color: 'var(--danger)', borderColor: 'var(--danger)' }}
+                  onClick={() => {
+                    setLiveStreamActive(false);
+                    setInLiveStreamStage(false);
+                    setNotice('Прямой эфир завершён');
+                    setTimeout(() => setNotice(null), 1800);
+                  }}
+                >
+                  ⏹ Завершить эфир
+                </button>
+              )}
             </div>
           </div>
         </div>

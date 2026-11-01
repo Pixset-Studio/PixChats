@@ -47,6 +47,7 @@ import {
 } from '../../lib/appLock';
 import { get2FAConfig, save2FAConfig, type TwoFactorConfig } from '../../lib/twoFactorAuth';
 import { getAutoTranslatePref, setAutoTranslatePref } from '../../lib/translator';
+import { isScreenshotGuardEnabled, setScreenshotGuardEnabled } from '../../lib/screenshotGuard';
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -84,6 +85,7 @@ export default function SettingsPage() {
   const [twoFactorPassDraft, setTwoFactorPassDraft] = useState('');
   const [twoFactorHintDraft, setTwoFactorHintDraft] = useState('');
   const [autoTranslate, setAutoTranslate] = useState(getAutoTranslatePref());
+  const [screenshotGuard, setScreenshotGuard] = useState(isScreenshotGuardEnabled());
 
   useEffect(() => {
     (async () => {
@@ -1002,6 +1004,29 @@ export default function SettingsPage() {
               setAutoTranslate(enabled);
               setAutoTranslatePref(enabled);
               setNotice(enabled ? 'Автопереводчик включён 🌐' : 'Автопереводчик отключён');
+              setTimeout(() => setNotice(null), 1500);
+            }}
+            style={{ width: 18, height: 18, accentColor: 'var(--accent)' }}
+          />
+        </label>
+      </div>
+      <div className="section-title">🛡️ Защита от скриншотов и сохранения</div>
+      <div className="card" style={{ marginBottom: 24 }}>
+        <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }}>
+          <div>
+            <div style={{ fontWeight: 600, fontSize: 14 }}>Защита контента и сохранений</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+              Запрещает выделение текста, сохранение фото/видео по правому клику и перетаскивание файлов из чатов
+            </div>
+          </div>
+          <input
+            type="checkbox"
+            checked={screenshotGuard}
+            onChange={(e) => {
+              const enabled = e.target.checked;
+              setScreenshotGuard(enabled);
+              setScreenshotGuardEnabled(enabled);
+              setNotice(enabled ? 'Защита от скриншотов и сохранения включена 🛡️' : 'Защита от скриншотов отключена');
               setTimeout(() => setNotice(null), 1500);
             }}
             style={{ width: 18, height: 18, accentColor: 'var(--accent)' }}

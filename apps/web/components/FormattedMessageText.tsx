@@ -174,7 +174,7 @@ function SpoilerSpan({ content }: { content: string }) {
  */
 function renderInlineTokens(text: string): React.ReactNode[] {
   const tokenRegex =
-    /(`[^`\n]+`|\|\|[^|\n]+\|\||\*\*[^*\n]+\*\*|~~[^~\n]+~~|\*[^*\n]+\*|https?:\/\/[^\s<>"')]+|@[a-zA-Z0-9_]{2,32})/g;
+    /(`[^`\n]+`|\|\|[^|\n]+\|\||\*\*[^*\n]+\*\*|~~[^~\n]+~~|\*[^*\n]+\*|https?:\/\/[^\s<>"')]+|@[a-zA-Z0-9_]{2,32}|#[a-zA-Z0-9_а-яА-ЯёЁ]{2,32})/g;
 
   const parts = text.split(tokenRegex);
   return parts.map((part, idx) => {
@@ -242,6 +242,32 @@ function renderInlineTokens(text: string): React.ReactNode[] {
             color: 'var(--accent)',
             fontWeight: 600,
           }}
+        >
+          {part}
+        </span>
+      );
+    }
+
+    if (part.startsWith('#') && part.length > 1) {
+      return (
+        <span
+          key={idx}
+          style={{
+            color: 'var(--accent)',
+            fontWeight: 700,
+            cursor: 'pointer',
+            padding: '1px 4px',
+            borderRadius: 4,
+            background: 'rgba(245, 158, 11, 0.12)',
+            display: 'inline-block',
+          }}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (typeof window !== 'undefined') {
+              window.dispatchEvent(new CustomEvent('pixchats:hashtag_click', { detail: part }));
+            }
+          }}
+          title={`Искать по хэштегу ${part}`}
         >
           {part}
         </span>
