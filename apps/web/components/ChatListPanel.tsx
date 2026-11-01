@@ -713,22 +713,24 @@ export function ChatListPanel() {
                           {displayName}
                           {isVerified && <VerifiedBadge size={14} />}
                         </span>
-                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
-                          {preview && <span className="chat-item-time">{formatTime(preview.sent_at)}</span>}
-                          {preview && preview.sender_id === profile.id && (
+                        {preview && <span className="chat-item-time">{formatTime(preview.sent_at)}</span>}
+                      </div>
+                      <div className="chat-item-preview-text" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 2 }}>
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {preview
+                            ? formatPreviewText(preview)
+                            : isSaved
+                              ? 'Сохранённые сообщения и заметки'
+                              : `${TYPE_LABEL[chat.type]}${chat.username ? ` · @${chat.username}` : ''}`}
+                        </span>
+                        {preview && preview.sender_id === profile.id && (
+                          <span style={{ display: 'inline-flex', alignItems: 'center', flexShrink: 0 }}>
                             <ReadStatusTicks
                               status={isMessageRead(chat.id, preview, partnerLastRead) ? 'read' : 'sent'}
                               size={13}
                             />
-                          )}
-                        </div>
-                      </div>
-                      <div className="chat-item-preview-text">
-                        {preview
-                          ? formatPreviewText(preview)
-                          : isSaved
-                            ? 'Сохранённые сообщения и заметки'
-                            : `${TYPE_LABEL[chat.type]}${chat.username ? ` · @${chat.username}` : ''}`}
+                          </span>
+                        )}
                       </div>
                     </div>
                   </Link>
@@ -856,27 +858,9 @@ export function ChatListPanel() {
                       <span>{displayName}</span>
                       {isVerified && <VerifiedBadge size={14} />}
                     </span>
-                    <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
-                      {preview && <span className="chat-item-time">{formatTime(preview.sent_at)}</span>}
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 4, minHeight: 16 }}>
-                        {preview && preview.sender_id === profile.id && (
-                          <ReadStatusTicks
-                            status={isMessageRead(chat.id, preview, partnerLastRead) ? 'read' : 'sent'}
-                            size={13}
-                          />
-                        )}
-                        {unreadCounts[chat.id] > 0 && (
-                          <span
-                            key={unreadCounts[chat.id]}
-                            className={`unread-badge ${muteStates[chat.id]?.muted ? 'muted' : ''}`}
-                          >
-                            {unreadCounts[chat.id] > 99 ? '99+' : unreadCounts[chat.id]}
-                          </span>
-                        )}
-                      </div>
-                    </span>
+                    {preview && <span className="chat-item-time">{formatTime(preview.sent_at)}</span>}
                   </div>
-                  <div className="chat-item-preview-text" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                  <div className="chat-item-preview-text" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 2 }}>
                     <span
                       style={{
                         overflow: 'hidden',
@@ -894,21 +878,37 @@ export function ChatListPanel() {
                             ? 'Личное облако заметок и файлов'
                             : `${TYPE_LABEL[chat.type]}${chat.visibility ? ` · ${chat.visibility === 'public' ? 'публичный' : 'приватный'}` : ''}`}
                     </span>
-                    {folder === 'archive' && (
-                      <button
-                        type="button"
-                        className="btn-ghost"
-                        style={{ width: 'auto', padding: '1px 6px', fontSize: 11, flexShrink: 0 }}
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          toggleArchiveChat(chat.id);
-                        }}
-                        title="Вернуть из архива"
-                      >
-                        Вернуть
-                      </button>
-                    )}
+                    <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6, flexShrink: 0 }}>
+                      {preview && preview.sender_id === profile.id && (
+                        <ReadStatusTicks
+                          status={isMessageRead(chat.id, preview, partnerLastRead) ? 'read' : 'sent'}
+                          size={13}
+                        />
+                      )}
+                      {unreadCounts[chat.id] > 0 && (
+                        <span
+                          key={unreadCounts[chat.id]}
+                          className={`unread-badge ${muteStates[chat.id]?.muted ? 'muted' : ''}`}
+                        >
+                          {unreadCounts[chat.id] > 99 ? '99+' : unreadCounts[chat.id]}
+                        </span>
+                      )}
+                      {folder === 'archive' && (
+                        <button
+                          type="button"
+                          className="btn-ghost"
+                          style={{ width: 'auto', padding: '1px 6px', fontSize: 11, flexShrink: 0 }}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            toggleArchiveChat(chat.id);
+                          }}
+                          title="Вернуть из архива"
+                        >
+                          Вернуть
+                        </button>
+                      )}
+                    </span>
                   </div>
                 </div>
               </Link>

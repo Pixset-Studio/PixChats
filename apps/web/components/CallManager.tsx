@@ -61,7 +61,10 @@ const RTC_CONFIG: RTCConfiguration = {
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
   ],
+  iceCandidatePoolSize: 10,
 };
 
 function formatDuration(sec: number): string {
@@ -162,6 +165,9 @@ export function CallManager() {
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
+  const pendingCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
+  const makingOfferRef = useRef<boolean>(false);
+  const acceptRetryTimerRef = useRef<any>(null);
   const ringtoneTimerRef = useRef<any>(null);
   const ringtoneAudioElRef = useRef<HTMLAudioElement | null>(null);
   const sharedAudioCtxRef = useRef<AudioContext | null>(null);
@@ -305,38 +311,58 @@ export function CallManager() {
     return () => clearInterval(timer);
   }, [session?.status, session?.callerIsDeveloper]);
 
+  function syncRemoteAudioPlayback() {
+    const stream = remoteStreamRef.current;
+    if (!stream) return;
+    if (remoteAudioRef.current) {
+      if (remoteAudioRef.current.srcObject !== stream) {
+        remoteAudioRef.current.srcObject = stream;
+      }
+      remoteAudioRef.current.muted = false;
+      remoteAudioRef.current.volume = 1.0;
+      void remoteAudioRef.current.play().catch(() => {});
+    }
+    if (remoteVideoRef.current && stream.getVideoTracks().length > 0) {
+      if (remoteVideoRef.current.srcObject !== stream) {
+        remoteVideoRef.current.srcObject = stream;
+      }
+      void remoteVideoRef.current.play().catch(() => {});
+    }
+  }
+
   // Привязка локального и удалённого медиа-потоков к video/audio элементам
   useEffect(() => {
     if (localVideoRef.current && (screenStreamRef.current || localStreamRef.current)) {
       localVideoRef.current.srcObject = screenStreamRef.current || localStreamRef.current;
     }
-    if (remoteVideoRef.current && remoteStreamRef.current) {
-      remoteVideoRef.current.srcObject = remoteStreamRef.current;
-    }
-    if (remoteAudioRef.current && remoteStreamRef.current) {
-      remoteAudioRef.current.srcObject = remoteStreamRef.current;
-    }
+    syncRemoteAudioPlayback();
   }, [session, minimized, cameraEnabled, screenSharing, hasRemoteVideo]);
 
   async function acquireLocalMedia(wantVideo: boolean): Promise<MediaStream> {
     if (typeof navigator !== 'undefined' && navigator.mediaDevices?.getUserMedia) {
+      const audioConstraints: MediaTrackConstraints = {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      };
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
-          audio: true,
+          audio: audioConstraints,
           video: wantVideo ? { width: { ideal: 1280 }, height: { ideal: 720 } } : false,
         });
         setCameraEnabled(wantVideo && stream.getVideoTracks().length > 0);
         setMicMuted(false);
         return stream;
       } catch {
-        if (wantVideo) {
-          try {
-            const audioOnly = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-            setCameraEnabled(false);
-            setMicMuted(false);
-            return audioOnly;
-          } catch {}
-        }
+        try {
+          const audioOnly = await navigator.mediaDevices.getUserMedia({
+            audio: audioConstraints,
+            video: false,
+          });
+          setCameraEnabled(false);
+          setMicMuted(false);
+          return audioOnly;
+        } catch {}
       }
     }
     setCameraEnabled(false);
@@ -345,6 +371,14 @@ export function CallManager() {
 
   function cleanupCallResources() {
     stopRingtone();
+
+    if (acceptRetryTimerRef.current) {
+      clearInterval(acceptRetryTimerRef.current);
+      acceptRetryTimerRef.current = null;
+    }
+
+    pendingCandidatesRef.current = [];
+    makingOfferRef.current = false;
 
     if (pcRef.current) {
       try {
@@ -361,6 +395,12 @@ export function CallManager() {
     if (screenStreamRef.current) {
       screenStreamRef.current.getTracks().forEach((t) => t.stop());
       screenStreamRef.current = null;
+    }
+
+    if (remoteAudioRef.current) {
+      try {
+        remoteAudioRef.current.srcObject = null;
+      } catch {}
     }
 
     remoteStreamRef.current = null;
@@ -381,28 +421,58 @@ export function CallManager() {
     setGroupParticipants([]);
   }
 
+  async function flushPendingIceCandidates(pc: RTCPeerConnection) {
+    if (!pc.remoteDescription) return;
+    const queued = [...pendingCandidatesRef.current];
+    pendingCandidatesRef.current = [];
+    for (const cand of queued) {
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(cand));
+      } catch {}
+    }
+  }
+
   function createPeerConnection(callId: string, localStream: MediaStream): RTCPeerConnection {
     const pc = new RTCPeerConnection(RTC_CONFIG);
     const remoteStream = new MediaStream();
     remoteStreamRef.current = remoteStream;
+    pendingCandidatesRef.current = [];
 
-    localStream.getTracks().forEach((track) => {
+    const localTracks = localStream.getTracks();
+    localTracks.forEach((track) => {
+      track.enabled = true;
       pc.addTrack(track, localStream);
     });
 
+    // Если микрофон не был получен, добавляем приёмный аудио-трансивер, чтобы слышать собеседника
+    if (localStream.getAudioTracks().length === 0) {
+      try {
+        pc.addTransceiver('audio', { direction: 'recvonly' });
+      } catch {}
+    }
+
     pc.ontrack = (event) => {
-      event.streams[0]?.getTracks().forEach((track) => {
-        remoteStream.addTrack(track);
+      const addTrackIfNeeded = (track: MediaStreamTrack) => {
+        track.enabled = true;
+        if (!remoteStream.getTracks().some((t) => t.id === track.id)) {
+          remoteStream.addTrack(track);
+        }
         if (track.kind === 'video') {
           setHasRemoteVideo(true);
         }
-      });
-      if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = remoteStream;
+      };
+
+      if (event.track) {
+        addTrackIfNeeded(event.track);
       }
-      if (remoteAudioRef.current) {
-        remoteAudioRef.current.srcObject = remoteStream;
+      if (event.streams && event.streams[0]) {
+        event.streams[0].getTracks().forEach(addTrackIfNeeded);
       }
+
+      // Создаём обновлённый MediaStream, чтобы браузер гарантированно запустил воспроизведение нового аудио-трека
+      const updatedStream = new MediaStream(remoteStream.getTracks());
+      remoteStreamRef.current = updatedStream;
+      syncRemoteAudioPlayback();
     };
 
     pc.onicecandidate = (event) => {
@@ -418,12 +488,22 @@ export function CallManager() {
       }
     };
 
-    pc.onconnectionstatechange = () => {
-      if (pc.connectionState === 'connected') {
+    const handleConnectedState = () => {
+      const state = pc.connectionState;
+      const iceState = pc.iceConnectionState;
+      if (state === 'connected' || iceState === 'connected' || iceState === 'completed') {
         stopRingtone();
+        if (acceptRetryTimerRef.current) {
+          clearInterval(acceptRetryTimerRef.current);
+          acceptRetryTimerRef.current = null;
+        }
         setSession((prev) => (prev ? { ...prev, status: 'connected' } : null));
+        syncRemoteAudioPlayback();
       }
     };
+
+    pc.onconnectionstatechange = handleConnectedState;
+    pc.oniceconnectionstatechange = handleConnectedState;
 
     pcRef.current = pc;
     return pc;
@@ -432,11 +512,35 @@ export function CallManager() {
   function joinSignalingRoom(activeSess: ActiveCallSession, isInitiator: boolean, localStream: MediaStream) {
     const supabase = getSupabaseClient();
     const room = supabase.channel(`pixchats-call-room:${activeSess.callId}`, {
-      config: { presence: { key: me?.id || 'anon' } },
+      config: {
+        presence: { key: me?.id || 'anon' },
+        broadcast: { self: false },
+      },
     });
     roomChannelRef.current = room;
 
     const pc = createPeerConnection(activeSess.callId, localStream);
+
+    const sendWebRtcOffer = async () => {
+      if (makingOfferRef.current) return;
+      if (pc.signalingState !== 'stable') return;
+      makingOfferRef.current = true;
+      try {
+        const offer = await pc.createOffer({
+          offerToReceiveAudio: true,
+          offerToReceiveVideo: true,
+        });
+        await pc.setLocalDescription(offer);
+        room.send({
+          type: 'broadcast',
+          event: 'webrtc-offer',
+          payload: { senderId: me?.id, sdp: pc.localDescription || offer },
+        });
+      } catch {
+      } finally {
+        makingOfferRef.current = false;
+      }
+    };
 
     room
       .on('presence', { event: 'sync' }, () => {
@@ -453,9 +557,15 @@ export function CallManager() {
             }
           });
           setGroupParticipants(list);
+          const hasOtherPeer = list.some((p) => p.id && p.id !== me?.id);
           if (activeSess.isGroup && list.length >= 1) {
             stopRingtone();
             setSession((prev) => (prev ? { ...prev, status: 'connected' } : null));
+          }
+          // Если второй участник уже в комнате, а соединение ещё не установлено — инициируем Offer
+          if (isInitiator && hasOtherPeer && !pc.remoteDescription && pc.signalingState === 'stable') {
+            stopRingtone();
+            void sendWebRtcOffer();
           }
         } catch {}
       })
@@ -463,43 +573,57 @@ export function CallManager() {
         if (payload?.senderId === me?.id) return;
         stopRingtone();
         setSession((prev) => (prev ? { ...prev, status: 'connecting' } : null));
-        try {
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-          room.send({
-            type: 'broadcast',
-            event: 'webrtc-offer',
-            payload: { senderId: me?.id, sdp: offer },
-          });
-        } catch {}
+        await sendWebRtcOffer();
       })
       .on('broadcast', { event: 'webrtc-offer' }, async ({ payload }) => {
         if (!payload?.sdp || payload?.senderId === me?.id) return;
+        stopRingtone();
+        if (acceptRetryTimerRef.current) {
+          clearInterval(acceptRetryTimerRef.current);
+          acceptRetryTimerRef.current = null;
+        }
         try {
-          await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+          if (pc.signalingState !== 'stable') {
+            await Promise.all([
+              pc.setLocalDescription({ type: 'rollback' }),
+              pc.setRemoteDescription(new RTCSessionDescription(payload.sdp)),
+            ]);
+          } else {
+            await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+          }
+          await flushPendingIceCandidates(pc);
+
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
           room.send({
             type: 'broadcast',
             event: 'webrtc-answer',
-            payload: { senderId: me?.id, sdp: answer },
+            payload: { senderId: me?.id, sdp: pc.localDescription || answer },
           });
-          stopRingtone();
           setSession((prev) => (prev ? { ...prev, status: 'connected' } : null));
+          syncRemoteAudioPlayback();
         } catch {}
       })
       .on('broadcast', { event: 'webrtc-answer' }, async ({ payload }) => {
         if (!payload?.sdp || payload?.senderId === me?.id) return;
         try {
-          await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+          if (pc.signalingState === 'have-local-offer') {
+            await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+            await flushPendingIceCandidates(pc);
+          }
           stopRingtone();
           setSession((prev) => (prev ? { ...prev, status: 'connected' } : null));
+          syncRemoteAudioPlayback();
         } catch {}
       })
       .on('broadcast', { event: 'ice-candidate' }, async ({ payload }) => {
         if (!payload?.candidate || payload?.senderId === me?.id) return;
         try {
-          await pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
+          if (pc.remoteDescription && pc.remoteDescription.type) {
+            await pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
+          } else {
+            pendingCandidatesRef.current.push(payload.candidate);
+          }
         } catch {}
       })
       .on('broadcast', { event: 'media-update' }, ({ payload }) => {
@@ -523,11 +647,26 @@ export function CallManager() {
             });
           }
           if (!isInitiator || activeSess.isGroup) {
-            room.send({
-              type: 'broadcast',
-              event: 'call-accepted',
-              payload: { senderId: me?.id },
-            });
+            const sendAccepted = () => {
+              room.send({
+                type: 'broadcast',
+                event: 'call-accepted',
+                payload: { senderId: me?.id },
+              });
+            };
+            sendAccepted();
+            // Повторяем сигнал готовности, если инициатор ещё загружает микрофон
+            if (!activeSess.isGroup) {
+              if (acceptRetryTimerRef.current) clearInterval(acceptRetryTimerRef.current);
+              acceptRetryTimerRef.current = setInterval(() => {
+                if (pcRef.current && !pcRef.current.remoteDescription) {
+                  sendAccepted();
+                } else if (acceptRetryTimerRef.current) {
+                  clearInterval(acceptRetryTimerRef.current);
+                  acceptRetryTimerRef.current = null;
+                }
+              }, 1200);
+            }
           }
         }
       });
@@ -893,7 +1032,9 @@ export function CallManager() {
     };
   }, [me?.id]);
 
-  if (!session) return null;
+  if (!session) {
+    return <audio ref={remoteAudioRef} autoPlay playsInline style={{ display: 'none' }} />;
+  }
 
   // 1. Входящий вызов (ожидание ответа)
   if (session.direction === 'incoming' && session.status === 'ringing') {
@@ -902,6 +1043,7 @@ export function CallManager() {
         className="modal-overlay"
         style={{ zIndex: 10000, background: 'rgba(0, 0, 0, 0.85)', backdropFilter: 'blur(8px)' }}
       >
+        <audio ref={remoteAudioRef} autoPlay playsInline style={{ display: 'none' }} />
         <div
           className="modal-card"
           style={{
@@ -1011,7 +1153,7 @@ export function CallManager() {
           gap: 10,
         }}
       >
-        <audio ref={remoteAudioRef} autoPlay playsInline />
+        <audio ref={remoteAudioRef} autoPlay playsInline style={{ display: 'none' }} />
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, cursor: 'pointer' }} onClick={() => setMinimized(false)}>
           <AvatarWithStatus
             avatarUrl={session.peerAvatar}
@@ -1075,7 +1217,7 @@ export function CallManager() {
         padding: 20,
       }}
     >
-      <audio ref={remoteAudioRef} autoPlay playsInline />
+      <audio ref={remoteAudioRef} autoPlay playsInline style={{ display: 'none' }} />
 
       {/* Верхняя панель */}
       <div
