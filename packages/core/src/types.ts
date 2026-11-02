@@ -19,10 +19,15 @@ export interface Profile {
   privacy_who_can_add_to_groups: 'everyone' | 'friends_only' | 'nobody';
   banned_until: string | null;
   banned_permanently: boolean;
+  ban_reason?: string | null;
   frozen: boolean;
   frozen_at?: string | null;
+  frozen_reason?: string | null;
+  moderator_comment?: string | null;
   last_ip?: string | null;
 }
+
+export type PenaltyDurationUnit = 'seconds' | 'minutes' | 'hours' | 'days' | 'months' | 'years';
 
 export interface ChatMute {
   id: string;
@@ -30,7 +35,9 @@ export interface ChatMute {
   chat_id: string;
   muted_until: string | null;
   reason: string | null;
+  moderator_comment?: string | null;
   muted_by: string | null;
+  is_penalty?: boolean;
   created_at: string;
   chat_title?: string;
   user_name?: string;

@@ -3197,9 +3197,25 @@ function ChatWindowInner() {
       </div>
 
       {me.frozen ? (
-        <p className="subscriber-notice error">
-          ❄️ Ваш аккаунт заморожен — вы можете только читать сообщения, отправка недоступна
-        </p>
+        <div
+          className="subscriber-notice error"
+          style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}
+        >
+          <div>
+            <div>❄️ Ваш аккаунт заморожен — вы можете только читать сообщения, отправка недоступна</div>
+            {me.frozen_reason && (
+              <div style={{ fontSize: 12, marginTop: 2 }}>Причина: {me.frozen_reason}</div>
+            )}
+            {me.moderator_comment && (
+              <div style={{ fontSize: 12, color: 'var(--accent)', marginTop: 2 }}>
+                💬 Комментарий модератора: {me.moderator_comment}
+              </div>
+            )}
+          </div>
+          <Link href="/appeals" className="btn btn-primary" style={{ width: 'auto', padding: '5px 12px', fontSize: 12, textDecoration: 'none' }}>
+            ⚖️ Подать апелляцию
+          </Link>
+        </div>
       ) : blockedEitherWay ? (
         <p className="subscriber-notice error">Вы не можете писать этому пользователю — общение заблокировано</p>
       ) : myRole === null && chat.type !== 'direct' ? (
@@ -3715,7 +3731,7 @@ function ChatWindowInner() {
                 }}
               >
                 <div style={{ fontSize: 13, color: 'var(--text)' }}>
-                  <strong style={{ color: 'var(--danger)' }}>🔒 Вы замьючены в этом чате</strong>{' '}
+                  <strong style={{ color: 'var(--danger)' }}>🔒 Вы замучены в этом чате</strong>{' '}
                   {currentMute.muted_until
                     ? `до ${new Date(currentMute.muted_until).toLocaleString('ru-RU')}`
                     : 'бессрочно'}
@@ -3723,11 +3739,16 @@ function ChatWindowInner() {
                   <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
                     Причина: {currentMute.reason || 'Нарушение правил общения'}
                   </div>
+                  {currentMute.moderator_comment && (
+                    <div style={{ fontSize: 12, color: 'var(--accent)', marginTop: 2 }}>
+                      💬 Комментарий модератора: {currentMute.moderator_comment}
+                    </div>
+                  )}
                 </div>
                 <Link
                   href="/appeals"
                   className="btn btn-primary"
-                  style={{ width: 'auto', padding: '6px 14px', fontSize: 12, whiteSpace: 'nowrap', flexShrink: 0 }}
+                  style={{ width: 'auto', padding: '6px 14px', fontSize: 12, whiteSpace: 'nowrap', flexShrink: 0, textDecoration: 'none' }}
                 >
                   ⚖️ Подать апелляцию
                 </Link>

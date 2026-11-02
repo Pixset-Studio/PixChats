@@ -188,8 +188,6 @@ export function StoriesBar({ profile }: StoriesBarProps) {
       }
     })();
 
-    const pollInterval = setInterval(refreshStories, 15000);
-
     const onLocalUpdate = (e: Event) => {
       const custom = e as CustomEvent<{ stories: StoryItem[] }>;
       if (custom.detail?.stories) {
@@ -243,7 +241,6 @@ export function StoriesBar({ profile }: StoriesBarProps) {
 
     return () => {
       mounted = false;
-      clearInterval(pollInterval);
       window.removeEventListener('pixchats:stories_updated', onLocalUpdate);
       window.removeEventListener('pixchats:open_story_studio', onOpenChannelStudio);
       supabase.removeChannel(channel);

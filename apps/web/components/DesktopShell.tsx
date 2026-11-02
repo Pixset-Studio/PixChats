@@ -14,7 +14,7 @@ let savedListScroll = 0;
 
 const DesktopShellContext = createContext<boolean>(false);
 
-const STANDALONE_PATHS = ['/', '/login', '/register', '/complete-profile', '/banned', '/faq', '/privacy'];
+const STANDALONE_PATHS = ['/', '/login', '/register', '/complete-profile', '/banned', '/appeals', '/faq', '/privacy'];
 
 function isStandaloneRoute(pathname: string | null): boolean {
   if (!pathname) return false;

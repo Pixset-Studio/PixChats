@@ -39,8 +39,12 @@ const STORIES_LEGACY_PATH = 'stories/active_stories_v1.json';
 const STORIES_ITEMS_FOLDER = 'stories/items';
 const STORY_LIFETIME_MS = 24 * 60 * 60 * 1000; // 24 hours
 
+const STORIES_GLOBAL_MANIFEST_PATH = 'stories/global_active_stories.json';
+let lastStoriesCloudFetchAt = 0;
+let storiesFetchInProgress: Promise<StoryItem[]> | null = null;
+
 export const STORY_GRADIENTS = [
-  { id: 'gold', label: 'Золото Pix', css: 'linear-gradient(135deg, #1a1500 0%, #5c4900 50%, #ffd400 100%)' },
+  { id: 'gold', label: 'Золото Pixset Studio', css: 'linear-gradient(135deg, #1a1500 0%, #5c4900 50%, #ffd400 100%)' },
   { id: 'cyber', label: 'Киберпанк', css: 'linear-gradient(135deg, #090d16 0%, #3b0764 50%, #ec4899 100%)' },
   { id: 'emerald', label: 'Изумруд', css: 'linear-gradient(135deg, #052e16 0%, #065f46 50%, #10b981 100%)' },
   { id: 'ocean', label: 'Океан', css: 'linear-gradient(135deg, #082f49 0%, #0284c7 50%, #38bdf8 100%)' },
@@ -182,71 +186,47 @@ export function markStoryViewedLocal(storyId: string): void {
   }
 }
 
-async function saveSingleStoryItemToCloud(story: StoryItem): Promise<void> {
-  try {
-    const supabase = getSupabaseClient();
-    const authorUid = story.authorUserId || story.userId;
-    if (!authorUid || authorUid.startsWith('channel:')) return;
-    const blob = new Blob([JSON.stringify(story)], { type: 'application/json' });
-    await supabase.storage
-      .from('avatars')
-      .upload(`${authorUid}/stories/${story.id}.json`, blob, {
-        upsert: true,
-        contentType: 'application/json',
-        cacheControl: '0',
-      });
-  } catch {
-    // ignore
-  }
-}
-
-export async function loadActiveStories(): Promise<StoryItem[]> {
+export async function loadActiveStories(force = false): Promise<StoryItem[]> {
   const local = getCachedStories();
-  try {
-    const supabase = getSupabaseClient();
-    const cacheBust = Date.now();
-
-    // 1. Загружаем активные истории всех недавних пользователей из avatars/{userId}/stories/active_stories.json
-    const { data: profiles } = await supabase
-      .from('profiles')
-      .select('id')
-      .limit(60);
-
-    const profilePromises = (profiles || []).map(async (p: { id: string }) => {
-      try {
-        const { data } = supabase.storage.from('avatars').getPublicUrl(`${p.id}/stories/active_stories.json`);
-        if (!data?.publicUrl) return [];
-        const res = await fetch(`${data.publicUrl}?t=${cacheBust}`, { cache: 'no-store' });
-        if (!res.ok) return [];
-        const json = await res.json();
-        return Array.isArray(json) ? json : [];
-      } catch {
-        return [];
-      }
-    });
-
-    const results = await Promise.all(profilePromises);
-    const flattened = results.flat();
-
-    const merged = filterActive([...local, ...flattened]);
-    return saveCachedStories(merged);
-  } catch {
+  const now = Date.now();
+  // Throttle cloud fetch to once every 15 minutes unless forced (Realtime broadcast handles instant updates)
+  if (!force && now - lastStoriesCloudFetchAt < 15 * 60 * 1000) {
     return local;
   }
+  if (storiesFetchInProgress) return storiesFetchInProgress;
+
+  storiesFetchInProgress = (async () => {
+    lastStoriesCloudFetchAt = Date.now();
+    try {
+      const supabase = getSupabaseClient();
+      const { data } = supabase.storage.from(STORIES_BUCKET).getPublicUrl(STORIES_GLOBAL_MANIFEST_PATH);
+      if (!data?.publicUrl) return local;
+      const res = await fetch(data.publicUrl);
+      if (!res.ok) return local;
+      const json = await res.json();
+      const remoteList = Array.isArray(json) ? json : [];
+      const merged = filterActive([...local, ...remoteList]);
+      return saveCachedStories(merged);
+    } catch {
+      return local;
+    } finally {
+      storiesFetchInProgress = null;
+    }
+  })();
+
+  return storiesFetchInProgress;
 }
 
-async function persistStoriesToCloud(stories: StoryItem[]): Promise<void> {
+async function persistStoriesToCloud(stories: StoryItem[], uploadManifest = true): Promise<void> {
   const active = saveCachedStories(stories);
   try {
     const supabase = getSupabaseClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (user?.id) {
-      const myActive = active.filter((s) => s.authorUserId === user.id || s.userId === user.id);
-      const blob = new Blob([JSON.stringify(myActive)], { type: 'application/json' });
-      await supabase.storage.from('avatars').upload(`${user.id}/stories/active_stories.json`, blob, {
+    if (uploadManifest) {
+      const blob = new Blob([JSON.stringify(active)], { type: 'application/json' });
+      await supabase.storage.from(STORIES_BUCKET).upload(STORIES_GLOBAL_MANIFEST_PATH, blob, {
         upsert: true,
         contentType: 'application/json',
-        cacheControl: '0',
+        cacheControl: '120',
       });
     }
 
@@ -328,25 +308,16 @@ export async function publishNewStory(params: {
     reactions: {},
   };
 
-  // Save as dedicated per-story file in stories/items/ so all users discover it reliably
-  await saveSingleStoryItemToCloud(newStory);
-
-  const current = await loadActiveStories();
+  const current = await loadActiveStories(true);
   const updated = [newStory, ...current];
-  await persistStoriesToCloud(updated);
+  await persistStoriesToCloud(updated, true);
   return newStory;
 }
 
 export async function deleteStoryById(storyId: string): Promise<StoryItem[]> {
-  try {
-    const supabase = getSupabaseClient();
-    await supabase.storage.from(STORIES_BUCKET).remove([`${STORIES_ITEMS_FOLDER}/${storyId}.json`]);
-  } catch {
-    // ignore
-  }
-  const current = await loadActiveStories();
+  const current = await loadActiveStories(true);
   const updated = current.filter((s) => s.id !== storyId);
-  await persistStoriesToCloud(updated);
+  await persistStoriesToCloud(updated, true);
   return updated;
 }
 
@@ -354,19 +325,17 @@ export async function recordStoryView(storyId: string, viewerUserId: string): Pr
   markStoryViewedLocal(storyId);
   const current = getCachedStories();
   let changed = false;
-  let updatedItem: StoryItem | null = null;
 
   const updated = current.map((s) => {
     if (s.id !== storyId) return s;
     if (s.viewers.includes(viewerUserId)) return s;
     changed = true;
-    updatedItem = { ...s, viewers: [...s.viewers, viewerUserId] };
-    return updatedItem;
+    return { ...s, viewers: [...s.viewers, viewerUserId] };
   });
 
-  if (changed && updatedItem) {
-    await saveSingleStoryItemToCloud(updatedItem);
-    await persistStoriesToCloud(updated);
+  if (changed) {
+    // Broadcast view count update via Realtime without re-uploading heavy media manifest on every view
+    await persistStoriesToCloud(updated, false);
   }
 }
 
@@ -387,8 +356,7 @@ export async function toggleStoryReaction(
   userId: string,
   options?: { isDeveloper?: boolean; onLimitReached?: () => void }
 ): Promise<StoryItem[]> {
-  const current = await loadActiveStories();
-  let updatedItem: StoryItem | null = null;
+  const current = getCachedStories();
   let limitReached = false;
 
   const updated = current.map((s) => {
@@ -411,8 +379,7 @@ export async function toggleStoryReaction(
     } else {
       reactions[emoji] = [...existing, userId];
     }
-    updatedItem = { ...s, reactions };
-    return updatedItem;
+    return { ...s, reactions };
   });
 
   if (limitReached) {
@@ -420,9 +387,6 @@ export async function toggleStoryReaction(
     return current;
   }
 
-  if (updatedItem) {
-    await saveSingleStoryItemToCloud(updatedItem);
-  }
-  await persistStoriesToCloud(updated);
+  await persistStoriesToCloud(updated, true);
   return updated;
 }

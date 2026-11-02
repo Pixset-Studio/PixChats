@@ -1800,7 +1800,7 @@ export default function SettingsPage() {
                   @{pixsetAccount.nickname}
                   {pixsetAccount.is_admin && (
                     <span style={{ fontSize: 11, background: 'var(--accent)', color: '#000', padding: '1px 6px', borderRadius: 4, fontWeight: 700 }}>
-                      Сотрудник Pixset
+                      Сотрудник Pixset Studio
                     </span>
                   )}
                 </div>

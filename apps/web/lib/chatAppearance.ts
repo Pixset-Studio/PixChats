@@ -41,7 +41,7 @@ export const WALLPAPER_PRESETS: Array<{
   },
   {
     id: 'pixset-grid',
-    name: 'Кибер-сетка Pixset',
+    name: 'Кибер-сетка Pixset Studio',
     desc: 'Тёмное полотно с тонкой геометрической сеткой',
     previewCss:
       'radial-gradient(circle at 50% 20%, rgba(255, 212, 0, 0.08), transparent 65%), repeating-linear-gradient(0deg, rgba(255,255,255,0.03) 0px, rgba(255,255,255,0.03) 1px, transparent 1px, transparent 28px), repeating-linear-gradient(90deg, rgba(255,255,255,0.03) 0px, rgba(255,255,255,0.03) 1px, transparent 1px, transparent 28px), #09090b',

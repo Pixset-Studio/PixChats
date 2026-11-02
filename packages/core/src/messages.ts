@@ -27,6 +27,10 @@ export interface Message {
 const SELECT_FIELDS =
   'id, chat_id, sender_id, ciphertext, message_type, media_path, caption, caption_position, sent_at, reply_to_id, edited_at, is_deleted, forwarded_from_chat_id';
 
+// Лёгкий набор полей без тяжёлого media_path (Base64) для превью в списке чатов — экономит >95% трафика БД
+const PREVIEW_SELECT_FIELDS =
+  'id, chat_id, sender_id, ciphertext, message_type, caption, caption_position, sent_at, reply_to_id, edited_at, is_deleted, forwarded_from_chat_id';
+
 const DELETED_FOR_ME_STORAGE_KEY = 'pixchats:deleted_for_me';
 
 function getDeletedForMeSet(): Set<string> {
@@ -141,9 +145,9 @@ export async function sendMessage(chatId: string, text: string, options: SendMes
       const modResult = checkAutoModerationViolation(text);
       if (modResult.violated) {
         if (modResult.severity === 'light') {
-          // Лёгкое нарушение = Мьют только в этом чате на 24 часа
+          // Лёгкое нарушение = Мут только в этом чате на 24 часа
           await muteUserInChat({ userId: senderId, chatId, durationHours: 24, reason: modResult.reason });
-          throw new Error(`🔇 Вы получили автоматический мьют в этом чате на 24 часа. Причина: ${modResult.reason}`);
+          throw new Error(`🔇 Вы получили автоматический мут в этом чате на 24 часа. Причина: ${modResult.reason}`);
         } else {
           // Тяжёлое нарушение = Автозаморозка аккаунта
           await supabase.from('profiles').update({ frozen: true, frozen_at: new Date().toISOString() }).eq('id', senderId);
@@ -153,7 +157,7 @@ export async function sendMessage(chatId: string, text: string, options: SendMes
       }
     }
   } catch (err: any) {
-    if (err.message?.includes('автоматически заморожен') || err.message?.includes('автоматический мьют')) {
+    if (err.message?.includes('автоматически заморожен') || err.message?.includes('автоматический мут')) {
       throw err;
     }
   }
@@ -369,16 +373,17 @@ export async function forwardMessage(message: Message, targetChatId: string): Pr
     .limit(1);
 }
 
-/** Последнее сообщение по каждому чату из списка — для превью в списке чатов (без удалённых сообщений). */
+/** Последнее сообщение по каждому чату из списка — для превью в списке чатов (без удалённых сообщений и без загрузки тяжёлых Base64 media_path). */
 export async function getLastMessagesForChats(chatIds: string[]): Promise<Record<string, Message>> {
   if (chatIds.length === 0) return {};
   const supabase = getSupabaseClient();
+  const rowLimit = Math.min(180, Math.max(30, chatIds.length * 6));
   const { data, error } = await supabase
     .from('messages')
-    .select(SELECT_FIELDS)
+    .select(PREVIEW_SELECT_FIELDS)
     .in('chat_id', chatIds)
     .order('sent_at', { ascending: false })
-    .limit(500);
+    .limit(rowLimit);
   if (error) throw error;
 
   const latestRows: any[] = [];

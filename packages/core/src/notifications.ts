@@ -154,12 +154,14 @@ export async function getMuteStates(chatIds: string[], userId: string): Promise<
   const supabase = getSupabaseClient();
   const { data } = await supabase
     .from('chat_mutes')
-    .select('chat_id, muted_forever, muted_until')
+    .select('*')
     .eq('user_id', userId)
     .in('chat_id', chatIds);
 
   const result: Record<string, MuteState> = {};
-  for (const row of data ?? []) {
+  for (const row of (data ?? []) as any[]) {
+    // Пропускаем штрафные муты модерации, чтобы они не отображались как выключенные уведомления
+    if (row.is_penalty || (row.reason && String(row.reason).trim().length > 0)) continue;
     const stillMuted = row.muted_forever || (row.muted_until && new Date(row.muted_until) > new Date());
     result[row.chat_id] = { muted: !!stillMuted, mutedForever: row.muted_forever, mutedUntil: row.muted_until };
   }

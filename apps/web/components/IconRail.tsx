@@ -3,8 +3,9 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { getCachedCurrentProfile, getCurrentProfile } from '@pixchats/core';
 import { useConnectionStatus } from '../lib/useConnectionStatus';
-import { ChatsIcon, FriendsIcon, SettingsIcon, ProfileIcon } from './Icons';
+import { ChatsIcon, FriendsIcon, SettingsIcon, ProfileIcon, AdminPanelIcon } from './Icons';
 import { detectRuntimePlatform } from '../lib/nativePlatform';
 import { openDownloadAppModal } from './DownloadAppModal';
 
@@ -14,9 +15,34 @@ export function IconRail() {
   const pathname = usePathname();
   const connStatus = useConnectionStatus();
   const [isWebBrowser, setIsWebBrowser] = useState(false);
+  const [isStaff, setIsStaff] = useState(() => {
+    const cached = getCachedCurrentProfile();
+    return Boolean(
+      cached && (cached.role === 'admin' || cached.role === 'moderator' || cached.role === 'developer')
+    );
+  });
 
   useEffect(() => {
     setIsWebBrowser(detectRuntimePlatform() === 'web');
+
+    const checkRole = (p: any) => {
+      if (!p) return;
+      setIsStaff(p.role === 'admin' || p.role === 'moderator' || p.role === 'developer');
+    };
+
+    const cached = getCachedCurrentProfile();
+    if (cached) {
+      checkRole(cached);
+    } else {
+      void getCurrentProfile().then(checkRole).catch(() => {});
+    }
+
+    const onProfileUpdated = (e: Event) => {
+      const custom = e as CustomEvent;
+      if (custom.detail) checkRole(custom.detail);
+    };
+    window.addEventListener('pixchats:profile_updated', onProfileUpdated);
+    return () => window.removeEventListener('pixchats:profile_updated', onProfileUpdated);
   }, []);
 
   const items = [
@@ -24,6 +50,9 @@ export function IconRail() {
     { href: '/friends/', icon: <FriendsIcon size={18} />, title: 'Друзья' },
     { href: '/settings/', icon: <SettingsIcon size={18} />, title: 'Настройки' },
     { href: '/profile/', icon: <ProfileIcon size={18} />, title: 'Профиль' },
+    ...(isStaff
+      ? [{ href: '/admin/', icon: <AdminPanelIcon size={18} />, title: 'Панель администратора' }]
+      : []),
   ];
 
   return (
@@ -64,7 +93,8 @@ export function IconRail() {
           const active =
             pathname === item.href ||
             pathname === item.href.replace(/\/$/, '') ||
-            (item.href === '/chats/' && pathname?.startsWith('/chat'));
+            (item.href === '/chats/' && pathname?.startsWith('/chat')) ||
+            (item.href === '/admin/' && pathname?.startsWith('/admin'));
           return (
             <Link
               key={item.href}
@@ -99,4 +129,5 @@ export function IconRail() {
     </nav>
   );
 }
+
 

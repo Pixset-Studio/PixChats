@@ -247,9 +247,12 @@ export default function ProfilePage() {
           >
             ⭐ Избранное
           </button>
+          <Link href="/appeals/" className="btn btn-compact" style={{ textDecoration: 'none' }}>
+            ⚖️ Апелляции
+          </Link>
           {(profile.role === 'admin' || profile.role === 'developer' || profile.role === 'moderator') && (
             <Link href="/admin/" className="btn btn-compact" style={{ textDecoration: 'none' }}>
-              ⚙ Панель управления
+              🛡️ Панель администратора
             </Link>
           )}
           <button

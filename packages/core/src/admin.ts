@@ -1,5 +1,15 @@
 import { getSupabaseClient } from './supabaseClient';
-import type { Chat, Profile, UserRole, ChatMute, BannedIp, AppealItem, AppealPenaltyType, AppealStatus } from './types';
+import type {
+  Chat,
+  Profile,
+  UserRole,
+  ChatMute,
+  BannedIp,
+  AppealItem,
+  AppealPenaltyType,
+  AppealStatus,
+  PenaltyDurationUnit,
+} from './types';
 
 export interface AdminStatsOverview {
   total_users: number;
@@ -35,6 +45,187 @@ export interface AdminAuditLogRow {
   created_at: string;
 }
 
+const PENALTY_CLOUD_BUCKET = 'avatars';
+const APPEALS_CLOUD_PATH = 'moderation/appeals_v1.json';
+const MUTES_CLOUD_PATH = 'moderation/penalty_mutes_v1.json';
+const PENALTY_META_CLOUD_PATH = 'moderation/user_penalties_v1.json';
+
+export interface UserPenaltyDetails {
+  banReason: string | null;
+  frozenReason: string | null;
+  moderatorComment: string | null;
+  updatedAt?: string;
+}
+
+/**
+ * Вычисляет точную дату окончания наказания (ISO-строку) на основе:
+ * - флага permanent ("Навсегда" -> null)
+ * - точной даты/времени untilDate (ISO или datetime-local)
+ * - числового значения durationValue + единицы измерения durationUnit (seconds | minutes | hours | days | months | years)
+ * - классического durationDays
+ */
+export function computePenaltyExpirationIso(
+  params: {
+    permanent?: boolean;
+    untilDate?: string | null;
+    durationValue?: number;
+    durationUnit?: PenaltyDurationUnit;
+    durationDays?: number;
+  },
+  nowMs: number = Date.now()
+): string | null {
+  if (params.permanent) return null;
+
+  if (params.untilDate && params.untilDate.trim()) {
+    const parsedMs = new Date(params.untilDate.trim()).getTime();
+    if (!Number.isFinite(parsedMs) || parsedMs <= nowMs) {
+      throw new Error('Дата окончания блокировки должна быть в будущем');
+    }
+    return new Date(parsedMs).toISOString();
+  }
+
+  if (params.durationValue !== undefined && params.durationValue !== null) {
+    const val = Number(params.durationValue);
+    if (!Number.isFinite(val) || val <= 0) {
+      throw new Error('Укажите положительную длительность наказания');
+    }
+    const unit: PenaltyDurationUnit = params.durationUnit || 'days';
+    const d = new Date(nowMs);
+    switch (unit) {
+      case 'seconds':
+        return new Date(nowMs + val * 1000).toISOString();
+      case 'minutes':
+        return new Date(nowMs + val * 60 * 1000).toISOString();
+      case 'hours':
+        return new Date(nowMs + val * 3600 * 1000).toISOString();
+      case 'days':
+        return new Date(nowMs + val * 86400 * 1000).toISOString();
+      case 'months': {
+        const wholeMonths = Math.floor(val);
+        const fracDays = (val - wholeMonths) * 30;
+        d.setMonth(d.getMonth() + wholeMonths);
+        return new Date(d.getTime() + fracDays * 86400 * 1000).toISOString();
+      }
+      case 'years': {
+        const wholeYears = Math.floor(val);
+        const fracDays = (val - wholeYears) * 365;
+        d.setFullYear(d.getFullYear() + wholeYears);
+        return new Date(d.getTime() + fracDays * 86400 * 1000).toISOString();
+      }
+    }
+  }
+
+  if (params.durationDays !== undefined && params.durationDays !== null) {
+    const days = Number(params.durationDays);
+    if (Number.isFinite(days) && days > 0) {
+      return new Date(nowMs + days * 86400 * 1000).toISOString();
+    }
+  }
+
+  return null;
+}
+
+async function readCloudJson<T>(path: string, fallback: T): Promise<T> {
+  try {
+    const supabase = getSupabaseClient();
+    const { data } = supabase.storage.from(PENALTY_CLOUD_BUCKET).getPublicUrl(path);
+    if (!data?.publicUrl) return fallback;
+    const res = await fetch(`${data.publicUrl}?v=${Math.floor(Date.now() / 15000)}`);
+    if (!res.ok) return fallback;
+    const parsed = await res.json();
+    return (parsed ?? fallback) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+async function writeCloudJson<T>(path: string, value: T): Promise<void> {
+  try {
+    const supabase = getSupabaseClient();
+    const blob = new Blob([JSON.stringify(value)], { type: 'application/json' });
+    await supabase.storage.from(PENALTY_CLOUD_BUCKET).upload(path, blob, {
+      upsert: true,
+      contentType: 'application/json',
+      cacheControl: '15',
+    });
+  } catch {
+    // ignore storage fallback errors
+  }
+}
+
+async function saveUserPenaltyMetaToCloud(
+  userId: string,
+  patch: Partial<UserPenaltyDetails>
+): Promise<void> {
+  try {
+    const current = await readCloudJson<Record<string, UserPenaltyDetails>>(PENALTY_META_CLOUD_PATH, {});
+    const existing = current[userId] || {
+      banReason: null,
+      frozenReason: null,
+      moderatorComment: null,
+    };
+    current[userId] = {
+      ...existing,
+      ...patch,
+      updatedAt: new Date().toISOString(),
+    };
+    await writeCloudJson(PENALTY_META_CLOUD_PATH, current);
+  } catch {}
+}
+
+/**
+ * Возвращает причину бана/заморозки и комментарий модератора для показа пользователю.
+ * Проверяет поля профиля, облачный манифест модерации и журнал admin_audit_log.
+ */
+export async function getUserPenaltyDetails(
+  userId: string,
+  profile?: Profile | null
+): Promise<UserPenaltyDetails> {
+  let banReason = profile?.ban_reason || null;
+  let frozenReason = profile?.frozen_reason || null;
+  let moderatorComment = profile?.moderator_comment || null;
+
+  if (banReason && frozenReason && moderatorComment) {
+    return { banReason, frozenReason, moderatorComment };
+  }
+
+  try {
+    const cloudMap = await readCloudJson<Record<string, UserPenaltyDetails>>(PENALTY_META_CLOUD_PATH, {});
+    const cloudEntry = cloudMap[userId];
+    if (cloudEntry) {
+      if (!banReason && cloudEntry.banReason) banReason = cloudEntry.banReason;
+      if (!frozenReason && cloudEntry.frozenReason) frozenReason = cloudEntry.frozenReason;
+      if (!moderatorComment && cloudEntry.moderatorComment) moderatorComment = cloudEntry.moderatorComment;
+    }
+  } catch {}
+
+  try {
+    const supabase = getSupabaseClient();
+    const { data: logs } = await supabase
+      .from('admin_audit_log')
+      .select('action, details, created_at')
+      .eq('target_id', userId)
+      .in('action', ['ban_account', 'freeze_account'])
+      .order('created_at', { ascending: false })
+      .limit(5);
+
+    for (const row of logs ?? []) {
+      const det = (row.details || {}) as Record<string, any>;
+      if (row.action === 'ban_account' && !banReason && det.reason) {
+        banReason = String(det.reason);
+      }
+      if (row.action === 'freeze_account' && !frozenReason && det.reason) {
+        frozenReason = String(det.reason);
+      }
+      if (!moderatorComment && det.moderatorComment) {
+        moderatorComment = String(det.moderatorComment);
+      }
+    }
+  } catch {}
+
+  return { banReason, frozenReason, moderatorComment };
+}
+
 export async function getAdminStats(): Promise<AdminStatsOverview> {
   const supabase = getSupabaseClient();
   const { data, error } = await supabase.rpc('get_admin_stats_overview');
@@ -50,7 +241,7 @@ export interface SystemStatusRow {
   checked_at: string;
 }
 
-/** Ручная самопроверка: если запрос к БД прошёл — Supabase точно доступен. Полноценный cron — задача на будущее. */
+/** Ручная самопроверка: если запрос к БД прошёл — Supabase точно доступен. */
 export async function checkSystemStatusNow(): Promise<void> {
   const supabase = getSupabaseClient();
   const start = performance.now();
@@ -168,22 +359,22 @@ export async function getAuditLogsForAdmin(limit = 40): Promise<AdminAuditLogRow
 }
 
 async function logAdminAction(action: string, targetType: string, targetId: string, details?: object) {
-  const supabase = getSupabaseClient();
-  const { data: sessionData } = await supabase.auth.getSession();
-  const actorId = sessionData.session?.user.id;
-  await supabase.from('admin_audit_log').insert({
-    actor_id: actorId,
-    action,
-    target_type: targetType,
-    target_id: targetId,
-    details: details ?? {},
-  });
+  try {
+    const supabase = getSupabaseClient();
+    const { data: sessionData } = await supabase.auth.getSession();
+    const actorId = sessionData.session?.user.id;
+    await supabase.from('admin_audit_log').insert({
+      actor_id: actorId,
+      action,
+      target_type: targetType,
+      target_id: targetId,
+      details: details ?? {},
+    });
+  } catch {}
 }
 
 /**
- * Назначение роли. По вашему требованию — только 'developer' может назначать
- * 'admin'/'moderator'. Эта проверка продублирована и на фронте, и обязана быть
- * закреплена RLS-политикой/Edge Function перед продакшеном (см. TODO в миграции).
+ * Назначение роли. Только 'developer' может назначать 'admin'/'moderator'.
  */
 export async function setUserRole(targetUserId: string, role: UserRole, actingProfile: Profile) {
   if (actingProfile.role !== 'developer') {
@@ -222,64 +413,147 @@ export async function setPixsetEmployeeBadge(targetUserId: string, value: boolea
 
 export interface BanAccountParams {
   durationDays?: number;
+  durationValue?: number;
+  durationUnit?: PenaltyDurationUnit;
+  untilDate?: string | null;
   permanent?: boolean;
+  reason?: string;
+  moderatorComment?: string;
 }
 
-/** Бан аккаунта — временный (durationDays) или навсегда. Только admin/developer. */
+/**
+ * Бан аккаунта — с гибким сроком (секунды, минуты, часы, дни, месяцы, годы),
+ * точной датой/временем окончания или навсегда, с сохранением причины и комментария модератора.
+ */
 export async function banAccount(targetUserId: string, params: BanAccountParams, actingProfile: Profile) {
-  if (actingProfile.role !== 'admin' && actingProfile.role !== 'developer') {
+  if (actingProfile.role !== 'admin' && actingProfile.role !== 'developer' && actingProfile.role !== 'moderator') {
     throw new Error('Недостаточно прав');
   }
   const supabase = getSupabaseClient();
-  const bannedUntil = params.permanent
-    ? null
-    : params.durationDays
-    ? new Date(Date.now() + params.durationDays * 86400000).toISOString()
-    : null;
+  const bannedUntil = computePenaltyExpirationIso(params);
+  const isPermanent = Boolean(params.permanent || (!bannedUntil && !params.durationDays && !params.durationValue && !params.untilDate));
+  const cleanReason = params.reason?.trim() || 'Нарушение правил PixChats';
+  const cleanComment = params.moderatorComment?.trim() || null;
+
+  const fullPatch: Record<string, any> = {
+    banned_permanently: isPermanent,
+    banned_until: isPermanent ? null : bannedUntil,
+    ban_reason: cleanReason,
+    moderator_comment: cleanComment,
+  };
 
   const { error } = await supabase
     .from('profiles')
-    .update({ banned_permanently: !!params.permanent, banned_until: bannedUntil })
+    .update(fullPatch)
     .eq('id', targetUserId);
-  if (error) throw error;
-  await logAdminAction('ban_account', 'user', targetUserId, params as any);
+
+  if (error) {
+    // Фолбэк, если миграция 0030 ещё не применена к таблице profiles
+    const { error: fallbackErr } = await supabase
+      .from('profiles')
+      .update({
+        banned_permanently: isPermanent,
+        banned_until: isPermanent ? null : bannedUntil,
+      })
+      .eq('id', targetUserId);
+    if (fallbackErr) throw fallbackErr;
+  }
+
+  await saveUserPenaltyMetaToCloud(targetUserId, {
+    banReason: cleanReason,
+    moderatorComment: cleanComment,
+  });
+
+  await logAdminAction('ban_account', 'user', targetUserId, {
+    ...params,
+    bannedUntil,
+    reason: cleanReason,
+    moderatorComment: cleanComment,
+  });
 }
 
 export async function unbanAccount(targetUserId: string, actingProfile: Profile) {
-  if (actingProfile.role !== 'admin' && actingProfile.role !== 'developer') {
-    throw new Error('Недостаточно прав');
-  }
-  const supabase = getSupabaseClient();
-  const { error } = await supabase
-    .from('profiles')
-    .update({ banned_permanently: false, banned_until: null })
-    .eq('id', targetUserId);
-  if (error) throw error;
-  await logAdminAction('unban_account', 'user', targetUserId);
-}
-
-/** Заморозка — аккаунт может читать, но не может писать сообщения (RLS блокирует insert). */
-export async function setAccountFrozen(targetUserId: string, frozen: boolean, actingProfile: Profile) {
-  if (actingProfile.role !== 'admin' && actingProfile.role !== 'developer') {
+  if (actingProfile.role !== 'admin' && actingProfile.role !== 'developer' && actingProfile.role !== 'moderator') {
     throw new Error('Недостаточно прав');
   }
   const supabase = getSupabaseClient();
   const { error } = await supabase
     .from('profiles')
     .update({
-      frozen,
-      frozen_at: frozen ? new Date().toISOString() : null,
-    })
+      banned_permanently: false,
+      banned_until: null,
+      ban_reason: null,
+      moderator_comment: null,
+    } as any)
     .eq('id', targetUserId);
-  if (error) throw error;
-  await logAdminAction(frozen ? 'freeze_account' : 'unfreeze_account', 'user', targetUserId);
+
+  if (error) {
+    const { error: fallbackErr } = await supabase
+      .from('profiles')
+      .update({ banned_permanently: false, banned_until: null })
+      .eq('id', targetUserId);
+    if (fallbackErr) throw fallbackErr;
+  }
+
+  await saveUserPenaltyMetaToCloud(targetUserId, {
+    banReason: null,
+    moderatorComment: null,
+  });
+  await logAdminAction('unban_account', 'user', targetUserId);
 }
 
-/** Автоматическая очистка заблокированных/замороженных аккаунтов, если заморозка не снята в течение 90 дней */
+/** Заморозка — аккаунт может читать, но не может писать сообщения (с сохранением причины и комментария). */
+export async function setAccountFrozen(
+  targetUserId: string,
+  frozen: boolean,
+  actingProfile: Profile,
+  reason?: string,
+  moderatorComment?: string
+) {
+  if (actingProfile.role !== 'admin' && actingProfile.role !== 'developer' && actingProfile.role !== 'moderator') {
+    throw new Error('Недостаточно прав');
+  }
+  const supabase = getSupabaseClient();
+  const cleanReason = frozen ? (reason?.trim() || 'Заморожен модерацией для проверки') : null;
+  const cleanComment = frozen ? (moderatorComment?.trim() || null) : null;
+
+  const { error } = await supabase
+    .from('profiles')
+    .update({
+      frozen,
+      frozen_at: frozen ? new Date().toISOString() : null,
+      frozen_reason: cleanReason,
+      moderator_comment: cleanComment,
+    } as any)
+    .eq('id', targetUserId);
+
+  if (error) {
+    const { error: fallbackErr } = await supabase
+      .from('profiles')
+      .update({
+        frozen,
+        frozen_at: frozen ? new Date().toISOString() : null,
+      } as any)
+      .eq('id', targetUserId);
+    if (fallbackErr) throw fallbackErr;
+  }
+
+  await saveUserPenaltyMetaToCloud(targetUserId, {
+    frozenReason: cleanReason,
+    moderatorComment: cleanComment,
+  });
+
+  await logAdminAction(frozen ? 'freeze_account' : 'unfreeze_account', 'user', targetUserId, {
+    reason: cleanReason,
+    moderatorComment: cleanComment,
+  });
+}
+
+/** Автоматическая очистка замороженных аккаунтов, если заморозка не снята в течение 90 дней */
 export async function cleanupExpiredFrozenAccounts(): Promise<number> {
   const supabase = getSupabaseClient();
   const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
-  
+
   const { data: expired } = await supabase
     .from('profiles')
     .select('id')
@@ -299,8 +573,7 @@ export async function cleanupExpiredFrozenAccounts(): Promise<number> {
 }
 
 /**
- * Полное удаление аккаунта требует service_role (auth.admin.deleteUser) — с anon-ключом
- * это невозможно, поэтому вызывается Edge Function admin-delete-user (см. supabase/functions/).
+ * Полное удаление аккаунта через Edge Function admin-delete-user.
  */
 export async function deleteAccount(targetUserId: string, actingProfile: Profile) {
   if (actingProfile.role !== 'admin' && actingProfile.role !== 'developer') {
@@ -384,7 +657,6 @@ export async function notifyAdminsAboutFreeze(reportedUserId: string, reasonText
 
     const userName = user?.display_name || user?.username || reportedUserId;
 
-    // Рассылаем по каналу omniscient / admin-broadcast
     const broadcastCh = supabase.channel('pixchats-admin-alerts');
     broadcastCh.subscribe((status) => {
       if (status === 'SUBSCRIBED') {
@@ -424,7 +696,6 @@ export async function reportMessage(params: {
     throw new Error('Нельзя пожаловаться на своё собственное сообщение');
   }
 
-  // 1. Вставляем запись жалобы
   const { error } = await supabase.from('message_reports').insert({
     message_id: params.messageId,
     reporter_id: reporterId,
@@ -438,7 +709,6 @@ export async function reportMessage(params: {
     throw error;
   }
 
-  // 2. Проверяем количество УНИКАЛЬНЫХ пожаловавшихся пользователей на данного нарушителя
   const { data: reports } = await supabase
     .from('message_reports')
     .select('reporter_id')
@@ -449,21 +719,29 @@ export async function reportMessage(params: {
 
   if (uniqueReporters.size >= 3) {
     autoFrozen = true;
+    const freezeReason = `Накоплено ${uniqueReporters.size} жалоб от разных пользователей (последняя: ${params.reason})`;
     await supabase
       .from('profiles')
-      .update({ frozen: true })
-      .eq('id', params.reportedUserId);
+      .update({
+        frozen: true,
+        frozen_at: new Date().toISOString(),
+        frozen_reason: freezeReason,
+      } as any)
+      .eq('id', params.reportedUserId)
+      .then(async ({ error: fErr }) => {
+        if (fErr) {
+          await supabase.from('profiles').update({ frozen: true }).eq('id', params.reportedUserId);
+        }
+      });
 
-    await notifyAdminsAboutFreeze(
-      params.reportedUserId,
-      `Накоплено ${uniqueReporters.size} жалоб от разных пользователей (последняя: ${params.reason})`
-    );
+    await saveUserPenaltyMetaToCloud(params.reportedUserId, { frozenReason: freezeReason });
+    await notifyAdminsAboutFreeze(params.reportedUserId, freezeReason);
   }
 
   return { autoFrozen };
 }
 
-/** Получение всех жалоб для раздела модерации в админ-панели */
+/** Получение всех жалоб для раздела модерации в панели администратора */
 export async function getMessageReportsForAdmin(): Promise<MessageReport[]> {
   const supabase = getSupabaseClient();
   const { data: reports, error } = await supabase
@@ -473,10 +751,8 @@ export async function getMessageReportsForAdmin(): Promise<MessageReport[]> {
     .limit(100);
 
   if (error) return [];
-
   if (!reports || reports.length === 0) return [];
 
-  // Собираем связанные профили, сообщения и чаты
   const userIds = Array.from(
     new Set([
       ...reports.map((r) => r.reporter_id),
@@ -512,10 +788,6 @@ export async function getMessageReportsForAdmin(): Promise<MessageReport[]> {
   });
 }
 
-/** Список вредоносных / незаконных / спам-слов для автомодерации публичных чатов и каналов */
-const BAD_WORDS_REGEX =
-  /(терракт|терроризм|наркотик|наркота|гидра|мефедрон|амфетамин|продам паспорт|купить слив|взлом аккаунт|казино 1000|заработок без вложений|убью тебя|взрывчатка|оружие сбыт|сбыт карт|кардинг)/i;
-
 /** Проверяет текст сообщения на автомодерацию (тяжёлое или лёгкое нарушение) */
 export function checkAutoModerationViolation(text: string): { violated: boolean; severity?: 'light' | 'heavy'; reason?: string } {
   if (!text || typeof text !== 'string') return { violated: false };
@@ -545,97 +817,179 @@ export function checkAutoModerationViolation(text: string): { violated: boolean;
 }
 
 /* ============================================================================
- * МЬЮТЫ (Ограничения отправки сообщений в конкретном чате)
+ * МУТЫ (Ограничения отправки сообщений в конкретном чате за нарушения)
  * ============================================================================ */
 
 export async function muteUserInChat(params: {
   userId: string;
   chatId: string;
-  durationHours?: number; // null/undefined = навсегда
+  durationHours?: number;
+  durationValue?: number;
+  durationUnit?: PenaltyDurationUnit;
+  untilDate?: string | null;
+  permanent?: boolean;
   reason?: string;
+  moderatorComment?: string;
   actingProfile?: Profile | null;
 }): Promise<void> {
   const supabase = getSupabaseClient();
-  const mutedUntil = params.durationHours
-    ? new Date(Date.now() + params.durationHours * 3600 * 1000).toISOString()
-    : null;
+  let mutedUntil: string | null = null;
+  if (params.untilDate || params.durationValue !== undefined || params.permanent !== undefined) {
+    mutedUntil = computePenaltyExpirationIso({
+      permanent: params.permanent,
+      untilDate: params.untilDate,
+      durationValue: params.durationValue,
+      durationUnit: params.durationUnit,
+    });
+  } else if (params.durationHours) {
+    mutedUntil = new Date(Date.now() + params.durationHours * 3600 * 1000).toISOString();
+  }
 
-  const { error } = await supabase.from('chat_mutes').upsert(
-    {
-      user_id: params.userId,
-      chat_id: params.chatId,
-      muted_until: mutedUntil,
-      reason: params.reason || 'Нарушение правил в этом чате',
-      muted_by: params.actingProfile?.id || null,
-    },
-    { onConflict: 'user_id,chat_id' }
+  const cleanReason = params.reason?.trim() || 'Нарушение правил в этом чате';
+  const cleanComment = params.moderatorComment?.trim() || null;
+
+  const muteRecord: ChatMute = {
+    id: `mute_${params.userId}_${params.chatId}`,
+    user_id: params.userId,
+    chat_id: params.chatId,
+    muted_until: mutedUntil,
+    reason: cleanReason,
+    moderator_comment: cleanComment,
+    muted_by: params.actingProfile?.id || null,
+    is_penalty: true,
+    created_at: new Date().toISOString(),
+  };
+
+  // Сохраняем в облачный манифест модерации (гарантированная работа даже без миграции 0030)
+  const cloudMutes = await readCloudJson<ChatMute[]>(MUTES_CLOUD_PATH, []);
+  const filteredCloud = cloudMutes.filter(
+    (m) => !(m.user_id === params.userId && m.chat_id === params.chatId)
   );
+  filteredCloud.unshift(muteRecord);
+  await writeCloudJson(MUTES_CLOUD_PATH, filteredCloud);
 
-  if (error) throw error;
+  // Пробуем записать в таблицу chat_mutes
+  await supabase
+    .from('chat_mutes')
+    .upsert(
+      {
+        user_id: params.userId,
+        chat_id: params.chatId,
+        muted_forever: false,
+        muted_until: mutedUntil,
+        reason: cleanReason,
+        moderator_comment: cleanComment,
+        muted_by: params.actingProfile?.id || null,
+        is_penalty: true,
+      } as any,
+      { onConflict: 'user_id,chat_id' }
+    )
+    .then(() => {});
+
   if (params.actingProfile) {
     await logAdminAction('mute_user_in_chat', 'chat', params.chatId, {
       targetUserId: params.userId,
-      durationHours: params.durationHours,
-      reason: params.reason,
+      mutedUntil,
+      reason: cleanReason,
+      moderatorComment: cleanComment,
     });
   }
 }
 
 export async function unmuteUserInChat(userId: string, chatId: string, actingProfile?: Profile | null): Promise<void> {
   const supabase = getSupabaseClient();
-  const { error } = await supabase.from('chat_mutes').delete().eq('user_id', userId).eq('chat_id', chatId);
-  if (error) throw error;
+  const cloudMutes = await readCloudJson<ChatMute[]>(MUTES_CLOUD_PATH, []);
+  const nextCloud = cloudMutes.filter((m) => !(m.user_id === userId && m.chat_id === chatId));
+  await writeCloudJson(MUTES_CLOUD_PATH, nextCloud);
+
+  await supabase.from('chat_mutes').delete().eq('user_id', userId).eq('chat_id', chatId);
   if (actingProfile) {
     await logAdminAction('unmute_user_in_chat', 'chat', chatId, { targetUserId: userId });
   }
 }
 
+function isPenaltyMuteRow(row: any): boolean {
+  if (!row) return false;
+  // Отличаем штрафной мут модерации от пользовательского отключения уведомлений (muted_forever без reason)
+  return Boolean(row.is_penalty || (row.reason && String(row.reason).trim().length > 0) || row.muted_by);
+}
+
 export async function getUserChatMute(userId: string, chatId: string): Promise<ChatMute | null> {
   const supabase = getSupabaseClient();
-  const { data, error } = await supabase
+  const { data } = await supabase
     .from('chat_mutes')
     .select('*')
     .eq('user_id', userId)
     .eq('chat_id', chatId)
     .maybeSingle();
 
-  if (error || !data) return null;
-
-  // Проверяем истечение срока
-  if (data.muted_until && new Date(data.muted_until).getTime() <= Date.now()) {
-    void unmuteUserInChat(userId, chatId);
-    return null;
+  if (data && isPenaltyMuteRow(data)) {
+    if (data.muted_until && new Date(data.muted_until).getTime() <= Date.now()) {
+      void unmuteUserInChat(userId, chatId);
+      return null;
+    }
+    return {
+      ...data,
+      id: data.id || `mute_${userId}_${chatId}`,
+    } as ChatMute;
   }
 
-  return data as ChatMute;
+  const cloudMutes = await readCloudJson<ChatMute[]>(MUTES_CLOUD_PATH, []);
+  const found = cloudMutes.find((m) => m.user_id === userId && m.chat_id === chatId);
+  if (found) {
+    if (found.muted_until && new Date(found.muted_until).getTime() <= Date.now()) {
+      void unmuteUserInChat(userId, chatId);
+      return null;
+    }
+    return found;
+  }
+
+  return null;
 }
 
 export async function getUserAllMutes(userId: string): Promise<ChatMute[]> {
   const supabase = getSupabaseClient();
-  const { data, error } = await supabase
+  const { data } = await supabase
     .from('chat_mutes')
     .select('*')
     .eq('user_id', userId);
 
-  if (error || !data) return [];
+  const cloudMutes = await readCloudJson<ChatMute[]>(MUTES_CLOUD_PATH, []);
+  const myCloudMutes = cloudMutes.filter((m) => m.user_id === userId);
 
-  const validMutes: ChatMute[] = [];
-  for (const item of data) {
+  const byChat = new Map<string, ChatMute>();
+
+  for (const item of data ?? []) {
+    if (!isPenaltyMuteRow(item)) continue;
     if (item.muted_until && new Date(item.muted_until).getTime() <= Date.now()) {
       void unmuteUserInChat(userId, item.chat_id);
-    } else {
-      validMutes.push(item as ChatMute);
+      continue;
+    }
+    byChat.set(item.chat_id, {
+      ...(item as ChatMute),
+      id: item.id || `mute_${userId}_${item.chat_id}`,
+    });
+  }
+
+  for (const cm of myCloudMutes) {
+    if (cm.muted_until && new Date(cm.muted_until).getTime() <= Date.now()) {
+      void unmuteUserInChat(userId, cm.chat_id);
+      continue;
+    }
+    if (!byChat.has(cm.chat_id)) {
+      byChat.set(cm.chat_id, cm);
     }
   }
 
-  // Загружаем названия чатов
+  const validMutes = Array.from(byChat.values());
+
   if (validMutes.length > 0) {
     const chatIds = validMutes.map((m) => m.chat_id);
     const { data: chatRows } = await supabase.from('chats').select('id, title').in('id', chatIds);
     const chatMap = new Map((chatRows || []).map((c) => [c.id, c.title || 'Чат']));
     return validMutes.map((m) => ({
       ...m,
-      chat_title: chatMap.get(m.chat_id) || 'Чат',
+      chat_title: chatMap.get(m.chat_id) || m.chat_title || 'Чат',
     }));
   }
 
@@ -692,7 +1046,7 @@ export async function isIpBanned(ipAddress: string): Promise<boolean> {
 }
 
 /* ============================================================================
- * АПЕЛЛЯЦИИ И ОБЖАЛОВАНИЕ НАКАЗАНИЙ (Appeals)
+ * АПЕЛЛЯЦИИ И ОБЖАЛОВАНИЕ НАКАЗАНИЙ (Appeals — БД + Облачный фолбэк)
  * ============================================================================ */
 
 export async function submitAppeal(params: {
@@ -702,31 +1056,101 @@ export async function submitAppeal(params: {
   reason: string;
 }): Promise<AppealItem> {
   const supabase = getSupabaseClient();
-  const { data, error } = await supabase
-    .from('appeals')
-    .insert({
-      user_id: params.userId,
-      penalty_type: params.penaltyType,
-      chat_id: params.chatId || null,
-      reason: params.reason.trim(),
-      status: 'pending',
-    })
-    .select('*')
-    .single();
+  const nowIso = new Date().toISOString();
+  const fallbackItem: AppealItem = {
+    id: `appeal_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    user_id: params.userId,
+    penalty_type: params.penaltyType,
+    chat_id: params.chatId || null,
+    reason: params.reason.trim(),
+    status: 'pending',
+    admin_notes: null,
+    reviewed_by: null,
+    reviewed_at: null,
+    created_at: nowIso,
+  };
 
-  if (error) throw error;
-  return data as AppealItem;
+  let finalItem = fallbackItem;
+  try {
+    const { data, error } = await supabase
+      .from('appeals')
+      .insert({
+        user_id: params.userId,
+        penalty_type: params.penaltyType,
+        chat_id: params.chatId || null,
+        reason: params.reason.trim(),
+        status: 'pending',
+      })
+      .select('*')
+      .single();
+
+    if (!error && data) {
+      finalItem = data as AppealItem;
+    }
+  } catch {}
+
+  const cloudList = await readCloudJson<AppealItem[]>(APPEALS_CLOUD_PATH, []);
+  cloudList.unshift(finalItem);
+  await writeCloudJson(APPEALS_CLOUD_PATH, cloudList.slice(0, 200));
+
+  return finalItem;
+}
+
+export async function getMyAppeals(userId: string): Promise<AppealItem[]> {
+  const supabase = getSupabaseClient();
+  const byId = new Map<string, AppealItem>();
+
+  try {
+    const { data } = await supabase
+      .from('appeals')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false });
+
+    for (const row of data ?? []) {
+      byId.set(row.id, row as AppealItem);
+    }
+  } catch {}
+
+  const cloudList = await readCloudJson<AppealItem[]>(APPEALS_CLOUD_PATH, []);
+  for (const item of cloudList) {
+    if (item.user_id === userId && !byId.has(item.id)) {
+      byId.set(item.id, item);
+    }
+  }
+
+  return Array.from(byId.values()).sort(
+    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+  );
 }
 
 export async function listAppealsForAdmin(): Promise<AppealItem[]> {
   const supabase = getSupabaseClient();
-  const { data: appeals, error } = await supabase
-    .from('appeals')
-    .select('*')
-    .order('created_at', { ascending: false })
-    .limit(100);
+  const byId = new Map<string, AppealItem>();
 
-  if (error || !appeals) return [];
+  try {
+    const { data: dbAppeals } = await supabase
+      .from('appeals')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(100);
+
+    for (const row of dbAppeals ?? []) {
+      byId.set(row.id, row as AppealItem);
+    }
+  } catch {}
+
+  const cloudList = await readCloudJson<AppealItem[]>(APPEALS_CLOUD_PATH, []);
+  for (const item of cloudList) {
+    if (!byId.has(item.id)) {
+      byId.set(item.id, item);
+    }
+  }
+
+  const appeals = Array.from(byId.values()).sort(
+    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+  );
+  if (appeals.length === 0) return [];
 
   const userIds = Array.from(new Set(appeals.map((a) => a.user_id)));
   const chatIds = Array.from(new Set(appeals.map((a) => a.chat_id).filter(Boolean))) as string[];
@@ -757,26 +1181,63 @@ export async function reviewAppeal(params: {
   adminNotes?: string;
   actingProfile: Profile;
 }): Promise<void> {
-  if (params.actingProfile.role !== 'admin' && params.actingProfile.role !== 'developer' && params.actingProfile.role !== 'moderator') {
+  if (
+    params.actingProfile.role !== 'admin' &&
+    params.actingProfile.role !== 'developer' &&
+    params.actingProfile.role !== 'moderator'
+  ) {
     throw new Error('Недостаточно прав для рассмотрения апелляции');
   }
 
   const supabase = getSupabaseClient();
-  const { data: appeal } = await supabase.from('appeals').select('*').eq('id', params.appealId).single();
+  let appeal: AppealItem | null = null;
+
+  try {
+    const { data } = await supabase.from('appeals').select('*').eq('id', params.appealId).maybeSingle();
+    if (data) appeal = data as AppealItem;
+  } catch {}
+
+  const cloudList = await readCloudJson<AppealItem[]>(APPEALS_CLOUD_PATH, []);
+  if (!appeal) {
+    appeal = cloudList.find((a) => a.id === params.appealId) || null;
+  }
   if (!appeal) throw new Error('Апелляция не найдена');
 
-  // Обновляем статус апелляции
-  await supabase
-    .from('appeals')
-    .update({
-      status: params.status,
-      admin_notes: params.adminNotes || null,
-      reviewed_by: params.actingProfile.id,
-      reviewed_at: new Date().toISOString(),
-    })
-    .eq('id', params.appealId);
+  const nowIso = new Date().toISOString();
+  const cleanNotes = params.adminNotes?.trim() || null;
 
-  // Если апелляция ОДОБРЕНА (approved) — автоматически снимаем наказание!
+  try {
+    await supabase
+      .from('appeals')
+      .update({
+        status: params.status,
+        admin_notes: cleanNotes,
+        reviewed_by: params.actingProfile.id,
+        reviewed_at: nowIso,
+      })
+      .eq('id', params.appealId);
+  } catch {}
+
+  const updatedCloud = cloudList.map((a) =>
+    a.id === params.appealId
+      ? {
+          ...a,
+          status: params.status,
+          admin_notes: cleanNotes,
+          reviewed_by: params.actingProfile.id,
+          reviewed_at: nowIso,
+        }
+      : a
+  );
+  await writeCloudJson(APPEALS_CLOUD_PATH, updatedCloud);
+
+  if (cleanNotes) {
+    await saveUserPenaltyMetaToCloud(appeal.user_id, {
+      moderatorComment: cleanNotes,
+    });
+  }
+
+  // Если апелляция ОДОБРЕНА — автоматически снимаем наказание!
   if (params.status === 'approved') {
     if (appeal.penalty_type === 'mute' && appeal.chat_id) {
       await unmuteUserInChat(appeal.user_id, appeal.chat_id, params.actingProfile);
@@ -790,6 +1251,8 @@ export async function reviewAppeal(params: {
   await logAdminAction(`review_appeal_${params.status}`, 'appeal', params.appealId, {
     userId: appeal.user_id,
     penaltyType: appeal.penalty_type,
+    adminNotes: cleanNotes,
   });
 }
+
 

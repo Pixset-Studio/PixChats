@@ -74,6 +74,8 @@ export function getUserEmojiStatus(userId?: string | null, username?: string | n
   return null;
 }
 
+const EMOJI_STATUS_MANIFEST_PATH = 'emoji-status/all_statuses.json';
+
 export async function setUserEmojiStatus(
   userId: string,
   emoji: string | null,
@@ -95,19 +97,13 @@ export async function setUserEmojiStatus(
 
   try {
     const supabase = getSupabaseClient();
-    const payload = JSON.stringify({
-      userId,
-      username: cleanUsername,
-      emoji: cleanEmoji || null,
-      updatedAt: new Date().toISOString(),
-    });
-    const blob = new Blob([payload], { type: 'application/json' });
+    const blob = new Blob([JSON.stringify(map)], { type: 'application/json' });
     await supabase.storage
       .from(EMOJI_STATUS_BUCKET)
-      .upload(`${EMOJI_STATUS_CLOUD_PREFIX}/${userId}.json`, blob, {
+      .upload(EMOJI_STATUS_MANIFEST_PATH, blob, {
         upsert: true,
         contentType: 'application/json',
-        cacheControl: '0',
+        cacheControl: '300',
       });
 
     const channel = supabase.channel('pixchats-emoji-status-sync');
@@ -131,50 +127,29 @@ export async function setUserEmojiStatus(
 
 export async function syncAllEmojiStatusesFromCloud(force = false): Promise<EmojiStatusMap> {
   const now = Date.now();
-  if (!force && (cloudSyncInProgress || now - lastCloudSyncAt < 25000)) {
+  // Throttle to once per 30 minutes unless forced (Realtime broadcast handles live updates)
+  if (!force && (cloudSyncInProgress || now - lastCloudSyncAt < 30 * 60 * 1000)) {
     return readLocalMap();
   }
   cloudSyncInProgress = true;
   lastCloudSyncAt = now;
   try {
     const supabase = getSupabaseClient();
-    const { data: files, error } = await supabase.storage
+    const { data } = supabase.storage
       .from(EMOJI_STATUS_BUCKET)
-      .list(EMOJI_STATUS_CLOUD_PREFIX, { limit: 100 });
-    if (error || !files || files.length === 0) {
+      .getPublicUrl(EMOJI_STATUS_MANIFEST_PATH);
+    if (!data?.publicUrl) {
       return readLocalMap();
     }
-
-    const updated = { ...readLocalMap() };
-    await Promise.all(
-      files
-        .filter((f) => f.name.endsWith('.json'))
-        .slice(0, 60)
-        .map(async (f) => {
-          try {
-            const { data } = supabase.storage
-              .from(EMOJI_STATUS_BUCKET)
-              .getPublicUrl(`${EMOJI_STATUS_CLOUD_PREFIX}/${f.name}`);
-            if (!data?.publicUrl) return;
-            const res = await fetch(`${data.publicUrl}?t=${now}`, { cache: 'no-store' });
-            if (!res.ok) return;
-            const item = await res.json();
-            if (item && item.userId) {
-              if (item.emoji) {
-                updated[item.userId] = item.emoji;
-                if (item.username) updated[item.username.toLowerCase()] = item.emoji;
-              } else {
-                delete updated[item.userId];
-                if (item.username) delete updated[item.username.toLowerCase()];
-              }
-            }
-          } catch {
-            // ignore single file fetch error
-          }
-        })
-    );
-    writeLocalMap(updated);
-    return updated;
+    const res = await fetch(data.publicUrl);
+    if (!res.ok) return readLocalMap();
+    const remoteMap = await res.json();
+    if (remoteMap && typeof remoteMap === 'object') {
+      const updated = { ...readLocalMap(), ...remoteMap };
+      writeLocalMap(updated);
+      return updated;
+    }
+    return readLocalMap();
   } catch {
     return readLocalMap();
   } finally {

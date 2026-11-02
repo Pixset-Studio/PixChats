@@ -26,7 +26,7 @@ interface RoleBadgeConfig {
 }
 
 const ROLE_BADGE_MAP: Record<Exclude<UserRole, 'user'>, RoleBadgeConfig> = {
-  developer: { label: 'Разработчик Pixset', badgeFile: 'developer.png', className: 'role-badge-img role-developer' },
+  developer: { label: 'Разработчик Pixset Studio', badgeFile: 'developer.png', className: 'role-badge-img role-developer' },
   partner: { label: 'Официальный партнёр', badgeFile: 'partner.png', className: 'role-badge-img role-partner' },
   admin: { label: 'Администратор', badgeFile: 'shield.png', className: 'role-badge-img role-admin' },
   moderator: { label: 'Модератор', badgeFile: 'shield.png', className: 'role-badge-img role-moderator' },
@@ -107,7 +107,7 @@ export function NameWithBadges({
       {isPixsetEmployee && (
         <img
           src={`${BASE_PATH}/badges/employee.png`}
-          alt="Сотрудник Pixset"
+          alt="Сотрудник Pixset Studio"
           title="Сотрудник Pixset Studio"
           className="role-badge-png employee-badge-png"
           onClick={isInteractive ? () => toggleTip('Сотрудник Pixset Studio') : undefined}

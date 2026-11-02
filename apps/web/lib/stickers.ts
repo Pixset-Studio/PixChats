@@ -44,7 +44,7 @@ export function getAllStickers(): StickerItem[] {
 export async function addCustomStickerFromFile(
   file: File,
   title: string,
-  pack = 'Pixset Custom'
+  pack = 'Pixset Studio Custom'
 ): Promise<StickerItem> {
   const dataUrl = await fileToBase64Image(file, 220, 0.86, {
     cropSquare: false,
@@ -57,7 +57,7 @@ export async function addCustomStickerFromFile(
 export function addCustomStickerFromBase64(
   dataUrl: string,
   title: string,
-  pack = 'Pixset Custom'
+  pack = 'Pixset Studio Custom'
 ): StickerItem {
   const cleanUrl = dataUrl.trim();
   if (!cleanUrl.startsWith('data:image/')) {
@@ -66,7 +66,7 @@ export function addCustomStickerFromBase64(
   const item: StickerItem = {
     id: `custom-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
     title: title.trim() || 'Стикер',
-    pack: pack.trim() || 'Pixset Custom',
+    pack: pack.trim() || 'Pixset Studio Custom',
     dataUrl: cleanUrl,
     createdAt: new Date().toISOString(),
   };

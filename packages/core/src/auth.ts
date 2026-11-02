@@ -229,6 +229,7 @@ export function setCachedCurrentProfile(profile: Profile | null): void {
     } else {
       localStorage.removeItem(PROFILE_CACHE_STORAGE_KEY);
     }
+    window.dispatchEvent(new CustomEvent('pixchats:profile_updated', { detail: profile }));
   } catch {}
 }
 
@@ -263,7 +264,7 @@ export async function ensureKeyBundle(profile: Profile): Promise<void> {
 
 export async function getCurrentProfile(forceRefresh = false): Promise<Profile | null> {
   const now = Date.now();
-  if (!forceRefresh && memoryCachedProfile && now - memoryProfileFetchedAt < 30_000) {
+  if (!forceRefresh && memoryCachedProfile && now - memoryProfileFetchedAt < 120_000) {
     return memoryCachedProfile;
   }
 
@@ -281,7 +282,7 @@ export async function getCurrentProfile(forceRefresh = false): Promise<Profile |
         return null;
       }
 
-      if (!forceRefresh && memoryCachedProfile && memoryCachedProfile.id === userId && Date.now() - memoryProfileFetchedAt < 30_000) {
+      if (!forceRefresh && memoryCachedProfile && memoryCachedProfile.id === userId && Date.now() - memoryProfileFetchedAt < 120_000) {
         return memoryCachedProfile;
       }
 
@@ -291,8 +292,8 @@ export async function getCurrentProfile(forceRefresh = false): Promise<Profile |
       const profile = (data as Profile | null) ?? null;
       setCachedCurrentProfile(profile);
 
-      // Обновляем last_seen не чаще чем раз в 60 секунд, чтобы не спамить БД и Realtime на каждый клик
-      if (profile && Date.now() - lastSeenUpdatedAt > 60_000) {
+      // Обновляем last_seen не чаще чем раз в 5 минут, чтобы экономить квоты Supabase
+      if (profile && Date.now() - lastSeenUpdatedAt > 300_000) {
         lastSeenUpdatedAt = Date.now();
         supabase.from('profiles').update({ last_seen: new Date().toISOString() }).eq('id', userId).then(() => {});
       }
@@ -308,7 +309,7 @@ export async function getCurrentProfile(forceRefresh = false): Promise<Profile |
 
 /** true, если есть активная сессия (вошёл), независимо от того, создан ли уже profiles-профиль. */
 export async function hasActiveSession(): Promise<boolean> {
-  if (memoryCachedProfile && Date.now() - memoryProfileFetchedAt < 30_000) {
+  if (memoryCachedProfile && Date.now() - memoryProfileFetchedAt < 120_000) {
     return true;
   }
   const supabase = getSupabaseClient();

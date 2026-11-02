@@ -142,7 +142,30 @@ export default function ChatsPage() {
         </header>
 
         {profile.frozen && (
-          <div className="frozen-banner">❄️ Ваш аккаунт заморожен — доступно только чтение сообщений</div>
+          <div
+            className="frozen-banner"
+            style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}
+          >
+            <div>
+              <div>❄️ Ваш аккаунт заморожен — доступно только чтение сообщений</div>
+              {profile.frozen_reason && (
+                <div style={{ fontSize: 12, opacity: 0.9, marginTop: 2 }}>Причина: {profile.frozen_reason}</div>
+              )}
+              {profile.moderator_comment && (
+                <div style={{ fontSize: 12, color: 'var(--accent)', marginTop: 2 }}>
+                  💬 Комментарий модератора: {profile.moderator_comment}
+                </div>
+              )}
+            </div>
+            <button
+              type="button"
+              className="btn btn-primary"
+              style={{ width: 'auto', padding: '4px 10px', fontSize: 11.5 }}
+              onClick={() => router.push('/appeals/')}
+            >
+              ⚖️ Обжаловать
+            </button>
+          </div>
         )}
 
         <ChatListPanel />

@@ -424,3 +424,24 @@ export function CloseIcon({ size = 16, className, style }: IconProps) {
     </svg>
   );
 }
+
+export function AdminPanelIcon({ size = 20, className, style }: IconProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      style={style}
+    >
+      <path d="M12 2L4 5.5v6.09c0 5.05 3.41 9.76 8 10.91 4.59-1.15 8-5.86 8-10.91V5.5L12 2z" />
+      <polygon points="12 7.5 13.35 10.25 16.4 10.69 14.2 12.83 14.72 15.86 12 14.43 9.28 15.86 9.8 12.83 7.6 10.69 10.65 10.25 12 7.5" />
+    </svg>
+  );
+}
+

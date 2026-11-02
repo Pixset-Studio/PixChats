@@ -222,16 +222,19 @@ export async function syncAndGetAccountDevices(userId: string): Promise<{
 
     writeCachedDevices(userId, finalList);
 
-    // Обновляем в user_metadata (без флагов isCurrent/isOnline)
-    const cleanForCloud = finalList.slice(0, 15).map(({ isCurrent, isOnline, ...rest }) => rest);
-    await supabase.auth
-      .updateUser({
-        data: {
-          pixchats_devices: cleanForCloud,
-          pixchats_revoked_sessions: revokedList.slice(-40),
-        },
-      })
-      .catch(() => {});
+    // Обновляем в user_metadata только если устройство новое или с прошлого обновления прошло > 30 минут
+    const prevLastActiveMs = existingMine?.lastActiveAt ? Date.parse(existingMine.lastActiveAt) : 0;
+    if (!existingMine || Number.isNaN(prevLastActiveMs) || nowMs - prevLastActiveMs > 30 * 60 * 1000) {
+      const cleanForCloud = finalList.slice(0, 15).map(({ isCurrent, isOnline, ...rest }) => rest);
+      await supabase.auth
+        .updateUser({
+          data: {
+            pixchats_devices: cleanForCloud,
+            pixchats_revoked_sessions: revokedList.slice(-40),
+          },
+        })
+        .catch(() => {});
+    }
 
     return { devices: finalList, revokedCurrent: false };
   } catch {
@@ -435,7 +438,7 @@ export function startDeviceSessionMonitor(
         void handleRevoke();
       }
     });
-  }, 2 * 60 * 1000);
+  }, 30 * 60 * 1000);
 
   return () => {
     stopped = true;

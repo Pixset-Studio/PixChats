@@ -8,12 +8,13 @@ interface AppealModalProps {
   penaltyType: AppealPenaltyType;
   chatId?: string;
   chatTitle?: string;
+  allowChangeType?: boolean;
   onClose: () => void;
   onAppealSubmitted?: () => void;
 }
 
 const PENALTY_TITLES: Record<AppealPenaltyType, string> = {
-  mute: '🔇 Мьют в чате',
+  mute: '🔇 Мут в чате',
   freeze: '❄️ Заморозка аккаунта',
   ban_account: '⛔ Блокировка аккаунта',
   ban_ip: '🌐 Блокировка по IP-адресу',
@@ -24,9 +25,11 @@ export function AppealModal({
   penaltyType,
   chatId,
   chatTitle,
+  allowChangeType = false,
   onClose,
   onAppealSubmitted,
 }: AppealModalProps) {
+  const [selectedType, setSelectedType] = useState<AppealPenaltyType>(penaltyType);
   const [reason, setReason] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -44,8 +47,8 @@ export function AppealModal({
     try {
       await submitAppeal({
         userId,
-        penaltyType,
-        chatId,
+        penaltyType: selectedType,
+        chatId: selectedType === 'mute' ? chatId : undefined,
         reason: reason.trim(),
       });
 
@@ -84,11 +87,29 @@ export function AppealModal({
             fontSize: 13,
           }}
         >
-          <div>
-            <strong>Тип ограничения:</strong> {PENALTY_TITLES[penaltyType] || penaltyType}
-          </div>
-          {chatTitle && (
-            <div style={{ marginTop: 2, color: 'var(--text-muted)' }}>
+          {allowChangeType ? (
+            <div className="field" style={{ marginBottom: chatTitle ? 8 : 0 }}>
+              <label style={{ fontSize: 12, fontWeight: 700, display: 'block', marginBottom: 4 }}>
+                Тип ограничения для обжалования
+              </label>
+              <select
+                className="select"
+                value={selectedType}
+                onChange={(e) => setSelectedType(e.target.value as AppealPenaltyType)}
+              >
+                <option value="mute">🔇 Мут в чате</option>
+                <option value="freeze">❄️ Заморозка аккаунта</option>
+                <option value="ban_account">⛔ Блокировка аккаунта</option>
+                <option value="ban_ip">🌐 Блокировка по IP-адресу</option>
+              </select>
+            </div>
+          ) : (
+            <div>
+              <strong>Тип ограничения:</strong> {PENALTY_TITLES[selectedType] || selectedType}
+            </div>
+          )}
+          {chatTitle && selectedType === 'mute' && (
+            <div style={{ marginTop: 4, color: 'var(--text-muted)' }}>
               <strong>Чат:</strong> {chatTitle}
             </div>
           )}
@@ -106,7 +127,7 @@ export function AppealModal({
               rows={4}
               value={reason}
               onChange={(e) => setReason(e.target.value)}
-              placeholder="Подробно объясните, почему снятие ограничений оправдано (например: ошибка системы, случайный опечатка, недоразумение)..."
+              placeholder="Подробно объясните, почему снятие ограничений оправдано (например: ошибка системы, случайная опечатка, недоразумение)..."
               required
               autoFocus
               style={{ resize: 'vertical', fontSize: 13 }}
@@ -128,3 +149,4 @@ export function AppealModal({
     </div>
   );
 }
+

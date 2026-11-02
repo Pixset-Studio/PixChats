@@ -75,7 +75,7 @@ const USER_FILTER_OPTIONS: { id: AdminUserFilter; label: string }[] = [
   { id: 'moderator', label: '🛡️ Модераторы' },
   { id: 'partner', label: '🤝 Партнёры' },
   { id: 'verified', label: '✓ Верифицированные' },
-  { id: 'employee', label: '💠 Сотрудники Pixset' },
+  { id: 'employee', label: '💠 Сотрудники Pixset Studio' },
   { id: 'frozen', label: '❄️ Замороженные' },
   { id: 'banned', label: '🚫 Забаненные' },
 ];
@@ -114,6 +114,7 @@ export default function AdminPage() {
   // Апелляции
   const [appealsList, setAppealsList] = useState<AppealItem[]>([]);
   const [loadingAppeals, setLoadingAppeals] = useState(false);
+  const [appealNotes, setAppealNotes] = useState<Record<string, string>>({});
 
   // Заблокированные IP
   const [bannedIpsList, setBannedIpsList] = useState<BannedIp[]>([]);
@@ -164,7 +165,7 @@ export default function AdminPage() {
   // Стикеры (Base64 без Supabase Storage)
   const [stickers, setStickers] = useState<StickerItem[]>([]);
   const [stickerTitle, setStickerTitle] = useState('');
-  const [stickerPack, setStickerPack] = useState('Pixset Custom');
+  const [stickerPack, setStickerPack] = useState('Pixset Studio Custom');
   const [stickerBase64Input, setStickerBase64Input] = useState('');
   const [stickerNotice, setStickerNotice] = useState<string | null>(null);
   const stickerFileRef = useRef<HTMLInputElement>(null);
@@ -265,7 +266,7 @@ export default function AdminPage() {
     setStickerNotice(null);
     try {
       const titleToUse = stickerTitle.trim() || file.name.replace(/\.[^.]+$/, '');
-      const added = await addCustomStickerFromFile(file, titleToUse, stickerPack.trim() || 'Pixset Custom');
+      const added = await addCustomStickerFromFile(file, titleToUse, stickerPack.trim() || 'Pixset Studio Custom');
       setStickers(getAllStickers());
       setStickerTitle('');
       setStickerNotice(`Стикер «${added.title}» сжат и сохранён в Base64 (${Math.round(added.dataUrl.length / 1024)} КБ, без загрузки в Supabase Storage)`);
@@ -283,7 +284,7 @@ export default function AdminPage() {
       const added = addCustomStickerFromBase64(
         stickerBase64Input.trim(),
         stickerTitle.trim() || 'Стикер',
-        stickerPack.trim() || 'Pixset Custom'
+        stickerPack.trim() || 'Pixset Studio Custom'
       );
       setStickers(getAllStickers());
       setStickerBase64Input('');
@@ -456,7 +457,7 @@ export default function AdminPage() {
         <header className="app-header">
           <div>
             <h1 style={{ fontFamily: 'var(--font-display)', fontSize: 20, margin: 0 }}>
-              🛡️ Центр управления PixChats
+              🛡️ Панель администратора PixChats
             </h1>
             <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>
               Ваша роль: <strong style={{ color: 'var(--accent)' }}>{me.role}</strong> (@{me.username})
@@ -1218,14 +1219,13 @@ export default function AdminPage() {
                             ❄️ Заморозить аккаунт
                           </button>
                         )}
-                        <button
-                          type="button"
+                        <Link
+                          href={`/admin/ban?id=${encodeURIComponent(report.reported_user_id)}`}
                           className="btn"
-                          style={{ width: 'auto', padding: '6px 12px', fontSize: 12, background: '#dc2626', color: '#fff', fontWeight: 700 }}
-                          onClick={() => handleBan(report.reported_user_id, 'forever')}
+                          style={{ width: 'auto', padding: '6px 12px', fontSize: 12, background: '#dc2626', color: '#fff', fontWeight: 700, textDecoration: 'none' }}
                         >
-                          ⛔ Забанить навсегда
-                        </button>
+                          ⛔ Настроить бан / мут
+                        </Link>
                       </div>
                     </div>
 
@@ -1302,7 +1302,7 @@ export default function AdminPage() {
                             Тип наказания:{' '}
                             <strong style={{ color: 'var(--accent)' }}>
                               {appeal.penalty_type === 'mute'
-                                ? `🔇 Мьют (${appeal.chat_title || 'Чат'})`
+                                ? `🔇 Мут (${appeal.chat_title || 'Чат'})`
                                 : appeal.penalty_type === 'freeze'
                                 ? '❄️ Заморозка'
                                 : appeal.penalty_type === 'ban_account'
@@ -1355,65 +1355,93 @@ export default function AdminPage() {
                       <div style={{ marginTop: 4, whiteSpace: 'pre-wrap' }}>«{appeal.reason}»</div>
                     </div>
 
+                    {appeal.admin_notes && (
+                      <div
+                        style={{
+                          padding: '8px 12px',
+                          borderRadius: 8,
+                          background: 'rgba(255, 212, 0, 0.08)',
+                          border: '1px solid rgba(255, 212, 0, 0.25)',
+                          fontSize: 12.5,
+                          color: 'var(--accent)',
+                        }}
+                      >
+                        <strong>💬 Комментарий модератора:</strong> {appeal.admin_notes}
+                      </div>
+                    )}
+
                     {appeal.status === 'pending' && (
-                      <div style={{ display: 'flex', gap: 10 }}>
-                        <button
-                          type="button"
-                          className="btn"
-                          style={{
-                            flex: 1,
-                            padding: '8px 14px',
-                            fontSize: 13,
-                            background: '#22c55e',
-                            color: '#fff',
-                            border: 'none',
-                            fontWeight: 700,
-                          }}
-                          onClick={async () => {
-                            try {
-                              await reviewAppeal({
-                                appealId: appeal.id,
-                                status: 'approved',
-                                actingProfile: me,
-                              });
-                              setNotice('✅ Апелляция одобрена. Наказание автоматически снято!');
-                              refreshAppeals();
-                              loadUsersList(userFilter, query);
-                            } catch (err: any) {
-                              setNotice(err.message);
-                            }
-                          }}
-                        >
-                          ✅ Одобрить и снять наказание
-                        </button>
-                        <button
-                          type="button"
-                          className="btn"
-                          style={{
-                            flex: 1,
-                            padding: '8px 14px',
-                            fontSize: 13,
-                            background: 'rgba(239, 68, 68, 0.15)',
-                            color: '#ef4444',
-                            borderColor: '#ef4444',
-                            fontWeight: 600,
-                          }}
-                          onClick={async () => {
-                            try {
-                              await reviewAppeal({
-                                appealId: appeal.id,
-                                status: 'rejected',
-                                actingProfile: me,
-                              });
-                              setNotice('❌ Апелляция отклонена');
-                              refreshAppeals();
-                            } catch (err: any) {
-                              setNotice(err.message);
-                            }
-                          }}
-                        >
-                          ❌ Отклонить
-                        </button>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                        <input
+                          className="input"
+                          placeholder="💬 Комментарий / ответ модератора (будет виден пользователю)…"
+                          value={appealNotes[appeal.id] || ''}
+                          onChange={(e) =>
+                            setAppealNotes((prev) => ({ ...prev, [appeal.id]: e.target.value }))
+                          }
+                          style={{ fontSize: 13 }}
+                        />
+                        <div style={{ display: 'flex', gap: 10 }}>
+                          <button
+                            type="button"
+                            className="btn"
+                            style={{
+                              flex: 1,
+                              padding: '8px 14px',
+                              fontSize: 13,
+                              background: '#22c55e',
+                              color: '#fff',
+                              border: 'none',
+                              fontWeight: 700,
+                            }}
+                            onClick={async () => {
+                              try {
+                                await reviewAppeal({
+                                  appealId: appeal.id,
+                                  status: 'approved',
+                                  adminNotes: appealNotes[appeal.id]?.trim() || undefined,
+                                  actingProfile: me,
+                                });
+                                setNotice('✅ Апелляция одобрена. Наказание автоматически снято!');
+                                refreshAppeals();
+                                loadUsersList(userFilter, query);
+                              } catch (err: any) {
+                                setNotice(err.message);
+                              }
+                            }}
+                          >
+                            ✅ Одобрить и снять наказание
+                          </button>
+                          <button
+                            type="button"
+                            className="btn"
+                            style={{
+                              flex: 1,
+                              padding: '8px 14px',
+                              fontSize: 13,
+                              background: 'rgba(239, 68, 68, 0.15)',
+                              color: '#ef4444',
+                              borderColor: '#ef4444',
+                              fontWeight: 600,
+                            }}
+                            onClick={async () => {
+                              try {
+                                await reviewAppeal({
+                                  appealId: appeal.id,
+                                  status: 'rejected',
+                                  adminNotes: appealNotes[appeal.id]?.trim() || undefined,
+                                  actingProfile: me,
+                                });
+                                setNotice('❌ Апелляция отклонена');
+                                refreshAppeals();
+                              } catch (err: any) {
+                                setNotice(err.message);
+                              }
+                            }}
+                          >
+                            ❌ Отклонить
+                          </button>
+                        </div>
                       </div>
                     )}
                   </li>
@@ -1688,7 +1716,7 @@ export default function AdminPage() {
                     className="input"
                     value={stickerPack}
                     onChange={(e) => setStickerPack(e.target.value)}
-                    placeholder="Pixset Custom"
+                    placeholder="Pixset Studio Custom"
                   />
                 </div>
               </div>

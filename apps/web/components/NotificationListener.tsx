@@ -446,7 +446,7 @@ export function NotificationListener() {
             } else if (row.is_verified && !old.is_verified) {
               pushAlert('✓ Верификация', 'Ваш аккаунт получил официальную галочку верификации!', '/profile', '✓');
             } else if (row.is_pixset_employee && !old.is_pixset_employee) {
-              pushAlert('🛡️ Сотрудник Pixset', 'Вам присвоен бейдж сотрудника Pixset Studio!', '/profile', '🛡️');
+              pushAlert('🛡️ Сотрудник Pixset Studio', 'Вам присвоен бейдж сотрудника Pixset Studio!', '/profile', '🛡️');
             } else if (row.frozen && !old.frozen) {
               pushAlert('❄️ Заморозка', 'Ваш аккаунт был временно заморожен администратором', '/chats', '❄️');
             }
