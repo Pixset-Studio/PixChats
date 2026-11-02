@@ -117,7 +117,7 @@ export async function uploadMessageFile(chatId: string, file: File): Promise<{ u
   }
 }
 
-export async function sendMessage(chatId: string, text: string, options: SendMessageOptions = {}): Promise<void> {
+export async function sendMessage(chatId: string, text: string, options: SendMessageOptions = {}): Promise<Message> {
   const supabase = getSupabaseClient();
   const { data: sessionData } = await supabase.auth.getSession();
   const senderId = sessionData.session?.user.id;
@@ -182,9 +182,18 @@ export async function sendMessage(chatId: string, text: string, options: SendMes
 
   if (error) throw error;
 
+  const mapped = await mapRowAsync(insertedRow);
+
+  if (typeof window !== 'undefined') {
+    try {
+      window.dispatchEvent(
+        new CustomEvent('pixchats:message_sent', { detail: { chatId, message: mapped } })
+      );
+    } catch {}
+  }
+
   // Рассылаем мгновенный Realtime broadcast для моментального появления сообщения и надёжного срабатывания уведомлений
   try {
-    const mapped = await mapRowAsync(insertedRow);
     const { data: senderProfile } = await supabase
       .from('profiles')
       .select('id, display_name, username, avatar_url')
@@ -254,20 +263,25 @@ export async function sendMessage(chatId: string, text: string, options: SendMes
   } catch {
     // broadcast failure should not block message send
   }
+
+  return mapped;
 }
 
-export async function getMessages(chatId: string, limit = 200): Promise<Message[]> {
+export async function getMessages(chatId: string, limit = 300): Promise<Message[]> {
   const supabase = getSupabaseClient();
   const { data, error } = await supabase
     .from('messages')
     .select(SELECT_FIELDS)
     .eq('chat_id', chatId)
-    .order('sent_at', { ascending: true })
+    .eq('is_deleted', false)
+    .order('sent_at', { ascending: false })
     .limit(limit);
   if (error) throw error;
-  const visibleRows = (data ?? []).filter((row: any) => !row.is_deleted && !isMessageDeletedForMe(row.id));
+  const chronologicalRows = [...(data ?? [])].reverse();
+  const visibleRows = chronologicalRows.filter((row: any) => !row.is_deleted && !isMessageDeletedForMe(row.id));
   return Promise.all(visibleRows.map(mapRowAsync));
 }
+
 
 export async function getMessageById(messageId: string): Promise<Message | null> {
   if (isMessageDeletedForMe(messageId)) return null;

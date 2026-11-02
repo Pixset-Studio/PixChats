@@ -63,6 +63,7 @@ export interface UserPenaltyDetails {
 export interface CustomRolesCloudManifest {
   roles: CustomRoleDefinition[];
   assignments: Record<string, string[]>; // userId или @username -> массив role.id
+  deletedRoleIds?: string[];
   updatedAt: string;
 }
 
@@ -1318,29 +1319,13 @@ export async function reviewAppeal(params: {
  * КАСТОМНЫЕ РОЛИ И ИКОНКИ (Custom Roles & Icons)
  * ============================================================================ */
 
-const DEFAULT_CUSTOM_ROLES: CustomRoleDefinition[] = [
-  {
-    id: 'role_vip_tester',
-    name: 'VIP Тестер Pixset Studio',
-    color: '#ffd400',
-    icon: '🧪',
-    description: 'Ранний доступ и тестирование новых функций PixChats',
-    created_at: '2026-01-01T00:00:00.000Z',
-  },
-  {
-    id: 'role_designer',
-    name: 'Дизайнер Pixset Studio',
-    color: '#38bdf8',
-    icon: '🎨',
-    description: 'Команда визуального дизайна и оформления',
-    created_at: '2026-01-01T00:00:00.000Z',
-  },
-];
+const DEFAULT_CUSTOM_ROLES: CustomRoleDefinition[] = [];
 
 function readLocalCustomRolesManifest(): CustomRolesCloudManifest {
   const empty: CustomRolesCloudManifest = {
     roles: DEFAULT_CUSTOM_ROLES,
     assignments: {},
+    deletedRoleIds: [],
     updatedAt: '',
   };
   if (typeof window === 'undefined') return empty;
@@ -1348,9 +1333,12 @@ function readLocalCustomRolesManifest(): CustomRolesCloudManifest {
     const raw = localStorage.getItem(CUSTOM_ROLES_LOCAL_KEY);
     if (!raw) return empty;
     const parsed = JSON.parse(raw) as CustomRolesCloudManifest;
+    const deletedSet = new Set<string>(Array.isArray(parsed.deletedRoleIds) ? parsed.deletedRoleIds : []);
+    const rawRoles = Array.isArray(parsed.roles) ? parsed.roles : DEFAULT_CUSTOM_ROLES;
     return {
-      roles: Array.isArray(parsed.roles) && parsed.roles.length > 0 ? parsed.roles : DEFAULT_CUSTOM_ROLES,
+      roles: rawRoles.filter((r) => r && r.id && !deletedSet.has(r.id)),
       assignments: parsed.assignments && typeof parsed.assignments === 'object' ? parsed.assignments : {},
+      deletedRoleIds: Array.from(deletedSet),
       updatedAt: parsed.updatedAt || '',
     };
   } catch {
@@ -1377,10 +1365,25 @@ export async function syncCustomRolesFromCloud(force = false): Promise<CustomRol
   try {
     const cloud = await readCloudJson<CustomRolesCloudManifest | null>(CUSTOM_ROLES_CLOUD_PATH, null);
     if (cloud && Array.isArray(cloud.roles)) {
+      const deletedSet = new Set<string>([
+        ...(local.deletedRoleIds || []),
+        ...(Array.isArray(cloud.deletedRoleIds) ? cloud.deletedRoleIds : []),
+      ]);
+      const useLocalInstead =
+        Boolean(local.updatedAt) &&
+        (!cloud.updatedAt || new Date(local.updatedAt).getTime() >= new Date(cloud.updatedAt).getTime());
+      const sourceRoles = useLocalInstead ? local.roles : cloud.roles;
+      const filteredRoles = sourceRoles.filter((r) => r && r.id && !deletedSet.has(r.id));
+      const sourceAssignments = useLocalInstead ? local.assignments : (cloud.assignments || {});
+      const cleanedAssignments: Record<string, string[]> = {};
+      for (const [k, ids] of Object.entries(sourceAssignments)) {
+        cleanedAssignments[k] = (ids || []).filter((id) => !deletedSet.has(id));
+      }
       const merged: CustomRolesCloudManifest = {
-        roles: cloud.roles.length > 0 ? cloud.roles : DEFAULT_CUSTOM_ROLES,
-        assignments: { ...local.assignments, ...(cloud.assignments || {}) },
-        updatedAt: cloud.updatedAt || new Date().toISOString(),
+        roles: filteredRoles,
+        assignments: cleanedAssignments,
+        deletedRoleIds: Array.from(deletedSet),
+        updatedAt: (useLocalInstead ? local.updatedAt : cloud.updatedAt) || new Date().toISOString(),
       };
       saveLocalCustomRolesManifest(merged);
       return merged;
@@ -1444,6 +1447,7 @@ export async function createCustomRole(
   const nextManifest: CustomRolesCloudManifest = {
     roles: [...manifest.roles, newRole],
     assignments: manifest.assignments,
+    deletedRoleIds: manifest.deletedRoleIds || [],
     updatedAt: new Date().toISOString(),
   };
 
@@ -1457,19 +1461,43 @@ export async function deleteCustomRole(roleId: string, actingProfile: Profile): 
   if (actingProfile.role !== 'admin' && actingProfile.role !== 'developer') {
     throw new Error('Недостаточно прав для удаления роли');
   }
-  const manifest = await syncCustomRolesFromCloud(true);
+  const local = readLocalCustomRolesManifest();
+  const deletedSet = new Set<string>([...(local.deletedRoleIds || []), roleId]);
   const nextAssignments: Record<string, string[]> = {};
-  for (const [k, ids] of Object.entries(manifest.assignments)) {
-    nextAssignments[k] = (ids || []).filter((id) => id !== roleId);
+  for (const [k, ids] of Object.entries(local.assignments)) {
+    nextAssignments[k] = (ids || []).filter((id) => id !== roleId && !deletedSet.has(id));
   }
   const nextManifest: CustomRolesCloudManifest = {
-    roles: manifest.roles.filter((r) => r.id !== roleId),
+    roles: local.roles.filter((r) => r.id !== roleId && !deletedSet.has(r.id)),
     assignments: nextAssignments,
+    deletedRoleIds: Array.from(deletedSet),
     updatedAt: new Date().toISOString(),
   };
   saveLocalCustomRolesManifest(nextManifest);
   await writeCloudJson(CUSTOM_ROLES_CLOUD_PATH, nextManifest);
   await logAdminAction('delete_custom_role', 'role', roleId);
+}
+
+export async function clearAllCustomRoles(actingProfile: Profile): Promise<void> {
+  if (actingProfile.role !== 'admin' && actingProfile.role !== 'developer') {
+    throw new Error('Недостаточно прав для удаления всех кастомных ролей');
+  }
+  const local = readLocalCustomRolesManifest();
+  const deletedSet = new Set<string>([
+    ...(local.deletedRoleIds || []),
+    ...local.roles.map((r) => r.id),
+    'role_vip_tester',
+    'role_designer',
+  ]);
+  const nextManifest: CustomRolesCloudManifest = {
+    roles: [],
+    assignments: {},
+    deletedRoleIds: Array.from(deletedSet),
+    updatedAt: new Date().toISOString(),
+  };
+  saveLocalCustomRolesManifest(nextManifest);
+  await writeCloudJson(CUSTOM_ROLES_CLOUD_PATH, nextManifest);
+  await logAdminAction('clear_all_custom_roles', 'role', 'all');
 }
 
 export async function toggleUserCustomRole(

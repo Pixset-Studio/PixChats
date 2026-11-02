@@ -33,6 +33,7 @@ import {
   listCustomRoles,
   createCustomRole,
   deleteCustomRole,
+  clearAllCustomRoles,
   toggleUserCustomRole,
 } from '@pixchats/core';
 import type {
@@ -407,12 +408,26 @@ export default function AdminPage() {
   async function handleDeleteCustomRole(role: CustomRoleDefinition) {
     if (!me) return;
     try {
+      setCustomRoles((prev) => prev.filter((r) => r.id !== role.id));
       await deleteCustomRole(role.id, me);
-      setNotice(`Роль «${role.name}» удалена`);
+      setNotice(`Роль «${role.name}» полностью удалена`);
       await refreshCustomRoles();
       await loadUsersList(userFilter, query);
     } catch (err: any) {
       setNotice(err.message ?? 'Ошибка удаления роли');
+    }
+  }
+
+  async function handleClearAllCustomRoles() {
+    if (!me) return;
+    try {
+      setCustomRoles([]);
+      await clearAllCustomRoles(me);
+      setNotice('Все кастомные роли полностью удалены');
+      await refreshCustomRoles();
+      await loadUsersList(userFilter, query);
+    } catch (err: any) {
+      setNotice(err.message ?? 'Ошибка очистки кастомных ролей');
     }
   }
 
@@ -765,6 +780,22 @@ export default function AdminPage() {
                         </button>
                       </span>
                     ))}
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={handleClearAllCustomRoles}
+                      style={{
+                        width: 'auto',
+                        padding: '3px 10px',
+                        fontSize: 11.5,
+                        borderColor: 'var(--danger)',
+                        color: 'var(--danger)',
+                        fontWeight: 700,
+                      }}
+                      title="Полностью удалить все созданные кастомные роли"
+                    >
+                      🗑️ Удалить все роли
+                    </button>
                   </div>
                 )}
               </div>

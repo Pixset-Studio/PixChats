@@ -122,6 +122,7 @@ import {
   getPreferredAudioConstraints,
   getPreferredVideoConstraints,
 } from '../../lib/mediaDevicesStore';
+import { isMobilePhoneDevice } from '../../lib/nativePlatform';
 import { ReportMessageModal } from '../../components/ReportMessageModal';
 
 interface ScheduledMessageItem {
@@ -241,11 +242,18 @@ function ChatWindowInner() {
   const [showVideoNoteModal, setShowVideoNoteModal] = useState(false);
   const [videoNoteRecording, setVideoNoteRecording] = useState(false);
   const [videoNoteSeconds, setVideoNoteSeconds] = useState(0);
+  const [videoNoteFacingMode, setVideoNoteFacingMode] = useState<'user' | 'environment'>('user');
+  const [liveCameraFacingMode, setLiveCameraFacingMode] = useState<'user' | 'environment'>('user');
+  const [isMobilePhone, setIsMobilePhone] = useState<boolean>(() => isMobilePhoneDevice());
   const videoNotePreviewRef = useRef<HTMLVideoElement | null>(null);
   const videoNoteStreamRef = useRef<MediaStream | null>(null);
   const videoNoteRecorderRef = useRef<MediaRecorder | null>(null);
   const videoNoteChunksRef = useRef<Blob[]>([]);
   const [expandedVideoNoteIds, setExpandedVideoNoteIds] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    setIsMobilePhone(isMobilePhoneDevice());
+  }, []);
 
   // Идея 1: Расшифровка голосовых и видеокружков в текст ([Аа])
   const liveSpeechSessionRef = useRef<{ stopAndGetTranscript: () => string } | null>(null);
@@ -437,20 +445,21 @@ function ChatWindowInner() {
     } catch {}
   }
 
-  async function toggleLiveCamera() {
-    if (isCameraActive) {
-      stopLiveVideoMedia();
-      return;
-    }
+  async function startLiveCameraWithFacing(facing: 'user' | 'environment') {
     try {
       if (liveStreamVideoStreamRef.current) {
         liveStreamVideoStreamRef.current.getTracks().forEach((t) => t.stop());
       }
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 640 }, height: { ideal: 480 } },
+        video: getPreferredVideoConstraints({
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+          facingMode: facing,
+        }),
         audio: false,
       });
       liveStreamVideoStreamRef.current = stream;
+      setLiveCameraFacingMode(facing);
       setIsCameraActive(true);
       setIsScreenSharing(false);
       setTimeout(() => {
@@ -458,11 +467,24 @@ function ChatWindowInner() {
           liveStreamVideoRef.current.srcObject = stream;
           void liveStreamVideoRef.current.play().catch(() => {});
         }
-      }, 100);
+      }, 80);
     } catch {
       setNotice('Не удалось включить камеру (нет разрешения или устройства)');
       setTimeout(() => setNotice(null), 2500);
     }
+  }
+
+  async function toggleLiveCamera() {
+    if (isCameraActive) {
+      stopLiveVideoMedia();
+      return;
+    }
+    await startLiveCameraWithFacing(liveCameraFacingMode);
+  }
+
+  async function flipLiveStreamCamera() {
+    const nextFacing = liveCameraFacingMode === 'user' ? 'environment' : 'user';
+    await startLiveCameraWithFacing(nextFacing);
   }
 
   async function toggleLiveScreenShare() {
@@ -802,24 +824,39 @@ function ChatWindowInner() {
   }
 
   // Пункт 1: Запись круглого видеосообщения (Video Note)
-  async function openVideoNoteRecorder() {
-    setShowVideoNoteModal(true);
-    setVideoNoteSeconds(0);
+  async function startVideoNoteCapture(facing: 'user' | 'environment', resetTimer = true) {
+    if (videoNoteRecorderRef.current && videoNoteRecorderRef.current.state !== 'inactive') {
+      try {
+        videoNoteRecorderRef.current.onstop = null;
+        videoNoteRecorderRef.current.stop();
+      } catch {}
+    }
+    if (videoNoteStreamRef.current) {
+      videoNoteStreamRef.current.getTracks().forEach((t) => t.stop());
+      videoNoteStreamRef.current = null;
+    }
+    if (resetTimer) {
+      setVideoNoteSeconds(0);
+    }
+    setVideoNoteFacingMode(facing);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: getPreferredVideoConstraints({ width: { ideal: 360 }, height: { ideal: 360 }, facingMode: 'user' }),
+        video: getPreferredVideoConstraints({ width: { ideal: 360 }, height: { ideal: 360 }, facingMode: facing }),
         audio: getPreferredAudioConstraints(),
       });
       videoNoteStreamRef.current = stream;
       setTimeout(() => {
         if (videoNotePreviewRef.current) {
           videoNotePreviewRef.current.srcObject = stream;
+          void videoNotePreviewRef.current.play().catch(() => {});
         }
       }, 60);
 
       const recorder = new MediaRecorder(stream);
       videoNoteChunksRef.current = [];
-      liveSpeechSessionRef.current = startLiveSpeechRecognitionSession();
+      if (!liveSpeechSessionRef.current) {
+        liveSpeechSessionRef.current = startLiveSpeechRecognitionSession();
+      }
       recorder.ondataavailable = (e) => {
         if (e.data && e.data.size > 0) videoNoteChunksRef.current.push(e.data);
       };
@@ -832,6 +869,16 @@ function ChatWindowInner() {
       setNotice('Нет доступа к камере и микрофону для записи видеокружка');
       setTimeout(() => setNotice(null), 2500);
     }
+  }
+
+  async function openVideoNoteRecorder() {
+    setShowVideoNoteModal(true);
+    await startVideoNoteCapture(videoNoteFacingMode, true);
+  }
+
+  async function flipVideoNoteCamera() {
+    const nextFacing = videoNoteFacingMode === 'user' ? 'environment' : 'user';
+    await startVideoNoteCapture(nextFacing, false);
   }
 
   useEffect(() => {
@@ -1042,11 +1089,12 @@ function ChatWindowInner() {
     setCanModerate(false);
     initialScrolledChatIdRef.current = null;
     setIsChatReady(false);
-    setMessages(getOfflineMessages(chatId));
+    const cachedOffline = getOfflineMessages(chatId);
+    initialIdsRef.current = new Set(cachedOffline.map((m) => m.id));
+    setMessages(cachedOffline);
     setChatNotFound(false);
     setPartnerLastReadAt(null);
     setActiveTopicId('all');
-    initialIdsRef.current = new Set();
 
     (async () => {
       const profile = await getCurrentProfile();
@@ -1125,11 +1173,24 @@ function ChatWindowInner() {
 
       let loadedMessages: Message[] = [];
       try {
-        loadedMessages = await getMessages(chatId);
-        if (loadedMessages.length > 0) {
+        const fetched = await getMessages(chatId);
+        const offline = getOfflineMessages(chatId);
+        if (fetched.length > 0 || offline.length > 0) {
+          const byId = new Map<string, Message>();
+          for (const m of offline) {
+            if (!m.is_deleted) byId.set(m.id, m);
+          }
+          for (const m of fetched) {
+            if (m.is_deleted) {
+              byId.delete(m.id);
+            } else {
+              byId.set(m.id, m);
+            }
+          }
+          loadedMessages = Array.from(byId.values()).sort(
+            (a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime()
+          );
           saveOfflineMessages(chatId, loadedMessages);
-        } else {
-          loadedMessages = getOfflineMessages(chatId);
         }
       } catch {
         loadedMessages = getOfflineMessages(chatId);
@@ -1239,6 +1300,27 @@ function ChatWindowInner() {
 
     return () => unsubscribe?.();
   }, [chatId, router]);
+
+  // Мгновенное отображение новых отправленных сообщений в текущем чате (даже если Realtime задержался)
+  useEffect(() => {
+    if (!chatId) return;
+    const onMessageSent = (e: Event) => {
+      const detail = (e as CustomEvent<{ chatId: string; message: Message }>).detail;
+      if (!detail || detail.chatId !== chatId || !detail.message) return;
+      const newMsg = detail.message;
+      initialIdsRef.current.add(newMsg.id);
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === newMsg.id)) return prev;
+        const next = [...prev, newMsg].sort(
+          (a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime()
+        );
+        saveOfflineMessages(chatId, next);
+        return next;
+      });
+    };
+    window.addEventListener('pixchats:message_sent', onMessageSent);
+    return () => window.removeEventListener('pixchats:message_sent', onMessageSent);
+  }, [chatId]);
 
   // Пункты 2 и 3: Канал живого набора текста / записи голосового и мгновенного статуса прочтения (✓✓)
   useEffect(() => {
@@ -1706,32 +1788,39 @@ function ChatWindowInner() {
   }, [chatSearchQuery]);
 
   useLayoutEffect(() => {
-    if (!chatId || messages.length === 0) {
-      if (messages.length === 0) setIsChatReady(true);
+    if (!chatId || !chat || !me) return;
+    const container = messagesContainerRef.current;
+    if (!container) return;
+
+    if (messages.length === 0) {
+      setIsChatReady(true);
       return;
     }
 
     if (initialScrolledChatIdRef.current !== chatId) {
-      // Моментальный перенос вниз БЕЗ анимации прокрутки сверху вниз и без моргания первых сообщений
+      // Мгновенная установка позиции в самый низ без какой-либо анимации пролистывания чата
       if (highlightMsgId) {
-        scrollToMessageById(highlightMsgId);
-      } else if (messagesContainerRef.current) {
-        messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
+        const el = messageRefs.current[highlightMsgId];
+        if (el) {
+          el.scrollIntoView({ behavior: 'auto', block: 'center' });
+        } else {
+          container.scrollTop = container.scrollHeight;
+        }
       } else {
-        bottomRef.current?.scrollIntoView({ behavior: 'auto' });
+        container.scrollTop = container.scrollHeight;
       }
       initialScrolledChatIdRef.current = chatId;
       setIsChatReady(true);
       return;
     }
 
-    // Последующие новые входящие или отправленные сообщения в уже открытом чате:
+    // Новые сообщения в уже открытом чате — мгновенный переход вниз без прокрутки через всю историю
     if (highlightMsgId) {
       scrollToMessageById(highlightMsgId);
     } else {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+      container.scrollTop = container.scrollHeight;
     }
-  }, [chatId, messages, highlightMsgId]);
+  }, [chatId, chat?.id, me?.id, messages, highlightMsgId]);
 
   async function handleSend(e: React.FormEvent) {
     e.preventDefault();
@@ -2460,7 +2549,7 @@ function ChatWindowInner() {
         className="chat-messages"
         style={{
           opacity: !chatId || messages.length === 0 || isChatReady ? 1 : 0,
-          transition: 'opacity 0.08s ease',
+          scrollBehavior: 'auto',
         }}
         onClick={() => {
           setOpenMenuId(null);
@@ -3870,7 +3959,7 @@ function ChatWindowInner() {
                 height: 224,
                 borderRadius: '50%',
                 overflow: 'hidden',
-                margin: '0 auto 18px',
+                margin: '0 auto 14px',
                 border: '4px solid var(--accent)',
                 boxShadow: '0 0 0 8px rgba(255, 212, 0, 0.16)',
                 background: '#000',
@@ -3881,9 +3970,27 @@ function ChatWindowInner() {
                 autoPlay
                 muted
                 playsInline
-                style={{ width: '100%', height: '100%', objectFit: 'cover', transform: 'scaleX(-1)' }}
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  objectFit: 'cover',
+                  transform: videoNoteFacingMode === 'user' ? 'scaleX(-1)' : 'none',
+                }}
               />
             </div>
+
+            {isMobilePhone && (
+              <div style={{ marginBottom: 14 }}>
+                <button
+                  type="button"
+                  className="btn btn-compact"
+                  style={{ width: 'auto', margin: '0 auto' }}
+                  onClick={() => void flipVideoNoteCamera()}
+                >
+                  🔄 Перевернуть камеру ({videoNoteFacingMode === 'user' ? 'Фронтальная' : 'Задняя'})
+                </button>
+              </div>
+            )}
 
             <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
               <button
@@ -4670,6 +4777,17 @@ function ChatWindowInner() {
                   >
                     {isCameraActive ? '📹 Выкл камеру' : '📹 Камера'}
                   </button>
+
+                  {isMobilePhone && isCameraActive && (
+                    <button
+                      type="button"
+                      className="btn"
+                      style={{ flex: 1, padding: '10px 8px', fontSize: 13 }}
+                      onClick={() => void flipLiveStreamCamera()}
+                    >
+                      🔄 Перевернуть камеру
+                    </button>
+                  )}
 
                   <button
                     type="button"

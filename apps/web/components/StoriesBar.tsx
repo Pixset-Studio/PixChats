@@ -32,6 +32,7 @@ import {
   getPreferredAudioConstraints,
   getPreferredVideoConstraints,
 } from '../lib/mediaDevicesStore';
+import { isMobilePhoneDevice } from '../lib/nativePlatform';
 
 interface StoriesBarProps {
   profile: Profile;
@@ -1028,14 +1029,16 @@ export function StoriesBar({ profile }: StoriesBarProps) {
                         gap: 8,
                       }}
                     >
-                      <button
-                        type="button"
-                        className="btn"
-                        style={{ width: 'auto', padding: '7px 12px', fontSize: 12, background: 'rgba(0,0,0,0.65)', color: '#fff' }}
-                        onClick={() => void startStoryCamera(cameraFacing === 'user' ? 'environment' : 'user')}
-                      >
-                        🔄 Камера
-                      </button>
+                      {isMobilePhoneDevice() && (
+                        <button
+                          type="button"
+                          className="btn"
+                          style={{ width: 'auto', padding: '7px 12px', fontSize: 12, background: 'rgba(0,0,0,0.65)', color: '#fff' }}
+                          onClick={() => void startStoryCamera(cameraFacing === 'user' ? 'environment' : 'user')}
+                        >
+                          🔄 Камера
+                        </button>
+                      )}
                       {!isRecordingVideo && (
                         <button
                           type="button"

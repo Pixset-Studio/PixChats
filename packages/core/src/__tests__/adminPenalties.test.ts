@@ -8,6 +8,7 @@ import {
 } from '../admin';
 import {
   FREE_TIER_AI_MODELS,
+  DEVELOPER_TOOL_DECLARATIONS,
   getLocalDeveloperAiConfig,
   runDeveloperAiAssistantTurn,
 } from '../aiAssistant';
@@ -73,11 +74,23 @@ describe('checkAutoModerationViolation', () => {
 });
 
 describe('Custom Roles & Developer AI Assistant guards', () => {
-  it('provides Free Tier Gemini models list and default config', () => {
-    assert.ok(FREE_TIER_AI_MODELS.length >= 3);
-    assert.equal(FREE_TIER_AI_MODELS[0].id, 'gemini-3.8-flash');
+  it('provides all requested Gemini models, Antigravity agent, and 16 tools', () => {
+    const modelIds = FREE_TIER_AI_MODELS.map((m) => m.id);
+    assert.ok(modelIds.includes('gemini-2.5-flash'));
+    assert.ok(modelIds.includes('gemini-2.5-flash-lite'));
+    assert.ok(modelIds.includes('gemini-3-flash-preview'));
+    assert.ok(modelIds.includes('gemini-3.5-flash-lite'));
+    assert.ok(modelIds.includes('gemini-3.6-flash'));
+    assert.ok(modelIds.includes('gemini-3.8-flash'));
+    assert.ok(modelIds.includes('gemini-3.1-flash-lite'));
+    assert.ok(modelIds.includes('antigravity-preview-09-2026'));
+
+    const antigravityModel = FREE_TIER_AI_MODELS.find((m) => m.id === 'antigravity-preview-09-2026');
+    assert.equal(antigravityModel?.isAgent, true);
+
+    assert.equal(DEVELOPER_TOOL_DECLARATIONS.length, 16);
     const cfg = getLocalDeveloperAiConfig();
-    assert.equal(cfg.model, 'gemini-3.8-flash');
+    assert.equal(cfg.model, 'gemini-2.5-flash');
   });
 
   it('rejects non-developer access to runDeveloperAiAssistantTurn', async () => {
@@ -99,9 +112,10 @@ describe('Custom Roles & Developer AI Assistant guards', () => {
     );
   });
 
-  it('returns empty array for getCustomRolesSync and getUserCustomRolesSync when uninitialized', () => {
-    assert.ok(Array.isArray(getCustomRolesSync()));
-    assert.ok(Array.isArray(getUserCustomRolesSync('non-existent')));
+  it('returns empty array for getCustomRolesSync when all roles are deleted', () => {
+    assert.deepEqual(getCustomRolesSync(), []);
+    assert.deepEqual(getUserCustomRolesSync('non-existent'), []);
   });
 });
+
 

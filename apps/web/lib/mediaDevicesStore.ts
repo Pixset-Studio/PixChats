@@ -63,8 +63,9 @@ export function getPreferredVideoConstraints(extra?: MediaTrackConstraints): Med
     height: { ideal: 720 },
     ...extra,
   };
-  if (videoInputId) {
+  if (videoInputId && !extra?.facingMode) {
     base.deviceId = { ideal: videoInputId };
   }
   return base;
 }
+

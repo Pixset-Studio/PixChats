@@ -31,7 +31,12 @@ import {
   type NotificationPreferences,
   DEFAULT_NOTIFICATION_PREFS,
 } from '../../lib/notificationPrefs';
-import { ensureNotificationPermissionEverywhere, requestPermissionNow } from '../../lib/nativePlatform';
+import {
+  ensureNotificationPermissionEverywhere,
+  requestPermissionNow,
+  isMobilePhoneDevice,
+  isDesktopOrPcDevice,
+} from '../../lib/nativePlatform';
 import {
   WALLPAPER_PRESETS,
   getChatAppearance,
@@ -147,10 +152,19 @@ export default function SettingsPage() {
   const [testingMic, setTestingMic] = useState(false);
   const [micVolumePct, setMicVolumePct] = useState(0);
   const [testingCam, setTestingCam] = useState(false);
+  const [testCamFacing, setTestCamFacing] = useState<'user' | 'environment'>('user');
+  const [qrCamFacing, setQrCamFacing] = useState<'environment' | 'user'>('environment');
+  const [isMobilePhone, setIsMobilePhone] = useState<boolean>(() => isMobilePhoneDevice());
+  const [isPcDevice, setIsPcDevice] = useState<boolean>(() => isDesktopOrPcDevice());
   const testCamVideoRef = useRef<HTMLVideoElement | null>(null);
   const testMicStreamRef = useRef<MediaStream | null>(null);
   const testCamStreamRef = useRef<MediaStream | null>(null);
   const testMicRafRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    setIsMobilePhone(isMobilePhoneDevice());
+    setIsPcDevice(isDesktopOrPcDevice());
+  }, []);
 
   async function refreshHardwareDevices() {
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.enumerateDevices) return;
@@ -271,19 +285,24 @@ export default function SettingsPage() {
     }
   }
 
-  async function toggleCamTest() {
-    if (testingCam) {
-      stopHardwareTests();
-      return;
+  async function startCamTestWithFacing(facing: 'user' | 'environment') {
+    if (testCamStreamRef.current) {
+      testCamStreamRef.current.getTracks().forEach((t) => t.stop());
+      testCamStreamRef.current = null;
     }
     try {
+      const videoConstraints =
+        isMobilePhone
+          ? { facingMode: facing, width: { ideal: 640 }, height: { ideal: 360 } }
+          : selectedVideoInput
+            ? { deviceId: { exact: selectedVideoInput }, width: { ideal: 640 }, height: { ideal: 360 } }
+            : { width: { ideal: 640 }, height: { ideal: 360 } };
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: selectedVideoInput
-          ? { deviceId: { exact: selectedVideoInput }, width: { ideal: 640 }, height: { ideal: 360 } }
-          : { width: { ideal: 640 }, height: { ideal: 360 } },
+        video: videoConstraints,
         audio: false,
       });
       testCamStreamRef.current = stream;
+      setTestCamFacing(facing);
       setCamPermission('granted');
       setTestingCam(true);
       void refreshHardwareDevices();
@@ -296,6 +315,19 @@ export default function SettingsPage() {
     } catch {
       setError('Не удалось запустить проверку камеры (разрешите доступ к камере)');
     }
+  }
+
+  async function toggleCamTest() {
+    if (testingCam) {
+      stopHardwareTests();
+      return;
+    }
+    await startCamTestWithFacing(testCamFacing);
+  }
+
+  async function flipCamTest() {
+    const nextFacing = testCamFacing === 'user' ? 'environment' : 'user';
+    await startCamTestWithFacing(nextFacing);
   }
 
   useEffect(() => {
@@ -935,8 +967,48 @@ export default function SettingsPage() {
                         ref={qrVideoRef}
                         playsInline
                         muted
-                        style={{ width: '100%', height: 220, objectFit: 'cover', display: 'block' }}
+                        style={{
+                          width: '100%',
+                          height: 220,
+                          objectFit: 'cover',
+                          display: 'block',
+                          transform: qrCamFacing === 'user' ? 'scaleX(-1)' : 'none',
+                        }}
                       />
+                      {isMobilePhone && (
+                        <button
+                          type="button"
+                          className="btn btn-compact"
+                          style={{
+                            position: 'absolute',
+                            top: 8,
+                            right: 8,
+                            width: 'auto',
+                            background: 'rgba(0,0,0,0.75)',
+                            color: '#fff',
+                            borderColor: 'var(--accent)',
+                            fontSize: 11.5,
+                          }}
+                          onClick={async () => {
+                            const nextFacing = qrCamFacing === 'environment' ? 'user' : 'environment';
+                            try {
+                              qrStreamRef.current?.getTracks().forEach((t) => t.stop());
+                              const stream = await navigator.mediaDevices.getUserMedia({
+                                video: { facingMode: nextFacing },
+                                audio: false,
+                              });
+                              qrStreamRef.current = stream;
+                              setQrCamFacing(nextFacing);
+                              if (qrVideoRef.current) {
+                                qrVideoRef.current.srcObject = stream;
+                                void qrVideoRef.current.play().catch(() => {});
+                              }
+                            } catch {}
+                          }}
+                        >
+                          🔄 Перевернуть камеру
+                        </button>
+                      )}
                       <div
                         style={{
                           padding: '6px 10px',
@@ -1226,11 +1298,15 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      {/* Выбор микрофона, камеры и разрешений для ПК и Веб */}
-      <div className="section-title">🎙️📹 Микрофон, камера и разрешения (ПК и Веб)</div>
+      {/* Выбор микрофона, камеры и разрешений (адаптировано под текущее устройство) */}
+      <div className="section-title">
+        🎙️📹 Микрофон, камера и разрешения {isMobilePhone ? '(Телефон)' : '(ПК и Веб)'}
+      </div>
       <div className="card" style={{ marginBottom: 24 }}>
         <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 0, marginBottom: 14 }}>
-          Настройте устройства ввода/вывода для звонков, голосовых сообщений, видеокружков и эфиров, а также проверьте разрешения:
+          {isMobilePhone
+            ? 'Проверьте разрешения и работу микрофона и камеры для звонков, голосовых сообщений и видеокружков:'
+            : 'Настройте устройства ввода/вывода для звонков, голосовых сообщений, видеокружков и эфиров, а также проверьте разрешения:'}
         </p>
 
         <div
@@ -1288,7 +1364,7 @@ export default function SettingsPage() {
             </span>
           </div>
 
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <button
               type="button"
               className="btn btn-primary btn-compact"
@@ -1296,82 +1372,88 @@ export default function SettingsPage() {
             >
               🔓 Запросить доступ к микрофону и камере
             </button>
-            <button
-              type="button"
-              className="btn btn-compact"
-              onClick={refreshHardwareDevices}
-            >
-              🔄 Обновить устройства
-            </button>
+            {isPcDevice && (
+              <button
+                type="button"
+                className="btn btn-compact"
+                onClick={refreshHardwareDevices}
+              >
+                🔄 Обновить устройства
+              </button>
+            )}
           </div>
         </div>
 
-        <div className="field">
-          <label>🎙️ Микрофон (устройство записи голоса)</label>
-          <select
-            className="input"
-            value={selectedAudioInput}
-            onChange={(e) => {
-              const val = e.target.value;
-              setSelectedAudioInput(val);
-              savePreferredMediaDevices({ audioInputId: val });
-              setNotice('Выбранный микрофон сохранён');
-              setTimeout(() => setNotice(null), 1500);
-            }}
-          >
-            <option value="">По умолчанию (Системный микрофон)</option>
-            {audioInputs.map((d, idx) => (
-              <option key={d.deviceId || idx} value={d.deviceId}>
-                {d.label || `Микрофон #${idx + 1}`}
-              </option>
-            ))}
-          </select>
-        </div>
+        {isPcDevice && (
+          <>
+            <div className="field">
+              <label>🎙️ Микрофон (устройство записи голоса)</label>
+              <select
+                className="input"
+                value={selectedAudioInput}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setSelectedAudioInput(val);
+                  savePreferredMediaDevices({ audioInputId: val });
+                  setNotice('Выбранный микрофон сохранён');
+                  setTimeout(() => setNotice(null), 1500);
+                }}
+              >
+                <option value="">По умолчанию (Системный микрофон)</option>
+                {audioInputs.map((d, idx) => (
+                  <option key={d.deviceId || idx} value={d.deviceId}>
+                    {d.label || `Микрофон #${idx + 1}`}
+                  </option>
+                ))}
+              </select>
+            </div>
 
-        <div className="field">
-          <label>📹 Камера (устройство видеозахвата)</label>
-          <select
-            className="input"
-            value={selectedVideoInput}
-            onChange={(e) => {
-              const val = e.target.value;
-              setSelectedVideoInput(val);
-              savePreferredMediaDevices({ videoInputId: val });
-              setNotice('Выбранная камера сохранена');
-              setTimeout(() => setNotice(null), 1500);
-            }}
-          >
-            <option value="">По умолчанию (Системная камера)</option>
-            {videoInputs.map((d, idx) => (
-              <option key={d.deviceId || idx} value={d.deviceId}>
-                {d.label || `Камера #${idx + 1}`}
-              </option>
-            ))}
-          </select>
-        </div>
+            <div className="field">
+              <label>📹 Камера (устройство видеозахвата)</label>
+              <select
+                className="input"
+                value={selectedVideoInput}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setSelectedVideoInput(val);
+                  savePreferredMediaDevices({ videoInputId: val });
+                  setNotice('Выбранная камера сохранена');
+                  setTimeout(() => setNotice(null), 1500);
+                }}
+              >
+                <option value="">По умолчанию (Системная камера)</option>
+                {videoInputs.map((d, idx) => (
+                  <option key={d.deviceId || idx} value={d.deviceId}>
+                    {d.label || `Камера #${idx + 1}`}
+                  </option>
+                ))}
+              </select>
+            </div>
 
-        {audioOutputs.length > 0 && (
-          <div className="field">
-            <label>🔊 Динамики / Наушники (вывод звука в звонках)</label>
-            <select
-              className="input"
-              value={selectedAudioOutput}
-              onChange={(e) => {
-                const val = e.target.value;
-                setSelectedAudioOutput(val);
-                savePreferredMediaDevices({ audioOutputId: val });
-                setNotice('Устройство вывода звука сохранено');
-                setTimeout(() => setNotice(null), 1500);
-              }}
-            >
-              <option value="">По умолчанию (Системный динамик)</option>
-              {audioOutputs.map((d, idx) => (
-                <option key={d.deviceId || idx} value={d.deviceId}>
-                  {d.label || `Динамики #${idx + 1}`}
-                </option>
-              ))}
-            </select>
-          </div>
+            {audioOutputs.length > 0 && (
+              <div className="field">
+                <label>🔊 Динамики / Наушники (вывод звука в звонках)</label>
+                <select
+                  className="input"
+                  value={selectedAudioOutput}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setSelectedAudioOutput(val);
+                    savePreferredMediaDevices({ audioOutputId: val });
+                    setNotice('Устройство вывода звука сохранено');
+                    setTimeout(() => setNotice(null), 1500);
+                  }}
+                >
+                  <option value="">По умолчанию (Системный динамик)</option>
+                  {audioOutputs.map((d, idx) => (
+                    <option key={d.deviceId || idx} value={d.deviceId}>
+                      {d.label || `Динамики #${idx + 1}`}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </>
         )}
 
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
@@ -1389,6 +1471,15 @@ export default function SettingsPage() {
           >
             {testingCam ? '⏹ Остановить проверку камеры' : '📹 Проверить камеру'}
           </button>
+          {isMobilePhone && testingCam && (
+            <button
+              type="button"
+              className="btn btn-compact"
+              onClick={() => void flipCamTest()}
+            >
+              🔄 Перевернуть камеру ({testCamFacing === 'user' ? 'Фронтальная' : 'Задняя'})
+            </button>
+          )}
         </div>
 
         {testingMic && (
@@ -1426,6 +1517,7 @@ export default function SettingsPage() {
               overflow: 'hidden',
               border: '2px solid var(--accent)',
               background: '#000',
+              position: 'relative',
             }}
           >
             <video
@@ -1433,7 +1525,13 @@ export default function SettingsPage() {
               muted
               playsInline
               autoPlay
-              style={{ width: '100%', height: 210, objectFit: 'cover', display: 'block' }}
+              style={{
+                width: '100%',
+                height: 210,
+                objectFit: 'cover',
+                display: 'block',
+                transform: testCamFacing === 'user' ? 'scaleX(-1)' : 'none',
+              }}
             />
           </div>
         )}
@@ -1850,76 +1948,80 @@ export default function SettingsPage() {
           );
         })}
 
-        <label
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 16,
-            padding: '12px',
-            borderRadius: 10,
-            background: 'var(--surface-raised)',
-            border: `1px solid ${desktopAutoStart ? 'var(--accent)' : 'var(--border)'}`,
-            cursor: 'pointer',
-            marginTop: 4,
-          }}
-        >
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontWeight: 700, fontSize: 14, color: 'var(--text)' }}>
-              🖥️ Автозапуск при старте ПК и фоновый режим (.exe)
-            </div>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
-              В версии для Windows (.exe) программа автоматически запускается вместе с компьютером, работает в системном трее в фоне и непрерывно ждёт новых сообщений, звонков и уведомлений.
-            </div>
-          </div>
-          <input
-            type="checkbox"
-            checked={desktopAutoStart}
-            onChange={(e) => handleToggleDesktopAutoStart(e.target.checked)}
-            style={{
-              width: 20,
-              height: 20,
-              accentColor: 'var(--accent)',
-              cursor: 'pointer',
-              flexShrink: 0,
-            }}
-          />
-        </label>
+        {isPcDevice && (
+          <>
+            <label
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 16,
+                padding: '12px',
+                borderRadius: 10,
+                background: 'var(--surface-raised)',
+                border: `1px solid ${desktopAutoStart ? 'var(--accent)' : 'var(--border)'}`,
+                cursor: 'pointer',
+                marginTop: 4,
+              }}
+            >
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 700, fontSize: 14, color: 'var(--text)' }}>
+                  🖥️ Автозапуск при старте ПК и фоновый режим (.exe)
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+                  В версии для Windows (.exe) программа автоматически запускается вместе с компьютером, работает в системном трее в фоне и непрерывно ждёт новых сообщений, звонков и уведомлений.
+                </div>
+              </div>
+              <input
+                type="checkbox"
+                checked={desktopAutoStart}
+                onChange={(e) => handleToggleDesktopAutoStart(e.target.checked)}
+                style={{
+                  width: 20,
+                  height: 20,
+                  accentColor: 'var(--accent)',
+                  cursor: 'pointer',
+                  flexShrink: 0,
+                }}
+              />
+            </label>
 
-        <label
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 16,
-            padding: '12px',
-            borderRadius: 10,
-            background: 'var(--surface-raised)',
-            border: `1px solid ${desktopLaunchMinimized ? 'var(--accent)' : 'var(--border)'}`,
-            cursor: 'pointer',
-          }}
-        >
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontWeight: 700, fontSize: 14, color: 'var(--text)' }}>
-              🗕 Запускать приложение свёрнутым на ПК
-            </div>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
-              На компьютере приложение PixChats по умолчанию запускается в свёрнутом виде, чтобы не отвлекать поверх окон. Вы можете отключить эту настройку в любой момент.
-            </div>
-          </div>
-          <input
-            type="checkbox"
-            checked={desktopLaunchMinimized}
-            onChange={(e) => handleToggleDesktopLaunchMinimized(e.target.checked)}
-            style={{
-              width: 20,
-              height: 20,
-              accentColor: 'var(--accent)',
-              cursor: 'pointer',
-              flexShrink: 0,
-            }}
-          />
-        </label>
+            <label
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 16,
+                padding: '12px',
+                borderRadius: 10,
+                background: 'var(--surface-raised)',
+                border: `1px solid ${desktopLaunchMinimized ? 'var(--accent)' : 'var(--border)'}`,
+                cursor: 'pointer',
+              }}
+            >
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 700, fontSize: 14, color: 'var(--text)' }}>
+                  🗕 Запускать приложение свёрнутым на ПК
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+                  На компьютере приложение PixChats по умолчанию запускается в свёрнутом виде, чтобы не отвлекать поверх окон. Вы можете отключить эту настройку в любой момент.
+                </div>
+              </div>
+              <input
+                type="checkbox"
+                checked={desktopLaunchMinimized}
+                onChange={(e) => handleToggleDesktopLaunchMinimized(e.target.checked)}
+                style={{
+                  width: 20,
+                  height: 20,
+                  accentColor: 'var(--accent)',
+                  cursor: 'pointer',
+                  flexShrink: 0,
+                }}
+              />
+            </label>
+          </>
+        )}
       </div>
 
       <div className="section-title">Учётная запись Pixset Studio</div>

@@ -99,6 +99,36 @@ export function detectRuntimePlatform(): RuntimePlatform {
   return 'web';
 }
 
+/**
+ * Определяет, запущено ли приложение на мобильном устройстве (телефоне / планшете / Android APK).
+ * Используется для отображения функции переворота камеры (только на телефонах) и скрытия ПК-настроек.
+ */
+export function isMobilePhoneDevice(): boolean {
+  if (typeof window === 'undefined') return false;
+  const platform = detectRuntimePlatform();
+  if (platform === 'desktop-exe') return false;
+  if (platform === 'android-apk') return true;
+  const ua = navigator.userAgent || '';
+  if (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile/i.test(ua)) {
+    return true;
+  }
+  if (typeof navigator.maxTouchPoints === 'number' && navigator.maxTouchPoints > 0 && window.innerWidth <= 900) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Определяет, запущено ли приложение на ПК (Windows .exe или настольный браузер ПК).
+ */
+export function isDesktopOrPcDevice(): boolean {
+  if (typeof window === 'undefined') return true;
+  const platform = detectRuntimePlatform();
+  if (platform === 'desktop-exe') return true;
+  if (platform === 'android-apk') return false;
+  return !isMobilePhoneDevice();
+}
+
 let autoRequestInitialized = false;
 
 export async function requestPermissionNow(): Promise<'granted' | 'denied' | 'default'> {

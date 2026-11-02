@@ -12,6 +12,7 @@ import { getNotificationPrefs } from '../lib/notificationPrefs';
 import {
   triggerIncomingCallNativeAlert,
   stopIncomingCallNativeAlert,
+  isMobilePhoneDevice,
 } from '../lib/nativePlatform';
 import { AvatarWithStatus } from './AvatarWithStatus';
 import {
@@ -217,6 +218,12 @@ export function CallManager() {
   const [speakingUsers, setSpeakingUsers] = useState<Record<string, boolean>>({});
   const [callNotice, setCallNotice] = useState<string | null>(null);
   const [speakerphoneActive, setSpeakerphoneActive] = useState<boolean>(true);
+  const [cameraFacingMode, setCameraFacingMode] = useState<'user' | 'environment'>('user');
+  const [isMobilePhone, setIsMobilePhone] = useState<boolean>(() => isMobilePhoneDevice());
+
+  useEffect(() => {
+    setIsMobilePhone(isMobilePhoneDevice());
+  }, []);
 
   const meRef = useRef<Profile | null>(me);
   meRef.current = me;
@@ -1495,7 +1502,11 @@ export function CallManager() {
 
     try {
       const camStream = await navigator.mediaDevices.getUserMedia({
-        video: getPreferredVideoConstraints({ width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' }),
+        video: getPreferredVideoConstraints({
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          facingMode: cameraFacingMode,
+        }),
         audio: false,
       });
       const camTrack = camStream.getVideoTracks()[0];
@@ -1523,6 +1534,47 @@ export function CallManager() {
       });
     } catch {
       showTransientCallNotice('Не удалось включить камеру (проверьте доступ к камере)');
+    }
+  }
+
+  async function handleFlipCamera() {
+    if (!cameraEnabled) return;
+    const nextFacing = cameraFacingMode === 'user' ? 'environment' : 'user';
+    try {
+      const camStream = await navigator.mediaDevices.getUserMedia({
+        video: getPreferredVideoConstraints({
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          facingMode: nextFacing,
+        }),
+        audio: false,
+      });
+      const camTrack = camStream.getVideoTracks()[0];
+      if (!camTrack) return;
+
+      if (!localStreamRef.current) {
+        localStreamRef.current = new MediaStream();
+      }
+      localStreamRef.current.getVideoTracks().forEach((old) => {
+        old.stop();
+        localStreamRef.current?.removeTrack(old);
+      });
+      localStreamRef.current.addTrack(camTrack);
+      setCameraFacingMode(nextFacing);
+
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = localStreamRef.current;
+        void localVideoRef.current.play().catch(() => {});
+      }
+
+      if (!screenSharing) {
+        await syncOutgoingVideoTrack(camTrack, localStreamRef.current);
+      }
+      showTransientCallNotice(
+        nextFacing === 'user' ? '🤳 Фронтальная камера' : '📷 Основная (задняя) камера'
+      );
+    } catch {
+      showTransientCallNotice('Не удалось переключить камеру');
     }
   }
 
@@ -2286,8 +2338,34 @@ export function CallManager() {
                 autoPlay
                 muted
                 playsInline
-                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  objectFit: 'cover',
+                  transform: !screenSharing && cameraFacingMode === 'user' ? 'scaleX(-1)' : 'none',
+                }}
               />
+              {isMobilePhone && cameraEnabled && !screenSharing && (
+                <button
+                  type="button"
+                  className="btn"
+                  style={{
+                    position: 'absolute',
+                    top: 6,
+                    right: 6,
+                    width: 'auto',
+                    padding: '4px 8px',
+                    fontSize: 11,
+                    background: 'rgba(0,0,0,0.72)',
+                    color: '#fff',
+                    borderColor: 'var(--accent)',
+                  }}
+                  onClick={() => void handleFlipCamera()}
+                  title="Перевернуть камеру"
+                >
+                  🔄
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -2359,6 +2437,22 @@ export function CallManager() {
               {cameraEnabled ? 'ВКЛ' : 'ВЫКЛ'}
             </span>
           </button>
+
+          {isMobilePhone && cameraEnabled && (
+            <button
+              type="button"
+              className="btn"
+              style={{
+                width: 'auto',
+                padding: '11px 14px',
+                fontWeight: 700,
+              }}
+              onClick={() => void handleFlipCamera()}
+              title="Переключить между фронтальной и основной камерой"
+            >
+              🔄 Перевернуть камеру
+            </button>
+          )}
 
           <button
             type="button"

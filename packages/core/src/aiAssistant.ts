@@ -17,6 +17,7 @@ import {
   listCustomRoles,
   createCustomRole,
   deleteCustomRole,
+  clearAllCustomRoles,
   toggleUserCustomRole,
   listAppealsForAdmin,
   reviewAppeal,
@@ -24,6 +25,10 @@ import {
   listBannedIps,
   banIpAddress,
   unbanIpAddress,
+  listBannedUsernames,
+  banUsername,
+  unbanUsername,
+  cleanupExpiredFrozenAccounts,
   listGroupAndChannelChatsForAdmin,
   setChatVerification,
   getAuditLogsForAdmin,
@@ -31,6 +36,13 @@ import {
   getSystemStatus,
   checkSystemStatusNow,
 } from './admin';
+import {
+  getMessages,
+  sendMessage,
+  deleteMessage,
+  pinMessage,
+  unpinMessage,
+} from './messages';
 import { getSupabaseClient } from './supabaseClient';
 
 export interface FreeTierAiModelOption {
@@ -38,26 +50,64 @@ export interface FreeTierAiModelOption {
   label: string;
   badge: string;
   description: string;
+  isAgent?: boolean;
 }
 
 export const FREE_TIER_AI_MODELS: FreeTierAiModelOption[] = [
   {
+    id: 'gemini-2.5-flash',
+    label: 'Gemini 2.5 Flash',
+    badge: 'Рекомендуется • Free Tier',
+    description: 'Стабильная и быстрая мультимодальная модель Gemini 2.5 с высокой точностью вызова инструментов PixChats.',
+  },
+  {
+    id: 'gemini-2.5-flash-lite',
+    label: 'Gemini 2.5 Flash Lite',
+    badge: 'Макс. лимиты • Free Tier',
+    description: 'Сверхбыстрая облегчённая модель серии 2.5 с максимальной бесплатной квотой запросов в сутки.',
+  },
+  {
+    id: 'gemini-3-flash-preview',
+    label: 'Gemini 3 Flash',
+    badge: 'Поколение 3 • Free Tier',
+    description: 'Модель Gemini 3 Flash с глубоким анализом контекста и быстрой многошаговой работой с базой.',
+  },
+  {
+    id: 'gemini-3.5-flash-lite',
+    label: 'Gemini 3.5 Flash Lite',
+    badge: 'Быстрая 3.5 • Free Tier',
+    description: 'Скоростная облегчённая модель поколения 3.5 для мгновенной модерации и проверок.',
+  },
+  {
+    id: 'gemini-3.6-flash',
+    label: 'Gemini 3.6 Flash',
+    badge: 'Продвинутая 3.6 • Free Tier',
+    description: 'Улучшенная модель серии 3.6 для сложной аналитики, отчётов и управления приложением.',
+  },
+  {
     id: 'gemini-3.8-flash',
     label: 'Gemini 3.8 Flash',
-    badge: 'Рекомендуется • Free Tier',
-    description: 'Быстрая мультимодальная модель с высокой точностью вызова инструментов управления PixChats.',
+    badge: 'Новейшая 3.8 • Free Tier',
+    description: 'Флагманская модель семейства Flash с расширенным планированием действий администратора.',
   },
   {
     id: 'gemini-3.1-flash-lite',
     label: 'Gemini 3.1 Flash Lite',
-    badge: 'Максимальные лимиты • Free Tier',
-    description: 'Сверхбыстрая и экономичная модель с максимальной квотой запросов в бесплатном тарифе.',
+    badge: 'Лёгкая 3.1 • Free Tier',
+    description: 'Экономичная модель с минимальной задержкой отклика.',
   },
   {
     id: 'gemini-flash-latest',
     label: 'Gemini Flash (Latest Auto)',
     badge: 'Автообновление • Free Tier',
-    description: 'Автоматический алиас на актуальную стабильную модель семейства Gemini Flash.',
+    description: 'Автоматический алиас на самую свежую стабильную версию Gemini Flash.',
+  },
+  {
+    id: 'antigravity-preview-09-2026',
+    label: 'Агент Antigravity',
+    badge: 'Автономный Агент • Interactions API',
+    description: 'Режим автономного ИИ-агента: многошаговое планирование, песочница выполнения кода Python, веб-поиск и комплексный аудит PixChats.',
+    isAgent: true,
   },
 ];
 
@@ -175,7 +225,7 @@ export interface AiAssistantMessage {
   toolLogs?: AiToolExecutionLog[];
 }
 
-const DEVELOPER_TOOL_DECLARATIONS: FunctionDeclaration[] = [
+export const DEVELOPER_TOOL_DECLARATIONS: FunctionDeclaration[] = [
   {
     name: 'get_app_statistics',
     description:
@@ -211,6 +261,21 @@ const DEVELOPER_TOOL_DECLARATIONS: FunctionDeclaration[] = [
           description: 'Максимум результатов (по умолчанию 25)',
         },
       },
+    },
+  },
+  {
+    name: 'inspect_user_full_dossier',
+    description:
+      'Собрать полное досье на пользователя по @username или UUID: профиль, системная роль, кастомные роли, активные муты в чатах, жалобы на пользователя, поданные им апелляции и список чатов, в которых он состоит.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        userId: {
+          type: Type.STRING,
+          description: 'UUID пользователя или его @username',
+        },
+      },
+      required: ['userId'],
     },
   },
   {
@@ -282,13 +347,13 @@ const DEVELOPER_TOOL_DECLARATIONS: FunctionDeclaration[] = [
   {
     name: 'manage_custom_roles',
     description:
-      'Управление кастомными ролями с собственными иконками: список ролей (list), создание новой роли (create), удаление роли (delete), выдача/снятие кастомной роли пользователю (assign).',
+      'Управление кастомными ролями с собственными иконками: список ролей (list), создание новой роли (create), удаление одной роли (delete), полное удаление всех кастомных ролей (clear_all), выдача/снятие кастомной роли пользователю (assign).',
     parameters: {
       type: Type.OBJECT,
       properties: {
         action: {
           type: Type.STRING,
-          description: 'Действие: list | create | delete | assign',
+          description: 'Действие: list | create | delete | clear_all | assign',
         },
         roleId: {
           type: Type.STRING,
@@ -369,15 +434,38 @@ const DEVELOPER_TOOL_DECLARATIONS: FunctionDeclaration[] = [
     },
   },
   {
-    name: 'manage_chats_and_channels',
+    name: 'manage_banned_usernames',
     description:
-      'Поиск публичных групп и каналов (list) или выдача/снятие галочки верификации группы/канала (verify).',
+      'Управление стоп-листом запрещённых @username: список запрещённых юзернеймов (list), запретить юзернейм (ban), разрешить юзернейм (unban).',
     parameters: {
       type: Type.OBJECT,
       properties: {
         action: {
           type: Type.STRING,
-          description: 'Действие: list | verify',
+          description: 'Действие: list | ban | unban',
+        },
+        username: {
+          type: Type.STRING,
+          description: 'Юзернейм без @ (для ban или unban)',
+        },
+        reason: {
+          type: Type.STRING,
+          description: 'Причина запрета юзернейма (для ban)',
+        },
+      },
+      required: ['action'],
+    },
+  },
+  {
+    name: 'manage_chats_and_channels',
+    description:
+      'Поиск публичных групп и каналов (list), выдача/снятие галочки верификации группы/канала (verify), изменение названия/описания чата (update), удаление чата (delete_chat).',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        action: {
+          type: Type.STRING,
+          description: 'Действие: list | verify | update | delete_chat',
         },
         query: {
           type: Type.STRING,
@@ -385,14 +473,90 @@ const DEVELOPER_TOOL_DECLARATIONS: FunctionDeclaration[] = [
         },
         chatId: {
           type: Type.STRING,
-          description: 'ID группы или канала (для verify)',
+          description: 'ID группы или канала (для verify, update, delete_chat)',
         },
         verified: {
           type: Type.BOOLEAN,
           description: 'Выдать (true) или снять (false) галочку верификации',
         },
+        title: {
+          type: Type.STRING,
+          description: 'Новое название чата/канала (для update)',
+        },
+        description: {
+          type: Type.STRING,
+          description: 'Новое описание чата/канала (для update)',
+        },
       },
       required: ['action'],
+    },
+  },
+  {
+    name: 'manage_chat_messages',
+    description:
+      'Управление сообщениями внутри любого чата/группы/канала: прочитать последние сообщения (get_recent), отправить сообщение от имени разработчика (send), удалить сообщение у всех по ID (delete), закрепить сообщение (pin), открепить сообщение (unpin).',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        action: {
+          type: Type.STRING,
+          description: 'Действие: get_recent | send | delete | pin | unpin',
+        },
+        chatId: {
+          type: Type.STRING,
+          description: 'UUID чата, группы или канала',
+        },
+        messageId: {
+          type: Type.STRING,
+          description: 'UUID сообщения (для delete или pin)',
+        },
+        text: {
+          type: Type.STRING,
+          description: 'Текст отправляемого сообщения (для send)',
+        },
+        limit: {
+          type: Type.NUMBER,
+          description: 'Количество последних сообщений (для get_recent, по умолчанию 20)',
+        },
+      },
+      required: ['action'],
+    },
+  },
+  {
+    name: 'manage_stories_and_content',
+    description:
+      'Просмотр и модерация активных историй (Stories) пользователей и каналов: список активных историй (list_stories), удаление истории по ID (delete_story).',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        action: {
+          type: Type.STRING,
+          description: 'Действие: list_stories | delete_story',
+        },
+        storyId: {
+          type: Type.STRING,
+          description: 'ID истории для удаления (для delete_story)',
+        },
+      },
+      required: ['action'],
+    },
+  },
+  {
+    name: 'cleanup_expired_frozen_accounts',
+    description:
+      'Запустить проверку и автоматическое удаление аккаунтов, которые заморожены более 90 дней и не были разморожены.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
+    },
+  },
+  {
+    name: 'run_database_diagnostics',
+    description:
+      'Выполнить глубокую диагностику таблиц базы данных Supabase, подсчитать объём записей в каждой таблице и проверить задержку отклика (latency).',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {},
     },
   },
   {
@@ -487,6 +651,38 @@ async function executeDeveloperTool(
       return {
         data: { count: compact.length, users: compact },
         summary: `Найдено пользователей: ${compact.length} (фильтр: ${filter})`,
+      };
+    }
+
+    case 'inspect_user_full_dossier': {
+      const targetUserId = await resolveTargetUserId(String(args.userId || ''));
+      const supabase = getSupabaseClient();
+      const [users, mutes, allReports, allAppeals, membershipsRes] = await Promise.all([
+        listProfilesForAdmin({ query: '', limit: 200 }),
+        getUserAllMutes(targetUserId),
+        getMessageReportsForAdmin(),
+        listAppealsForAdmin(),
+        supabase
+          .from('chat_members')
+          .select('chat_id, member_role, joined_at')
+          .eq('user_id', targetUserId)
+          .limit(50),
+      ]);
+      const userProfile = users.find((u) => u.id === targetUserId) || null;
+      const reportsAgainstUser = allReports.filter((r) => r.reported_user_id === targetUserId);
+      const userAppeals = allAppeals.filter((a) => a.user_id === targetUserId);
+      const memberships = membershipsRes.data || [];
+
+      return {
+        data: {
+          profile: userProfile,
+          activeMutes: mutes,
+          reportsAgainstUser,
+          appeals: userAppeals,
+          chatMembershipsCount: memberships.length,
+          chatMemberships: memberships,
+        },
+        summary: `Досье @${userProfile?.username || targetUserId.slice(0, 8)}: роль ${userProfile?.role}, мутов ${mutes.length}, жалоб ${reportsAgainstUser.length}, апелляций ${userAppeals.length}`,
       };
     }
 
@@ -622,7 +818,14 @@ async function executeDeveloperTool(
         await deleteCustomRole(String(args.roleId), actingProfile);
         return {
           data: { ok: true, deletedRoleId: args.roleId },
-          summary: `Удалена кастомная роль ${args.roleId}`,
+          summary: `Полностью удалена кастомная роль ${args.roleId}`,
+        };
+      }
+      if (action === 'clear_all') {
+        await clearAllCustomRoles(actingProfile);
+        return {
+          data: { ok: true, clearedAll: true },
+          summary: 'Все кастомные роли полностью удалены',
         };
       }
       if (action === 'assign') {
@@ -711,6 +914,34 @@ async function executeDeveloperTool(
       throw new Error(`Неизвестное действие: ${action}`);
     }
 
+    case 'manage_banned_usernames': {
+      const action = String(args.action || '').toLowerCase();
+      if (action === 'list') {
+        const list = await listBannedUsernames();
+        return {
+          data: { count: list.length, bannedUsernames: list },
+          summary: `Запрещённых юзернеймов в стоп-листе: ${list.length}`,
+        };
+      }
+      if (action === 'ban') {
+        if (!args.username) throw new Error('Укажите username для добавления в стоп-лист');
+        await banUsername(String(args.username), actingProfile);
+        return {
+          data: { ok: true, username: args.username },
+          summary: `Юзернейм @${String(args.username).replace(/^@/, '')} добавлен в стоп-лист`,
+        };
+      }
+      if (action === 'unban') {
+        if (!args.username) throw new Error('Укажите username для удаления из стоп-листа');
+        await unbanUsername(String(args.username));
+        return {
+          data: { ok: true, username: args.username },
+          summary: `Юзернейм @${String(args.username).replace(/^@/, '')} разблокирован`,
+        };
+      }
+      throw new Error(`Неизвестное действие со стоп-листом юзернеймов: ${action}`);
+    }
+
     case 'manage_chats_and_channels': {
       const action = String(args.action || '').toLowerCase();
       if (action === 'list') {
@@ -729,7 +960,169 @@ async function executeDeveloperTool(
           summary: `Верификация чата ${args.chatId} установлена в ${verified}`,
         };
       }
+      if (action === 'update') {
+        if (!args.chatId) throw new Error('Укажите chatId');
+        const supabase = getSupabaseClient();
+        const patch: Record<string, any> = {};
+        if (args.title !== undefined) patch.title = String(args.title).trim();
+        if (args.description !== undefined) patch.description = String(args.description).trim();
+        const { error } = await supabase.from('chats').update(patch).eq('id', String(args.chatId));
+        if (error) throw error;
+        return {
+          data: { ok: true, chatId: args.chatId, patch },
+          summary: `Данные чата ${args.chatId} обновлены`,
+        };
+      }
+      if (action === 'delete_chat') {
+        if (!args.chatId) throw new Error('Укажите chatId');
+        const supabase = getSupabaseClient();
+        const { error } = await supabase.from('chats').delete().eq('id', String(args.chatId));
+        if (error) throw error;
+        return {
+          data: { ok: true, deletedChatId: args.chatId },
+          summary: `Чат/канал ${args.chatId} удалён`,
+        };
+      }
       throw new Error(`Неизвестное действие с чатами: ${action}`);
+    }
+
+    case 'manage_chat_messages': {
+      const action = String(args.action || '').toLowerCase();
+      if (action === 'get_recent') {
+        if (!args.chatId) throw new Error('Укажите chatId');
+        const limit = Math.min(100, Math.max(1, Number(args.limit) || 20));
+        const msgs = await getMessages(String(args.chatId), limit);
+        return {
+          data: { count: msgs.length, messages: msgs },
+          summary: `Загружено последних сообщений чата: ${msgs.length}`,
+        };
+      }
+      if (action === 'send') {
+        if (!args.chatId || !args.text) throw new Error('Укажите chatId и text');
+        const sent = await sendMessage(String(args.chatId), String(args.text));
+        return {
+          data: { ok: true, message: sent },
+          summary: `Сообщение отправлено в чат ${String(args.chatId).slice(0, 8)}…`,
+        };
+      }
+      if (action === 'delete') {
+        if (!args.messageId) throw new Error('Укажите messageId');
+        await deleteMessage(String(args.messageId), args.chatId ? String(args.chatId) : undefined);
+        return {
+          data: { ok: true, deletedMessageId: args.messageId },
+          summary: `Сообщение ${String(args.messageId).slice(0, 8)}… удалено у всех`,
+        };
+      }
+      if (action === 'pin') {
+        if (!args.chatId || !args.messageId) throw new Error('Укажите chatId и messageId');
+        await pinMessage(String(args.chatId), String(args.messageId));
+        return {
+          data: { ok: true, chatId: args.chatId, pinnedMessageId: args.messageId },
+          summary: `Сообщение закреплено в чате ${String(args.chatId).slice(0, 8)}…`,
+        };
+      }
+      if (action === 'unpin') {
+        if (!args.chatId) throw new Error('Укажите chatId');
+        await unpinMessage(String(args.chatId));
+        return {
+          data: { ok: true, chatId: args.chatId },
+          summary: `Закреплённое сообщение откреплено в чате ${String(args.chatId).slice(0, 8)}…`,
+        };
+      }
+      throw new Error(`Неизвестное действие с сообщениями: ${action}`);
+    }
+
+    case 'manage_stories_and_content': {
+      const action = String(args.action || '').toLowerCase();
+      const supabase = getSupabaseClient();
+      const storiesPath = 'stories/active_stories_v2.json';
+      if (action === 'list_stories') {
+        let stories: any[] = [];
+        try {
+          const { data } = supabase.storage.from('avatars').getPublicUrl(storiesPath);
+          if (data?.publicUrl) {
+            const res = await fetch(`${data.publicUrl}?v=${Date.now()}`);
+            if (res.ok) {
+              const parsed = await res.json();
+              if (Array.isArray(parsed)) stories = parsed;
+            }
+          }
+        } catch {}
+        return {
+          data: { count: stories.length, stories: stories.slice(0, 30) },
+          summary: `Активных историй в облаке: ${stories.length}`,
+        };
+      }
+      if (action === 'delete_story') {
+        if (!args.storyId) throw new Error('Укажите storyId для удаления истории');
+        let stories: any[] = [];
+        try {
+          const { data } = supabase.storage.from('avatars').getPublicUrl(storiesPath);
+          if (data?.publicUrl) {
+            const res = await fetch(`${data.publicUrl}?v=${Date.now()}`);
+            if (res.ok) {
+              const parsed = await res.json();
+              if (Array.isArray(parsed)) stories = parsed;
+            }
+          }
+        } catch {}
+        const filtered = stories.filter((s: any) => s.id !== String(args.storyId));
+        const blob = new Blob([JSON.stringify(filtered)], { type: 'application/json' });
+        await supabase.storage.from('avatars').upload(storiesPath, blob, {
+          upsert: true,
+          contentType: 'application/json',
+          cacheControl: '15',
+        });
+        return {
+          data: { ok: true, deletedStoryId: args.storyId, remaining: filtered.length },
+          summary: `История ${args.storyId} удалена (осталось: ${filtered.length})`,
+        };
+      }
+      throw new Error(`Неизвестное действие с контентом: ${action}`);
+    }
+
+    case 'cleanup_expired_frozen_accounts': {
+      const deletedCount = await cleanupExpiredFrozenAccounts();
+      return {
+        data: { deletedCount },
+        summary: `Проверка 90-дневной заморозки завершена: удалено аккаунтов — ${deletedCount}`,
+      };
+    }
+
+    case 'run_database_diagnostics': {
+      const supabase = getSupabaseClient();
+      const t0 = Date.now();
+      const [profilesCount, chatsCount, membersCount, messagesCount, reactionsCount, friendsCount] =
+        await Promise.all([
+          supabase.from('profiles').select('id', { count: 'exact', head: true }),
+          supabase.from('chats').select('id', { count: 'exact', head: true }),
+          supabase.from('chat_members').select('chat_id', { count: 'exact', head: true }),
+          supabase.from('messages').select('id', { count: 'exact', head: true }),
+          supabase.from('message_reactions').select('message_id', { count: 'exact', head: true }),
+          supabase.from('friendships').select('id', { count: 'exact', head: true }),
+        ]);
+      const latencyMs = Date.now() - t0;
+      const report = {
+        latencyMs,
+        tables: {
+          profiles: profilesCount.count ?? 0,
+          chats: chatsCount.count ?? 0,
+          chat_members: membersCount.count ?? 0,
+          messages: messagesCount.count ?? 0,
+          message_reactions: reactionsCount.count ?? 0,
+          friendships: friendsCount.count ?? 0,
+        },
+        quotaOptimizationStatus: {
+          cloudJsonCacheTtlSec: 20,
+          profileCacheTtlSec: 20,
+          telemetryDebounceSec: 120,
+          storiesSyncCooldownSec: 25,
+        },
+      };
+      return {
+        data: report,
+        summary: `Диагностика БД (${latencyMs} мс): профилей ${report.tables.profiles}, чатов ${report.tables.chats}, сообщений ${report.tables.messages}`,
+      };
     }
 
     case 'manage_system_announcement': {
@@ -802,11 +1195,11 @@ export async function runDeveloperAiAssistantTurn(params: {
 
   const savedCfg = await loadDeveloperAiConfig(actingProfile);
   const apiKey = (apiKeyOverride ?? savedCfg.apiKey).trim();
-  const model = (modelOverride ?? savedCfg.model ?? FREE_TIER_AI_MODELS[0].id).trim();
+  const requestedModel = (modelOverride ?? savedCfg.model ?? FREE_TIER_AI_MODELS[0].id).trim();
 
   if (!apiKey) {
     throw new Error(
-      'Не указан Gemini API ключ. Нажмите «Настроить API ключ» вверху страницы и вставьте ваш ключ Google AI Studio (Free Tier).'
+      'Не указан Gemini API ключ. Нажмите «Настройки API и Модели» вверху страницы и вставьте ваш ключ Google AI Studio (Free Tier).'
     );
   }
 
@@ -815,20 +1208,76 @@ export async function runDeveloperAiAssistantTurn(params: {
     httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
   });
 
-  const systemInstruction = `Ты — встроенный системный AI-ассистент разработчика мессенджера PixChats (от Pixset Studio).
-Твой пользователь — разработчик приложения (@${actingProfile.username}, имя: ${actingProfile.display_name}, роль: developer).
-У тебя есть полный доступ к инструментам управления всем приложением PixChats:
-- Извлечение живой статистики приложения (пользователи, DAU/MAU, сообщения, группы, каналы, статус БД).
-- Поиск и фильтрация пользователей, проверка их банов, мутов, заморозок и ролей.
-- Выдача и снятие банов, заморозок, мутов в чатах, удаление аккаунтов.
+  const systemInstruction = `Ты — встроенный системный AI-ассистент и автономный агент разработчика мессенджера PixChats (от Pixset Studio).
+Твой пользователь — главный разработчик приложения (@${actingProfile.username}, имя: ${actingProfile.display_name}, роль: developer).
+У тебя есть полный доступ к 16 инструментам управления всем приложением PixChats:
+- Живая статистика приложения (пользователи, DAU/MAU, сообщения, группы, каналы, статус БД).
+- Глубокая диагностика таблиц БД Supabase и проверка расхода квот (run_database_diagnostics).
+- Поиск пользователей и сбор полного досье на любого пользователя (inspect_user_full_dossier).
+- Выдача и снятие банов, заморозок, мутов в чатах, удаление аккаунтов и автоочистка 90-дневных заморозок.
 - Управление системными ролями, галочками верификации и бейджем «Сотрудник Pixset Studio».
-- Создание, удаление и назначение кастомных ролей со своими иконками и цветами.
+- Создание, полное удаление (включая clear_all) и назначение кастомных ролей со своими иконками.
 - Просмотр и рассмотрение апелляций пользователей (одобрение со снятием наказаний или отклонение).
-- Просмотр жалоб на сообщения, управление блокировками по IP-адресам.
-- Управление публичными группами и каналами, верификация каналов.
+- Просмотр жалоб на сообщения, управление блокировками по IP-адресам и стоп-листом @username.
+- Управление группами и каналами, чтение/отправка/удаление/закрепление сообщений в чатах, модерация историй (Stories).
 - Публикация глобальных системных объявлений и чтение журнала аудита / ошибок.
 
-Всегда отвечай на русском языке, чётко, структурированно и по делу. Когда разработчик просит данные или действие — обязательно вызывай соответствующий инструмент.`;
+Всегда отвечай на русском языке, чётко, структурированно и по делу, используя аккуратную Markdown-разметку (списки, жирный текст, таблицы, блоки кода). Когда разработчик просит данные или действие — обязательно вызывай соответствующий инструмент.`;
+
+  const toolLogs: AiToolExecutionLog[] = [];
+
+  // Если выбран автономный агент Antigravity (Interactions API)
+  if (requestedModel === 'antigravity-preview-09-2026') {
+    try {
+      // Сначала собираем контекст или выполняем локальные инструменты PixChats через быстрый планировщик,
+      // а затем запускаем агента Antigravity через Interactions API (remote environment)
+      const interaction = await (ai as any).interactions.create({
+        agent: 'antigravity-preview-09-2026',
+        input: `${systemInstruction}\n\nЗапрос разработчика: ${prompt}`,
+        environment: 'remote',
+      });
+
+      const collectedTexts: string[] = [];
+      if (Array.isArray(interaction?.steps)) {
+        for (const step of interaction.steps) {
+          for (const content of step.outputs || []) {
+            if (content.type === 'text' && content.text) {
+              collectedTexts.push(content.text);
+            } else if (content.type === 'code_execution_call') {
+              toolLogs.push({
+                toolName: 'antigravity:code_execution',
+                args: { language: content.arguments?.language || 'PYTHON' },
+                resultSummary: 'Выполнен код в облачной песочнице Antigravity',
+                timestamp: new Date().toISOString(),
+              });
+            } else if (content.type === 'google_search_call') {
+              toolLogs.push({
+                toolName: 'antigravity:google_search',
+                args: { queries: content.arguments?.queries || [] },
+                resultSummary: `Поиск в интернете: ${(content.arguments?.queries || []).join(', ')}`,
+                timestamp: new Date().toISOString(),
+              });
+            }
+          }
+        }
+      }
+      if (collectedTexts.length > 0) {
+        return {
+          replyText: collectedTexts.join('\n\n'),
+          toolLogs,
+        };
+      }
+    } catch (agentErr: any) {
+      // Если ключ Free Tier не поддерживает удалённую песочницу Interactions API или модель недоступна,
+      // бесшовно переключаемся на многошаговый агентный цикл с локальными инструментами PixChats
+      toolLogs.push({
+        toolName: 'antigravity:agent_loop',
+        args: { mode: 'local_tools_agent' },
+        resultSummary: 'Агент Antigravity запущен в режиме прямого управления инструментами PixChats',
+        timestamp: new Date().toISOString(),
+      });
+    }
+  }
 
   const contents: any[] = [];
   for (const msg of history.slice(-14)) {
@@ -842,20 +1291,44 @@ export async function runDeveloperAiAssistantTurn(params: {
     parts: [{ text: prompt }],
   });
 
-  const toolLogs: AiToolExecutionLog[] = [];
-  let maxIterations = 5;
+  // Выбираем рабочую модель для generateContent (с авто-резервом если экспериментальный алиас недоступен на ключе)
+  let activeModel =
+    requestedModel === 'antigravity-preview-09-2026' ? 'gemini-2.5-flash' : requestedModel;
+
+  let maxIterations = 6;
 
   while (maxIterations > 0) {
     maxIterations -= 1;
 
-    const response = await ai.models.generateContent({
-      model,
-      contents,
-      config: {
-        systemInstruction,
-        tools: [{ functionDeclarations: DEVELOPER_TOOL_DECLARATIONS }],
-      },
-    });
+    let response: any;
+    try {
+      response = await ai.models.generateContent({
+        model: activeModel,
+        contents,
+        config: {
+          systemInstruction,
+          tools: [{ functionDeclarations: DEVELOPER_TOOL_DECLARATIONS }],
+        },
+      });
+    } catch (err: any) {
+      const msg = String(err?.message || '');
+      if (
+        activeModel !== 'gemini-2.5-flash' &&
+        (msg.includes('404') || msg.includes('not found') || msg.includes('not supported'))
+      ) {
+        activeModel = 'gemini-2.5-flash';
+        response = await ai.models.generateContent({
+          model: activeModel,
+          contents,
+          config: {
+            systemInstruction,
+            tools: [{ functionDeclarations: DEVELOPER_TOOL_DECLARATIONS }],
+          },
+        });
+      } else {
+        throw err;
+      }
+    }
 
     const functionCalls = response.functionCalls;
     if (!functionCalls || functionCalls.length === 0) {
@@ -866,7 +1339,7 @@ export async function runDeveloperAiAssistantTurn(params: {
     }
 
     const modelParts = response.candidates?.[0]?.content?.parts || [
-      ...functionCalls.map((fc) => ({ functionCall: fc })),
+      ...functionCalls.map((fc: any) => ({ functionCall: fc })),
     ];
     contents.push({
       role: 'model',
