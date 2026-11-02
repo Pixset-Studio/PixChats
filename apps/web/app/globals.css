@@ -154,7 +154,7 @@
   --text-muted: #64748b;
   --accent: #ca8a04;
   --accent-hover: #a16207;
-  --accent-contrast: #ffffff;
+  --accent-contrast: #000000;
   --bubble-mine-bg: #fef9c3;
   --bubble-mine-border: rgba(202, 138, 4, 0.35);
   --bubble-mine-text: #713f12;
@@ -222,8 +222,14 @@ body {
   transition: background 0.2s ease, color 0.2s ease;
 }
 
-a {
+a,
+a:hover,
+a:focus,
+a:visited,
+button,
+.btn {
   color: inherit;
+  text-decoration: none !important;
 }
 
 button,
@@ -236,7 +242,7 @@ textarea {
 
 ::selection {
   background: var(--accent);
-  color: #fff;
+  color: #000;
 }
 
 /* ---------- layout helpers ---------- */
@@ -426,7 +432,7 @@ select.input:focus {
   text-decoration: none;
 }
 .muted-link a:hover {
-  text-decoration: underline;
+  text-decoration: none;
 }
 
 /* ---------- badges ---------- */
@@ -581,23 +587,23 @@ select.input:focus {
 .bubble {
   max-width: 100%;
   padding: 9px 15px;
-  border-radius: 16px 16px 16px 4px;
+  border-radius: var(--chat-bubble-radius, 14px) var(--chat-bubble-radius, 14px) var(--chat-bubble-radius, 14px) 4px;
   background: var(--surface-raised);
   border: 1px solid var(--border);
   color: var(--text);
-  font-size: 14.5px;
+  font-size: var(--chat-msg-font-size, 14.5px);
   line-height: 1.45;
   display: inline-block;
   cursor: pointer;
   word-break: break-word;
-  transition: background 0.15s ease, border-color 0.15s ease;
+  transition: background 0.15s ease, border-color 0.15s ease, border-radius 0.12s ease;
 }
 /* Спокойный комфортный фон своих сообщений (не слепящий неон!) */
 .bubble-row.mine .bubble {
   background: var(--bubble-mine-bg);
   border: 1px solid var(--bubble-mine-border);
   color: var(--bubble-mine-text);
-  border-radius: 16px 16px 4px 16px;
+  border-radius: var(--chat-bubble-radius, 14px) var(--chat-bubble-radius, 14px) 4px var(--chat-bubble-radius, 14px);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
 }
 
@@ -743,7 +749,7 @@ select.input:focus {
 }
 .file-attachment {
   color: inherit;
-  text-decoration: underline;
+  text-decoration: none;
   word-break: break-all;
 }
 .message-text {
@@ -1183,7 +1189,7 @@ select.input:focus {
 .folder-tab.active {
   background: var(--accent);
   border-color: var(--accent);
-  color: #fff;
+  color: #000;
 }
 
 /* ---------- chat list item, Telegram-style with preview ---------- */
@@ -1225,7 +1231,7 @@ select.input:focus {
 
 .unread-badge {
   background: var(--accent);
-  color: #fff;
+  color: #000;
   font-size: 11px;
   font-weight: 700;
   min-width: 18px;
@@ -1238,6 +1244,7 @@ select.input:focus {
 }
 .unread-badge.muted {
   background: var(--text-muted);
+  color: #fff;
 }
 .chat-item-preview-text {
   font-size: 13px;

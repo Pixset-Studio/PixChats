@@ -13,8 +13,8 @@ export interface ChatAppearanceSettings {
   wallpaper: WallpaperPresetId;
   customWallpaperDataUrl?: string;
   wallpaperDimming: number; // 0 .. 85 (%)
-  fontSize: 13 | 14 | 16;
-  bubbleRadius: 8 | 14 | 20;
+  fontSize: number;         // 11 .. 24 (px), ползунок
+  bubbleRadius: number;     // 2 .. 28 (px), ползунок
 }
 
 const STORAGE_KEY = 'pixchats:chat_appearance_v1';

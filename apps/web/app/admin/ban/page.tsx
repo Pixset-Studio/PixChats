@@ -426,7 +426,7 @@ function BanConfigInner() {
             <div className="field" style={{ marginBottom: 20 }}>
               <label style={{ fontSize: 12, fontWeight: 700 }}>Выберите чат для мута</label>
               <select
-                className="select"
+                className="input"
                 value={selectedChatId}
                 onChange={(e) => setSelectedChatId(e.target.value)}
               >
@@ -621,7 +621,7 @@ function BanConfigInner() {
                     Единица времени
                   </label>
                   <select
-                    className="select"
+                    className="input"
                     value={customDurationUnit}
                     onChange={(e) => setCustomDurationUnit(e.target.value as PenaltyDurationUnit)}
                   >

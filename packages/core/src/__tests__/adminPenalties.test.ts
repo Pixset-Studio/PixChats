@@ -3,7 +3,14 @@ import assert from 'node:assert/strict';
 import {
   computePenaltyExpirationIso,
   checkAutoModerationViolation,
+  getCustomRolesSync,
+  getUserCustomRolesSync,
 } from '../admin';
+import {
+  FREE_TIER_AI_MODELS,
+  getLocalDeveloperAiConfig,
+  runDeveloperAiAssistantTurn,
+} from '../aiAssistant';
 
 describe('computePenaltyExpirationIso (ban & mute duration calculator)', () => {
   it('returns null for permanent bans', () => {
@@ -64,3 +71,37 @@ describe('checkAutoModerationViolation', () => {
     assert.equal(clean.severity, undefined);
   });
 });
+
+describe('Custom Roles & Developer AI Assistant guards', () => {
+  it('provides Free Tier Gemini models list and default config', () => {
+    assert.ok(FREE_TIER_AI_MODELS.length >= 3);
+    assert.equal(FREE_TIER_AI_MODELS[0].id, 'gemini-3.8-flash');
+    const cfg = getLocalDeveloperAiConfig();
+    assert.equal(cfg.model, 'gemini-3.8-flash');
+  });
+
+  it('rejects non-developer access to runDeveloperAiAssistantTurn', async () => {
+    const fakeAdmin: any = {
+      id: '00000000-0000-0000-0000-000000000001',
+      username: 'admin_user',
+      display_name: 'Admin',
+      role: 'admin',
+    };
+    await assert.rejects(
+      async () => {
+        await runDeveloperAiAssistantTurn({
+          prompt: 'Покажи статистику',
+          history: [],
+          actingProfile: fakeAdmin,
+        });
+      },
+      /developer/i
+    );
+  });
+
+  it('returns empty array for getCustomRolesSync and getUserCustomRolesSync when uninitialized', () => {
+    assert.ok(Array.isArray(getCustomRolesSync()));
+    assert.ok(Array.isArray(getUserCustomRolesSync('non-existent')));
+  });
+});
+

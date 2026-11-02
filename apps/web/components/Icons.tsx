@@ -445,3 +445,28 @@ export function AdminPanelIcon({ size = 20, className, style }: IconProps) {
   );
 }
 
+export function AiAssistantIcon({ size = 20, className, style }: IconProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.9"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      style={style}
+    >
+      <rect x="3" y="8" width="18" height="12" rx="4" />
+      <path d="M12 4v4" />
+      <circle cx="12" cy="3" r="1" />
+      <circle cx="9" cy="13" r="1.5" fill="currentColor" />
+      <circle cx="15" cy="13" r="1.5" fill="currentColor" />
+      <path d="M9 17h6" />
+    </svg>
+  );
+}
+
+

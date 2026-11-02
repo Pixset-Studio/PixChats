@@ -19,5 +19,8 @@
   },
   "devDependencies": {
     "cross-env": "^10.1.0"
+  },
+  "dependencies": {
+    "@google/genai": "^2.32.0"
   }
 }

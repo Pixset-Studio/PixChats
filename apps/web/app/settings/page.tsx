@@ -104,6 +104,7 @@ export default function SettingsPage() {
   const [avatarUploading, setAvatarUploading] = useState(false);
   const [notifPrefs, setNotifPrefs] = useState<NotificationPreferences>(DEFAULT_NOTIFICATION_PREFS);
   const [desktopAutoStart, setDesktopAutoStart] = useState(true);
+  const [desktopLaunchMinimized, setDesktopLaunchMinimized] = useState(true);
   const [appearance, setAppearance] = useState<ChatAppearanceSettings>(DEFAULT_CHAT_APPEARANCE);
   const [appLock, setAppLock] = useState<AppLockConfig>(DEFAULT_APP_LOCK);
   const [pinDraft, setPinDraft] = useState('');
@@ -368,6 +369,14 @@ export default function SettingsPage() {
             const saved = localStorage.getItem('pixchats:desktop_autostart');
             setDesktopAutoStart(saved === null ? true : saved === '1');
           }
+
+          if (window.pixchatsDesktop?.getLaunchMinimizedEnabled) {
+            const minEnabled = await window.pixchatsDesktop.getLaunchMinimizedEnabled();
+            setDesktopLaunchMinimized(minEnabled);
+          } else {
+            const savedMin = localStorage.getItem('pixchats:desktop_launch_minimized');
+            setDesktopLaunchMinimized(savedMin === null ? true : savedMin === '1');
+          }
         }
       } catch {}
 
@@ -466,6 +475,22 @@ export default function SettingsPage() {
         enabled
           ? 'Автозапуск и фоновый режим (.exe) включены'
           : 'Автозапуск при старте ПК отключён'
+      );
+      setTimeout(() => setNotice(null), 1800);
+    } catch {}
+  }
+
+  async function handleToggleDesktopLaunchMinimized(enabled: boolean) {
+    setDesktopLaunchMinimized(enabled);
+    try {
+      localStorage.setItem('pixchats:desktop_launch_minimized', enabled ? '1' : '0');
+      if (typeof window !== 'undefined' && window.pixchatsDesktop?.setLaunchMinimizedEnabled) {
+        await window.pixchatsDesktop.setLaunchMinimizedEnabled(enabled);
+      }
+      setNotice(
+        enabled
+          ? 'Запуск приложения свёрнутым на ПК включён'
+          : 'Приложение на ПК будет запускаться в обычном развёрнутом окне'
       );
       setTimeout(() => setNotice(null), 1800);
     } catch {}
@@ -1511,47 +1536,135 @@ export default function SettingsPage() {
           )}
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 12 }}>
-          <div className="field" style={{ marginBottom: 0 }}>
-            <label>Размер текста сообщений</label>
-            <div style={{ display: 'flex', gap: 6 }}>
-              {([13, 14, 16] as const).map((sz) => (
-                <button
-                  key={sz}
-                  type="button"
-                  className="btn"
-                  style={{
-                    flex: 1,
-                    borderColor: appearance.fontSize === sz ? 'var(--accent)' : undefined,
-                    color: appearance.fontSize === sz ? 'var(--accent)' : undefined,
-                  }}
-                  onClick={() => handleUpdateAppearance({ fontSize: sz })}
-                >
-                  {sz === 13 ? 'Компакт (13)' : sz === 14 ? 'Стандарт (14)' : 'Крупный (16)'}
-                </button>
-              ))}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 16 }}>
+          <div
+            className="field"
+            style={{
+              marginBottom: 0,
+              padding: '12px 14px',
+              borderRadius: 12,
+              background: 'var(--bg-secondary)',
+              border: '1px solid var(--border)',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+              <label style={{ margin: 0, fontWeight: 700, fontSize: 13 }}>Размер текста сообщений</label>
+              <span
+                style={{
+                  fontSize: 12,
+                  fontWeight: 700,
+                  padding: '2px 8px',
+                  borderRadius: 6,
+                  background: 'var(--accent)',
+                  color: '#000',
+                }}
+              >
+                {appearance.fontSize} px
+              </span>
+            </div>
+            <input
+              type="range"
+              min={11}
+              max={24}
+              step={1}
+              value={appearance.fontSize}
+              onChange={(e) => handleUpdateAppearance({ fontSize: Number(e.target.value) })}
+              style={{ width: '100%', accentColor: 'var(--accent)', cursor: 'pointer' }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+              <span>11 px (Мелкий)</span>
+              <span>14 px (Стандарт)</span>
+              <span>24 px (Крупный)</span>
             </div>
           </div>
 
-          <div className="field" style={{ marginBottom: 0 }}>
-            <label>Углы пузырей сообщений</label>
-            <div style={{ display: 'flex', gap: 6 }}>
-              {([8, 14, 20] as const).map((rad) => (
-                <button
-                  key={rad}
-                  type="button"
-                  className="btn"
-                  style={{
-                    flex: 1,
-                    borderColor: appearance.bubbleRadius === rad ? 'var(--accent)' : undefined,
-                    color: appearance.bubbleRadius === rad ? 'var(--accent)' : undefined,
-                  }}
-                  onClick={() => handleUpdateAppearance({ bubbleRadius: rad })}
-                >
-                  {rad === 8 ? 'Строгие' : rad === 14 ? 'Стандарт' : 'Мягкие'}
-                </button>
-              ))}
+          <div
+            className="field"
+            style={{
+              marginBottom: 0,
+              padding: '12px 14px',
+              borderRadius: 12,
+              background: 'var(--bg-secondary)',
+              border: '1px solid var(--border)',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+              <label style={{ margin: 0, fontWeight: 700, fontSize: 13 }}>Углы пузырей сообщений</label>
+              <span
+                style={{
+                  fontSize: 12,
+                  fontWeight: 700,
+                  padding: '2px 8px',
+                  borderRadius: 6,
+                  background: 'var(--accent)',
+                  color: '#000',
+                }}
+              >
+                {appearance.bubbleRadius} px
+              </span>
             </div>
+            <input
+              type="range"
+              min={2}
+              max={28}
+              step={1}
+              value={appearance.bubbleRadius}
+              onChange={(e) => handleUpdateAppearance({ bubbleRadius: Number(e.target.value) })}
+              style={{ width: '100%', accentColor: 'var(--accent)', cursor: 'pointer' }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+              <span>2 px (Острые)</span>
+              <span>14 px (Стандарт)</span>
+              <span>28 px (Округлые)</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Живое превью пузырей сообщений */}
+        <div
+          style={{
+            marginTop: 14,
+            padding: 14,
+            borderRadius: 12,
+            background: 'var(--bg)',
+            border: '1px solid var(--border)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 8,
+          }}
+        >
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 600 }}>
+            Предпросмотр сообщений ({appearance.fontSize} px, скругление {appearance.bubbleRadius} px):
+          </div>
+          <div
+            style={{
+              alignSelf: 'flex-start',
+              maxWidth: '78%',
+              padding: '9px 13px',
+              background: 'var(--surface-raised)',
+              border: '1px solid var(--border)',
+              color: 'var(--text)',
+              fontSize: `${appearance.fontSize}px`,
+              borderRadius: `${appearance.bubbleRadius}px`,
+              borderBottomLeftRadius: 4,
+            }}
+          >
+            Привет! Теперь размер текста и углы пузырей плавно настраиваются ползунками 🎚️
+          </div>
+          <div
+            style={{
+              alignSelf: 'flex-end',
+              maxWidth: '78%',
+              padding: '9px 13px',
+              background: 'var(--bubble-mine)',
+              border: '1px solid rgba(255, 212, 0, 0.28)',
+              color: 'var(--bubble-mine-text)',
+              fontSize: `${appearance.fontSize}px`,
+              borderRadius: `${appearance.bubbleRadius}px`,
+              borderBottomRightRadius: 4,
+            }}
+          >
+            Отлично выглядит! Всё меняется мгновенно ✨
           </div>
         </div>
       </div>
@@ -1763,6 +1876,41 @@ export default function SettingsPage() {
             type="checkbox"
             checked={desktopAutoStart}
             onChange={(e) => handleToggleDesktopAutoStart(e.target.checked)}
+            style={{
+              width: 20,
+              height: 20,
+              accentColor: 'var(--accent)',
+              cursor: 'pointer',
+              flexShrink: 0,
+            }}
+          />
+        </label>
+
+        <label
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 16,
+            padding: '12px',
+            borderRadius: 10,
+            background: 'var(--surface-raised)',
+            border: `1px solid ${desktopLaunchMinimized ? 'var(--accent)' : 'var(--border)'}`,
+            cursor: 'pointer',
+          }}
+        >
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontWeight: 700, fontSize: 14, color: 'var(--text)' }}>
+              🗕 Запускать приложение свёрнутым на ПК
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+              На компьютере приложение PixChats по умолчанию запускается в свёрнутом виде, чтобы не отвлекать поверх окон. Вы можете отключить эту настройку в любой момент.
+            </div>
+          </div>
+          <input
+            type="checkbox"
+            checked={desktopLaunchMinimized}
+            onChange={(e) => handleToggleDesktopLaunchMinimized(e.target.checked)}
             style={{
               width: 20,
               height: 20,

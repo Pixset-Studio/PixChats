@@ -20,6 +20,12 @@ contextBridge.exposeInMainWorld('pixchatsDesktop', {
   /** Включить или выключить автозапуск при старте компьютера (в фоновом режиме) */
   setAutoStartEnabled: (enabled) => ipcRenderer.invoke('pixchats:set-autostart', Boolean(enabled)),
 
+  /** Проверить статус запуска приложения свёрнутым на ПК */
+  getLaunchMinimizedEnabled: () => ipcRenderer.invoke('pixchats:get-launch-minimized'),
+
+  /** Включить или выключить запуск приложения свёрнутым на ПК */
+  setLaunchMinimizedEnabled: (enabled) => ipcRenderer.invoke('pixchats:set-launch-minimized', Boolean(enabled)),
+
   /** Скачать и автоматически запустить инсталлятор обновления .exe */
   installUpdate: (downloadUrl, fileName) =>
     ipcRenderer.invoke('pixchats:install-update', { downloadUrl, fileName }),

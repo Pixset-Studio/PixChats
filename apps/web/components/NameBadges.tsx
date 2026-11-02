@@ -1,7 +1,12 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import type { UserRole } from '@pixchats/core';
+import {
+  getUserCustomRolesSync,
+  syncCustomRolesFromCloud,
+  type UserRole,
+  type CustomRoleDefinition,
+} from '@pixchats/core';
 import { getUserEmojiStatus, syncAllEmojiStatusesFromCloud } from '../lib/emojiStatus';
 import { EmojiOrFlag } from './EmojiOrFlag';
 
@@ -32,6 +37,31 @@ const ROLE_BADGE_MAP: Record<Exclude<UserRole, 'user'>, RoleBadgeConfig> = {
   moderator: { label: 'Модератор', badgeFile: 'shield.png', className: 'role-badge-img role-moderator' },
 };
 
+function isImageIconSource(icon: string): boolean {
+  if (!icon) return false;
+  return (
+    icon.startsWith('data:image/') ||
+    icon.startsWith('http://') ||
+    icon.startsWith('https://') ||
+    icon.startsWith('/') ||
+    icon.endsWith('.png') ||
+    icon.endsWith('.svg') ||
+    icon.endsWith('.webp')
+  );
+}
+
+function resolveBadgeImageUrl(icon: string): string {
+  if (
+    icon.startsWith('data:image/') ||
+    icon.startsWith('http://') ||
+    icon.startsWith('https://') ||
+    icon.startsWith('/')
+  ) {
+    return icon;
+  }
+  return `${BASE_PATH}/badges/${icon}`;
+}
+
 export function NameWithBadges({
   name,
   role = 'user',
@@ -46,6 +76,9 @@ export function NameWithBadges({
   const [tip, setTip] = useState<string | null>(null);
   const [resolvedEmoji, setResolvedEmoji] = useState<string | null>(() =>
     emojiStatus !== undefined ? emojiStatus : getUserEmojiStatus(userId, username || name)
+  );
+  const [customRoles, setCustomRoles] = useState<CustomRoleDefinition[]>(() =>
+    getUserCustomRolesSync(userId, username)
   );
 
   useEffect(() => {
@@ -63,6 +96,19 @@ export function NameWithBadges({
       return () => window.removeEventListener('pixchats-emoji-status-changed', update);
     }
   }, [userId, username, name, emojiStatus]);
+
+  useEffect(() => {
+    if (!userId && !username) return;
+    const updateCustomRoles = () => {
+      setCustomRoles(getUserCustomRolesSync(userId, username));
+    };
+    updateCustomRoles();
+    syncCustomRolesFromCloud(false).then(updateCustomRoles).catch(() => {});
+    if (typeof window !== 'undefined') {
+      window.addEventListener('pixchats-custom-roles-changed', updateCustomRoles);
+      return () => window.removeEventListener('pixchats-custom-roles-changed', updateCustomRoles);
+    }
+  }, [userId, username]);
 
   const roleMeta = role !== 'user' ? ROLE_BADGE_MAP[role] : null;
 
@@ -139,6 +185,49 @@ export function NameWithBadges({
           }}
         />
       )}
+
+      {customRoles.map((cr) => {
+        const isImg = isImageIconSource(cr.icon);
+        return (
+          <span
+            key={cr.id}
+            title={`Роль: ${cr.name}${cr.description ? ` — ${cr.description}` : ''}`}
+            onClick={
+              isInteractive
+                ? (e) => {
+                    e.stopPropagation();
+                    toggleTip(cr.name);
+                  }
+                : undefined
+            }
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 3,
+              padding: isImg ? '1px 3px' : '1px 5px',
+              borderRadius: 6,
+              background: `${cr.color || '#ffd400'}22`,
+              border: `1px solid ${cr.color || '#ffd400'}66`,
+              color: cr.color || 'var(--accent)',
+              fontSize: 11,
+              fontWeight: 700,
+              cursor: isInteractive ? 'pointer' : 'default',
+              lineHeight: 1.1,
+            }}
+          >
+            {isImg ? (
+              <img
+                src={resolveBadgeImageUrl(cr.icon)}
+                alt={cr.name}
+                style={{ width: 15, height: 15, objectFit: 'contain' }}
+              />
+            ) : (
+              <span style={{ fontSize: 13 }}>{cr.icon}</span>
+            )}
+          </span>
+        );
+      })}
 
       {isVerified && (
         <img

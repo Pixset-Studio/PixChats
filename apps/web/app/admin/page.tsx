@@ -30,6 +30,10 @@ import {
   listBannedIps,
   banIpAddress,
   unbanIpAddress,
+  listCustomRoles,
+  createCustomRole,
+  deleteCustomRole,
+  toggleUserCustomRole,
 } from '@pixchats/core';
 import type {
   Profile,
@@ -43,6 +47,7 @@ import type {
   MessageReport,
   AppealItem,
   BannedIp,
+  CustomRoleDefinition,
 } from '@pixchats/core';
 import { NameWithBadges } from '../../components/NameBadges';
 import { BottomNav } from '../../components/BottomNav';
@@ -120,6 +125,24 @@ export default function AdminPage() {
   const [bannedIpsList, setBannedIpsList] = useState<BannedIp[]>([]);
   const [newIpAddress, setNewIpAddress] = useState('');
   const [newIpReason, setNewIpReason] = useState('');
+
+  // Кастомные роли со своими иконками
+  const [customRoles, setCustomRoles] = useState<CustomRoleDefinition[]>([]);
+  const [newRoleName, setNewRoleName] = useState('');
+  const [newRoleIcon, setNewRoleIcon] = useState('🌟');
+  const [newRoleColor, setNewRoleColor] = useState('#ffd400');
+  const [newRoleDesc, setNewRoleDesc] = useState('');
+  const [creatingRole, setCreatingRole] = useState(false);
+  const roleIconFileRef = useRef<HTMLInputElement>(null);
+
+  const refreshCustomRoles = useCallback(async () => {
+    try {
+      const roles = await listCustomRoles();
+      setCustomRoles(roles);
+    } catch {
+      // ignore
+    }
+  }, []);
 
   const refreshAppeals = useCallback(async () => {
     setLoadingAppeals(true);
@@ -233,6 +256,7 @@ export default function AdminPage() {
       refreshMessageReports();
       refreshAppeals();
       refreshBannedIps();
+      refreshCustomRoles();
 
       try {
         await cleanupExpiredFrozenAccounts();
@@ -355,6 +379,68 @@ export default function AdminPage() {
     }
   }
 
+  async function handleCreateCustomRole(e: React.FormEvent) {
+    e.preventDefault();
+    if (!me || !newRoleName.trim()) return;
+    setCreatingRole(true);
+    try {
+      const created = await createCustomRole(
+        {
+          name: newRoleName.trim(),
+          icon: newRoleIcon.trim() || '⭐',
+          color: newRoleColor || '#ffd400',
+          description: newRoleDesc.trim() || undefined,
+        },
+        me
+      );
+      setNewRoleName('');
+      setNewRoleDesc('');
+      setNotice(`Кастомная роль «${created.name}» создана`);
+      await refreshCustomRoles();
+    } catch (err: any) {
+      setNotice(err.message ?? 'Не удалось создать роль');
+    } finally {
+      setCreatingRole(false);
+    }
+  }
+
+  async function handleDeleteCustomRole(role: CustomRoleDefinition) {
+    if (!me) return;
+    try {
+      await deleteCustomRole(role.id, me);
+      setNotice(`Роль «${role.name}» удалена`);
+      await refreshCustomRoles();
+      await loadUsersList(userFilter, query);
+    } catch (err: any) {
+      setNotice(err.message ?? 'Ошибка удаления роли');
+    }
+  }
+
+  async function handleToggleUserCustomRole(userId: string, roleId: string) {
+    if (!me) return;
+    try {
+      await toggleUserCustomRole(userId, roleId, me);
+      setNotice('Кастомные роли пользователя обновлены');
+      await refreshCustomRoles();
+      await loadUsersList(userFilter, query);
+    } catch (err: any) {
+      setNotice(err.message ?? 'Ошибка назначения кастомной роли');
+    }
+  }
+
+  function handleRoleIconUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        setNewRoleIcon(reader.result);
+      }
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
+  }
+
   async function handleBan(userId: string, days: number | 'forever') {
     if (!me) return;
     try {
@@ -463,9 +549,20 @@ export default function AdminPage() {
               Ваша роль: <strong style={{ color: 'var(--accent)' }}>{me.role}</strong> (@{me.username})
             </span>
           </div>
-          <Link href="/chats/" className="btn btn-ghost" style={{ width: 'auto' }}>
-            ← К чатам
-          </Link>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            {me.role === 'developer' && (
+              <Link
+                href="/ai-assistant/"
+                className="btn btn-primary"
+                style={{ width: 'auto', padding: '7px 14px', fontSize: 13 }}
+              >
+                🤖 AI ассистент
+              </Link>
+            )}
+            <Link href="/chats/" className="btn btn-ghost" style={{ width: 'auto' }}>
+              ← К чатам
+            </Link>
+          </div>
         </header>
 
         {/* Быстрая статистика сверху */}
@@ -550,6 +647,129 @@ export default function AdminPage() {
         {/* ВКЛАДКА 1: ПОЛЬЗОВАТЕЛИ И РОЛИ */}
         {activeTab === 'users' && (
           <section>
+            {(me.role === 'admin' || me.role === 'developer') && (
+              <div className="card" style={{ marginBottom: 16, padding: 14 }}>
+                <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 6 }}>
+                  🏷️ Конструктор новых ролей со своими иконками
+                </div>
+                <p style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 0, marginBottom: 10 }}>
+                  Создавайте собственные роли с уникальными иконками (эмодзи или загруженная картинка) и цветами, а затем выдавайте их любым пользователям ниже.
+                </p>
+
+                <form
+                  onSubmit={handleCreateCustomRole}
+                  style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: customRoles.length > 0 ? 12 : 0 }}
+                >
+                  <input
+                    className="input"
+                    style={{ flex: '1 1 160px' }}
+                    placeholder="Название роли (напр. VIP, Тестер, Дизайнер)"
+                    value={newRoleName}
+                    onChange={(e) => setNewRoleName(e.target.value)}
+                    required
+                  />
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <input
+                      className="input"
+                      style={{ width: 92 }}
+                      placeholder="Иконка 🌟"
+                      value={newRoleIcon.startsWith('data:image/') ? '🖼️ IMG' : newRoleIcon}
+                      onChange={(e) => setNewRoleIcon(e.target.value)}
+                      title="Введите эмодзи/символ или загрузите картинку"
+                    />
+                    <input
+                      ref={roleIconFileRef}
+                      type="file"
+                      accept="image/*"
+                      style={{ display: 'none' }}
+                      onChange={handleRoleIconUpload}
+                    />
+                    <button
+                      type="button"
+                      className="btn"
+                      style={{ width: 'auto', padding: '7px 10px', fontSize: 12 }}
+                      onClick={() => roleIconFileRef.current?.click()}
+                      title="Загрузить свою картинку-иконку роли"
+                    >
+                      🖼️ Иконка
+                    </button>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <input
+                      type="color"
+                      value={newRoleColor}
+                      onChange={(e) => setNewRoleColor(e.target.value)}
+                      style={{ width: 36, height: 36, padding: 2, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg)', cursor: 'pointer' }}
+                      title="Цвет роли"
+                    />
+                  </div>
+                  <input
+                    className="input"
+                    style={{ flex: '1 1 180px' }}
+                    placeholder="Описание роли (при наведении)"
+                    value={newRoleDesc}
+                    onChange={(e) => setNewRoleDesc(e.target.value)}
+                  />
+                  <button
+                    type="submit"
+                    className="btn btn-primary"
+                    style={{ width: 'auto', padding: '8px 14px', fontSize: 12 }}
+                    disabled={creatingRole}
+                  >
+                    + Создать роль
+                  </button>
+                </form>
+
+                {customRoles.length > 0 && (
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                    <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Созданные роли:</span>
+                    {customRoles.map((r) => (
+                      <span
+                        key={r.id}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 6,
+                          padding: '3px 9px',
+                          borderRadius: 8,
+                          fontSize: 12,
+                          fontWeight: 700,
+                          border: `1px solid ${r.color}`,
+                          background: 'var(--bg)',
+                          color: r.color,
+                        }}
+                        title={r.description || r.name}
+                      >
+                        {r.icon.startsWith('data:image/') || r.icon.startsWith('http') ? (
+                          <img src={r.icon} alt="" style={{ width: 14, height: 14, objectFit: 'contain' }} />
+                        ) : (
+                          <span>{r.icon}</span>
+                        )}
+                        <span>{r.name}</span>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteCustomRole(r)}
+                          style={{
+                            border: 'none',
+                            background: 'transparent',
+                            color: 'var(--danger)',
+                            cursor: 'pointer',
+                            padding: 0,
+                            marginLeft: 2,
+                            fontSize: 12,
+                            fontWeight: 800,
+                          }}
+                          title="Удалить эту кастомную роль"
+                        >
+                          ✕
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="section-title" style={{ marginTop: 0 }}>
               Каталог пользователей, роли, галочки и эмодзи-статусы
             </div>
@@ -662,7 +882,7 @@ export default function AdminPage() {
                               placeItems: 'center',
                               overflow: 'hidden',
                               fontWeight: 700,
-                              color: '#fff',
+                              color: '#000',
                               flexShrink: 0,
                             }}
                           >
@@ -756,6 +976,43 @@ export default function AdminPage() {
                           </select>
                         )}
                       </div>
+
+                      {/* Назначение кастомных ролей пользователю */}
+                      {customRoles.length > 0 && (me.role === 'admin' || me.role === 'developer') && (
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                          <span style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>Кастомные роли:</span>
+                          {customRoles.map((cr) => {
+                            const hasRole = (user.custom_role_ids || []).includes(cr.id);
+                            return (
+                              <button
+                                key={cr.id}
+                                type="button"
+                                className="btn"
+                                style={{
+                                  width: 'auto',
+                                  padding: '3px 9px',
+                                  fontSize: 11.5,
+                                  borderColor: hasRole ? cr.color : 'var(--border)',
+                                  background: hasRole ? 'rgba(255, 212, 0, 0.14)' : 'transparent',
+                                  color: hasRole ? cr.color : 'var(--text-muted)',
+                                  fontWeight: hasRole ? 700 : 500,
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: 4,
+                                }}
+                                onClick={() => handleToggleUserCustomRole(user.id, cr.id)}
+                              >
+                                {cr.icon.startsWith('data:image/') || cr.icon.startsWith('http') ? (
+                                  <img src={cr.icon} alt="" style={{ width: 12, height: 12, objectFit: 'contain' }} />
+                                ) : (
+                                  <span>{cr.icon}</span>
+                                )}
+                                <span>{hasRole ? `✓ ${cr.name}` : `+ ${cr.name}`}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
 
                       {/* Панель выбора эмодзи-статуса для конкретного пользователя */}
                       {editingEmojiUserId === user.id && (
@@ -1281,7 +1538,7 @@ export default function AdminPage() {
                             display: 'grid',
                             placeItems: 'center',
                             fontWeight: 700,
-                            color: '#fff',
+                            color: '#000',
                             overflow: 'hidden',
                           }}
                         >

@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { getCachedCurrentProfile, getCurrentProfile } from '@pixchats/core';
 import { useConnectionStatus } from '../lib/useConnectionStatus';
-import { ChatsIcon, FriendsIcon, SettingsIcon, ProfileIcon, AdminPanelIcon } from './Icons';
+import { ChatsIcon, FriendsIcon, SettingsIcon, ProfileIcon, AdminPanelIcon, AiAssistantIcon } from './Icons';
 import { detectRuntimePlatform } from '../lib/nativePlatform';
 import { openDownloadAppModal } from './DownloadAppModal';
 
@@ -21,6 +21,10 @@ export function IconRail() {
       cached && (cached.role === 'admin' || cached.role === 'moderator' || cached.role === 'developer')
     );
   });
+  const [isDeveloper, setIsDeveloper] = useState(() => {
+    const cached = getCachedCurrentProfile();
+    return Boolean(cached && cached.role === 'developer');
+  });
 
   useEffect(() => {
     setIsWebBrowser(detectRuntimePlatform() === 'web');
@@ -28,6 +32,7 @@ export function IconRail() {
     const checkRole = (p: any) => {
       if (!p) return;
       setIsStaff(p.role === 'admin' || p.role === 'moderator' || p.role === 'developer');
+      setIsDeveloper(p.role === 'developer');
     };
 
     const cached = getCachedCurrentProfile();
@@ -52,6 +57,9 @@ export function IconRail() {
     { href: '/profile/', icon: <ProfileIcon size={18} />, title: 'Профиль' },
     ...(isStaff
       ? [{ href: '/admin/', icon: <AdminPanelIcon size={18} />, title: 'Панель администратора' }]
+      : []),
+    ...(isDeveloper
+      ? [{ href: '/ai-assistant/', icon: <AiAssistantIcon size={18} />, title: 'AI ассистент' }]
       : []),
   ];
 
@@ -94,7 +102,8 @@ export function IconRail() {
             pathname === item.href ||
             pathname === item.href.replace(/\/$/, '') ||
             (item.href === '/chats/' && pathname?.startsWith('/chat')) ||
-            (item.href === '/admin/' && pathname?.startsWith('/admin'));
+            (item.href === '/admin/' && pathname?.startsWith('/admin')) ||
+            (item.href === '/ai-assistant/' && pathname?.startsWith('/ai-assistant'));
           return (
             <Link
               key={item.href}

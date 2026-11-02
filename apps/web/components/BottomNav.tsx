@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { getCachedCurrentProfile, getCurrentProfile } from '@pixchats/core';
-import { ChatsIcon, FriendsIcon, SettingsIcon, ProfileIcon, AdminPanelIcon } from './Icons';
+import { ChatsIcon, FriendsIcon, SettingsIcon, ProfileIcon, AdminPanelIcon, AiAssistantIcon } from './Icons';
 import { useIsDesktop } from '../lib/useIsDesktop';
 import { detectRuntimePlatform } from '../lib/nativePlatform';
 import { openDownloadAppModal } from './DownloadAppModal';
@@ -19,6 +19,10 @@ export function BottomNav() {
       cached && (cached.role === 'admin' || cached.role === 'moderator' || cached.role === 'developer')
     );
   });
+  const [isDeveloper, setIsDeveloper] = useState(() => {
+    const cached = getCachedCurrentProfile();
+    return Boolean(cached && cached.role === 'developer');
+  });
 
   useEffect(() => {
     setIsWebBrowser(detectRuntimePlatform() === 'web');
@@ -26,6 +30,7 @@ export function BottomNav() {
     const checkRole = (p: any) => {
       if (!p) return;
       setIsStaff(p.role === 'admin' || p.role === 'moderator' || p.role === 'developer');
+      setIsDeveloper(p.role === 'developer');
     };
 
     const cached = getCachedCurrentProfile();
@@ -54,6 +59,9 @@ export function BottomNav() {
     ...(isStaff
       ? [{ href: '/admin/', label: 'Панель администратора', icon: <AdminPanelIcon size={20} /> }]
       : []),
+    ...(isDeveloper
+      ? [{ href: '/ai-assistant/', label: 'AI ассистент', icon: <AiAssistantIcon size={20} /> }]
+      : []),
   ];
 
   return (
@@ -62,7 +70,8 @@ export function BottomNav() {
         const active =
           pathname === tab.href ||
           pathname === tab.href.replace(/\/$/, '') ||
-          (tab.href === '/admin/' && pathname?.startsWith('/admin'));
+          (tab.href === '/admin/' && pathname?.startsWith('/admin')) ||
+          (tab.href === '/ai-assistant/' && pathname?.startsWith('/ai-assistant'));
         return (
           <Link key={tab.href} href={tab.href} className={`bottom-nav-item ${active ? 'active' : ''}`}>
             <span className="bottom-nav-icon">{tab.icon}</span>

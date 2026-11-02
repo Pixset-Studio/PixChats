@@ -9,6 +9,7 @@ import type {
   AppealPenaltyType,
   AppealStatus,
   PenaltyDurationUnit,
+  CustomRoleDefinition,
 } from './types';
 
 export interface AdminStatsOverview {
@@ -49,13 +50,25 @@ const PENALTY_CLOUD_BUCKET = 'avatars';
 const APPEALS_CLOUD_PATH = 'moderation/appeals_v1.json';
 const MUTES_CLOUD_PATH = 'moderation/penalty_mutes_v1.json';
 const PENALTY_META_CLOUD_PATH = 'moderation/user_penalties_v1.json';
+const CUSTOM_ROLES_CLOUD_PATH = 'moderation/custom_roles_v1.json';
 
 export interface UserPenaltyDetails {
   banReason: string | null;
   frozenReason: string | null;
+  frozenAt?: string | null;
   moderatorComment: string | null;
   updatedAt?: string;
 }
+
+export interface CustomRolesCloudManifest {
+  roles: CustomRoleDefinition[];
+  assignments: Record<string, string[]>; // userId или @username -> массив role.id
+  updatedAt: string;
+}
+
+const CUSTOM_ROLES_LOCAL_KEY = 'pixchats:custom_roles_manifest_v1';
+const cloudJsonMemCache = new Map<string, { data: any; ts: number }>();
+const CLOUD_JSON_TTL_MS = 20_000;
 
 /**
  * Вычисляет точную дату окончания наказания (ISO-строку) на основе:
@@ -126,34 +139,44 @@ export function computePenaltyExpirationIso(
 }
 
 async function readCloudJson<T>(path: string, fallback: T): Promise<T> {
+  const cached = cloudJsonMemCache.get(path);
+  if (cached && Date.now() - cached.ts < CLOUD_JSON_TTL_MS) {
+    return cached.data as T;
+  }
   try {
     const supabase = getSupabaseClient();
     const { data } = supabase.storage.from(PENALTY_CLOUD_BUCKET).getPublicUrl(path);
     if (!data?.publicUrl) return fallback;
-    const res = await fetch(`${data.publicUrl}?v=${Math.floor(Date.now() / 15000)}`);
-    if (!res.ok) return fallback;
+    const res = await fetch(`${data.publicUrl}?v=${Math.floor(Date.now() / 30000)}`);
+    if (!res.ok) {
+      cloudJsonMemCache.set(path, { data: fallback, ts: Date.now() });
+      return fallback;
+    }
     const parsed = await res.json();
-    return (parsed ?? fallback) as T;
+    const result = (parsed ?? fallback) as T;
+    cloudJsonMemCache.set(path, { data: result, ts: Date.now() });
+    return result;
   } catch {
     return fallback;
   }
 }
 
 async function writeCloudJson<T>(path: string, value: T): Promise<void> {
+  cloudJsonMemCache.set(path, { data: value, ts: Date.now() });
   try {
     const supabase = getSupabaseClient();
     const blob = new Blob([JSON.stringify(value)], { type: 'application/json' });
     await supabase.storage.from(PENALTY_CLOUD_BUCKET).upload(path, blob, {
       upsert: true,
       contentType: 'application/json',
-      cacheControl: '15',
+      cacheControl: '30',
     });
   } catch {
     // ignore storage fallback errors
   }
 }
 
-async function saveUserPenaltyMetaToCloud(
+export async function saveUserPenaltyMetaToCloud(
   userId: string,
   patch: Partial<UserPenaltyDetails>
 ): Promise<void> {
@@ -516,23 +539,24 @@ export async function setAccountFrozen(
   const supabase = getSupabaseClient();
   const cleanReason = frozen ? (reason?.trim() || 'Заморожен модерацией для проверки') : null;
   const cleanComment = frozen ? (moderatorComment?.trim() || null) : null;
+  const nowIso = frozen ? new Date().toISOString() : null;
 
   const { error } = await supabase
     .from('profiles')
     .update({
       frozen,
-      frozen_at: frozen ? new Date().toISOString() : null,
+      frozen_at: nowIso,
       frozen_reason: cleanReason,
       moderator_comment: cleanComment,
     } as any)
     .eq('id', targetUserId);
 
   if (error) {
+    // Фолбэк для БД без колонок frozen_at / frozen_reason / moderator_comment (миграции 0029 / 0030)
     const { error: fallbackErr } = await supabase
       .from('profiles')
       .update({
         frozen,
-        frozen_at: frozen ? new Date().toISOString() : null,
       } as any)
       .eq('id', targetUserId);
     if (fallbackErr) throw fallbackErr;
@@ -540,6 +564,7 @@ export async function setAccountFrozen(
 
   await saveUserPenaltyMetaToCloud(targetUserId, {
     frozenReason: cleanReason,
+    frozenAt: nowIso,
     moderatorComment: cleanComment,
   });
 
@@ -549,25 +574,61 @@ export async function setAccountFrozen(
   });
 }
 
+/** Безопасная автозаморозка аккаунта при автомодерации или жалобах (работает даже без колонки frozen_at в БД) */
+export async function autoFreezeUserAccount(targetUserId: string, freezeReason: string): Promise<void> {
+  const supabase = getSupabaseClient();
+  const nowIso = new Date().toISOString();
+
+  const { error } = await supabase
+    .from('profiles')
+    .update({
+      frozen: true,
+      frozen_at: nowIso,
+      frozen_reason: freezeReason,
+    } as any)
+    .eq('id', targetUserId);
+
+  if (error) {
+    await supabase
+      .from('profiles')
+      .update({ frozen: true } as any)
+      .eq('id', targetUserId);
+  }
+
+  await saveUserPenaltyMetaToCloud(targetUserId, {
+    frozenReason: freezeReason,
+    frozenAt: nowIso,
+  });
+}
+
 /** Автоматическая очистка замороженных аккаунтов, если заморозка не снята в течение 90 дней */
 export async function cleanupExpiredFrozenAccounts(): Promise<number> {
   const supabase = getSupabaseClient();
-  const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+  const ninetyDaysAgoMs = Date.now() - 90 * 24 * 60 * 60 * 1000;
 
-  const { data: expired } = await supabase
+  const { data: frozenUsers, error } = await supabase
     .from('profiles')
-    .select('id')
-    .eq('frozen', true)
-    .lt('frozen_at', ninetyDaysAgo);
+    .select('*')
+    .eq('frozen', true);
 
-  if (!expired || expired.length === 0) return 0;
+  if (error || !frozenUsers || frozenUsers.length === 0) return 0;
+
+  let cloudMeta: Record<string, UserPenaltyDetails> = {};
+  try {
+    cloudMeta = await readCloudJson<Record<string, UserPenaltyDetails>>(PENALTY_META_CLOUD_PATH, {});
+  } catch {}
 
   let count = 0;
-  for (const user of expired) {
-    try {
-      await supabase.from('profiles').delete().eq('id', user.id);
-      count++;
-    } catch {}
+  for (const user of frozenUsers as any[]) {
+    const frozenIso = user.frozen_at || cloudMeta[user.id]?.frozenAt || cloudMeta[user.id]?.updatedAt;
+    if (!frozenIso) continue;
+    const frozenMs = new Date(frozenIso).getTime();
+    if (Number.isFinite(frozenMs) && frozenMs < ninetyDaysAgoMs) {
+      try {
+        await supabase.from('profiles').delete().eq('id', user.id);
+        count++;
+      } catch {}
+    }
   }
   return count;
 }
@@ -621,9 +682,15 @@ export async function setChatVerification(chatId: string, verified: boolean, act
   const supabase = getSupabaseClient();
   const { error } = await supabase
     .from('chats')
-    .update({ is_verified: verified, verified_at: verified ? new Date().toISOString() : null })
+    .update({ is_verified: verified, verified_at: verified ? new Date().toISOString() : null } as any)
     .eq('id', chatId);
-  if (error) throw error;
+  if (error) {
+    const { error: fallbackErr } = await supabase
+      .from('chats')
+      .update({ is_verified: verified })
+      .eq('id', chatId);
+    if (fallbackErr) throw fallbackErr;
+  }
   await logAdminAction(verified ? 'grant_verification' : 'revoke_verification', 'chat', chatId);
 }
 
@@ -669,6 +736,12 @@ export async function notifyAdminsAboutFreeze(reportedUserId: string, reasonText
             reason: reasonText,
             timestamp: new Date().toISOString(),
           },
+        }).finally(() => {
+          setTimeout(() => {
+            try {
+              void supabase.removeChannel(broadcastCh);
+            } catch {}
+          }, 1500);
         });
       }
     });
@@ -720,21 +793,7 @@ export async function reportMessage(params: {
   if (uniqueReporters.size >= 3) {
     autoFrozen = true;
     const freezeReason = `Накоплено ${uniqueReporters.size} жалоб от разных пользователей (последняя: ${params.reason})`;
-    await supabase
-      .from('profiles')
-      .update({
-        frozen: true,
-        frozen_at: new Date().toISOString(),
-        frozen_reason: freezeReason,
-      } as any)
-      .eq('id', params.reportedUserId)
-      .then(async ({ error: fErr }) => {
-        if (fErr) {
-          await supabase.from('profiles').update({ frozen: true }).eq('id', params.reportedUserId);
-        }
-      });
-
-    await saveUserPenaltyMetaToCloud(params.reportedUserId, { frozenReason: freezeReason });
+    await autoFreezeUserAccount(params.reportedUserId, freezeReason);
     await notifyAdminsAboutFreeze(params.reportedUserId, freezeReason);
   }
 
@@ -1254,5 +1313,200 @@ export async function reviewAppeal(params: {
     adminNotes: cleanNotes,
   });
 }
+
+/* ============================================================================
+ * КАСТОМНЫЕ РОЛИ И ИКОНКИ (Custom Roles & Icons)
+ * ============================================================================ */
+
+const DEFAULT_CUSTOM_ROLES: CustomRoleDefinition[] = [
+  {
+    id: 'role_vip_tester',
+    name: 'VIP Тестер Pixset Studio',
+    color: '#ffd400',
+    icon: '🧪',
+    description: 'Ранний доступ и тестирование новых функций PixChats',
+    created_at: '2026-01-01T00:00:00.000Z',
+  },
+  {
+    id: 'role_designer',
+    name: 'Дизайнер Pixset Studio',
+    color: '#38bdf8',
+    icon: '🎨',
+    description: 'Команда визуального дизайна и оформления',
+    created_at: '2026-01-01T00:00:00.000Z',
+  },
+];
+
+function readLocalCustomRolesManifest(): CustomRolesCloudManifest {
+  const empty: CustomRolesCloudManifest = {
+    roles: DEFAULT_CUSTOM_ROLES,
+    assignments: {},
+    updatedAt: '',
+  };
+  if (typeof window === 'undefined') return empty;
+  try {
+    const raw = localStorage.getItem(CUSTOM_ROLES_LOCAL_KEY);
+    if (!raw) return empty;
+    const parsed = JSON.parse(raw) as CustomRolesCloudManifest;
+    return {
+      roles: Array.isArray(parsed.roles) && parsed.roles.length > 0 ? parsed.roles : DEFAULT_CUSTOM_ROLES,
+      assignments: parsed.assignments && typeof parsed.assignments === 'object' ? parsed.assignments : {},
+      updatedAt: parsed.updatedAt || '',
+    };
+  } catch {
+    return empty;
+  }
+}
+
+function saveLocalCustomRolesManifest(manifest: CustomRolesCloudManifest): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(CUSTOM_ROLES_LOCAL_KEY, JSON.stringify(manifest));
+    window.dispatchEvent(new CustomEvent('pixchats-custom-roles-changed', { detail: manifest }));
+  } catch {}
+}
+
+let lastCustomRolesSyncTs = 0;
+
+export async function syncCustomRolesFromCloud(force = false): Promise<CustomRolesCloudManifest> {
+  const local = readLocalCustomRolesManifest();
+  if (!force && Date.now() - lastCustomRolesSyncTs < 30_000) {
+    return local;
+  }
+  lastCustomRolesSyncTs = Date.now();
+  try {
+    const cloud = await readCloudJson<CustomRolesCloudManifest | null>(CUSTOM_ROLES_CLOUD_PATH, null);
+    if (cloud && Array.isArray(cloud.roles)) {
+      const merged: CustomRolesCloudManifest = {
+        roles: cloud.roles.length > 0 ? cloud.roles : DEFAULT_CUSTOM_ROLES,
+        assignments: { ...local.assignments, ...(cloud.assignments || {}) },
+        updatedAt: cloud.updatedAt || new Date().toISOString(),
+      };
+      saveLocalCustomRolesManifest(merged);
+      return merged;
+    }
+  } catch {}
+  return local;
+}
+
+export function getCustomRolesSync(): CustomRoleDefinition[] {
+  return readLocalCustomRolesManifest().roles;
+}
+
+export function getUserCustomRolesSync(userId?: string | null, username?: string | null): CustomRoleDefinition[] {
+  const manifest = readLocalCustomRolesManifest();
+  const assignedIds = new Set<string>();
+  if (userId && Array.isArray(manifest.assignments[userId])) {
+    manifest.assignments[userId].forEach((id) => assignedIds.add(id));
+  }
+  if (username) {
+    const clean = `@${username.toLowerCase().replace(/^@/, '')}`;
+    if (Array.isArray(manifest.assignments[clean])) {
+      manifest.assignments[clean].forEach((id) => assignedIds.add(id));
+    }
+  }
+  if (assignedIds.size === 0) return [];
+  return manifest.roles.filter((r) => assignedIds.has(r.id));
+}
+
+export async function listCustomRoles(): Promise<CustomRoleDefinition[]> {
+  const manifest = await syncCustomRolesFromCloud(true);
+  return manifest.roles;
+}
+
+export async function createCustomRole(
+  params: {
+    name: string;
+    icon: string;
+    color?: string;
+    description?: string;
+  },
+  actingProfile: Profile
+): Promise<CustomRoleDefinition> {
+  if (actingProfile.role !== 'admin' && actingProfile.role !== 'developer') {
+    throw new Error('Только администратор или разработчик может создавать новые роли');
+  }
+  const cleanName = params.name.trim();
+  if (!cleanName) throw new Error('Введите название роли');
+  const cleanIcon = params.icon.trim() || '⭐';
+  const cleanColor = params.color?.trim() || '#ffd400';
+
+  const manifest = await syncCustomRolesFromCloud(true);
+  const newRole: CustomRoleDefinition = {
+    id: `crole_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    name: cleanName,
+    icon: cleanIcon,
+    color: cleanColor,
+    description: params.description?.trim() || null,
+    created_at: new Date().toISOString(),
+  };
+
+  const nextManifest: CustomRolesCloudManifest = {
+    roles: [...manifest.roles, newRole],
+    assignments: manifest.assignments,
+    updatedAt: new Date().toISOString(),
+  };
+
+  saveLocalCustomRolesManifest(nextManifest);
+  await writeCloudJson(CUSTOM_ROLES_CLOUD_PATH, nextManifest);
+  await logAdminAction('create_custom_role', 'role', newRole.id, { name: cleanName, icon: cleanIcon, color: cleanColor });
+  return newRole;
+}
+
+export async function deleteCustomRole(roleId: string, actingProfile: Profile): Promise<void> {
+  if (actingProfile.role !== 'admin' && actingProfile.role !== 'developer') {
+    throw new Error('Недостаточно прав для удаления роли');
+  }
+  const manifest = await syncCustomRolesFromCloud(true);
+  const nextAssignments: Record<string, string[]> = {};
+  for (const [k, ids] of Object.entries(manifest.assignments)) {
+    nextAssignments[k] = (ids || []).filter((id) => id !== roleId);
+  }
+  const nextManifest: CustomRolesCloudManifest = {
+    roles: manifest.roles.filter((r) => r.id !== roleId),
+    assignments: nextAssignments,
+    updatedAt: new Date().toISOString(),
+  };
+  saveLocalCustomRolesManifest(nextManifest);
+  await writeCloudJson(CUSTOM_ROLES_CLOUD_PATH, nextManifest);
+  await logAdminAction('delete_custom_role', 'role', roleId);
+}
+
+export async function toggleUserCustomRole(
+  targetUserId: string,
+  roleId: string,
+  actingProfile: Profile,
+  targetUsername?: string
+): Promise<string[]> {
+  if (actingProfile.role !== 'admin' && actingProfile.role !== 'developer') {
+    throw new Error('Недостаточно прав для назначения кастомной роли');
+  }
+  const manifest = await syncCustomRolesFromCloud(true);
+  const existing = new Set<string>(manifest.assignments[targetUserId] || []);
+  if (existing.has(roleId)) {
+    existing.delete(roleId);
+  } else {
+    existing.add(roleId);
+  }
+  const updatedList = Array.from(existing);
+  const nextAssignments: Record<string, string[]> = {
+    ...manifest.assignments,
+    [targetUserId]: updatedList,
+  };
+  if (targetUsername) {
+    nextAssignments[`@${targetUsername.toLowerCase().replace(/^@/, '')}`] = updatedList;
+  }
+
+  const nextManifest: CustomRolesCloudManifest = {
+    roles: manifest.roles,
+    assignments: nextAssignments,
+    updatedAt: new Date().toISOString(),
+  };
+  saveLocalCustomRolesManifest(nextManifest);
+  await writeCloudJson(CUSTOM_ROLES_CLOUD_PATH, nextManifest);
+  await logAdminAction('toggle_custom_role', 'user', targetUserId, { roleId, assigned: updatedList });
+  return updatedList;
+}
+
 
 

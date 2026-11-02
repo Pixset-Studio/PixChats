@@ -19,6 +19,8 @@ export interface NativeDesktopBridge {
   requestNotificationPermission?: () => Promise<'granted' | 'denied'>;
   getAutoStartEnabled?: () => Promise<boolean>;
   setAutoStartEnabled?: (enabled: boolean) => Promise<boolean>;
+  getLaunchMinimizedEnabled?: () => Promise<boolean>;
+  setLaunchMinimizedEnabled?: (enabled: boolean) => Promise<boolean>;
   setBadgeCount?: (count: number) => void;
   installUpdate?: (downloadUrl: string, fileName?: string) => Promise<boolean>;
   onNavigate?: (callback: (url: string) => void) => () => void;

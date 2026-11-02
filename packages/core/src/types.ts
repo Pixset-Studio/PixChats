@@ -1,5 +1,14 @@
 export type UserRole = 'user' | 'moderator' | 'admin' | 'developer' | 'partner';
 
+export interface CustomRoleDefinition {
+  id: string;
+  name: string;
+  color: string;
+  icon: string; // эмодзи, URL иконки, имя файла бейджа или Data URL
+  description?: string | null;
+  created_at: string;
+}
+
 export interface Profile {
   id: string;
   username: string;          // без @, отображать как @username в UI
@@ -7,6 +16,7 @@ export interface Profile {
   avatar_url: string | null;
   bio: string | null;
   role: UserRole;
+  custom_role_ids?: string[];
   is_verified: boolean;
   is_pixset_employee: boolean;
   verified_at: string | null;

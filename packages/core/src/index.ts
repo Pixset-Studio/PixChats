@@ -11,4 +11,6 @@ export * from './notifications';
 export * from './accountLinking';
 export * from './pixsetStudioAuth';
 export * from './crypto';
+export * from './aiAssistant';
+
 

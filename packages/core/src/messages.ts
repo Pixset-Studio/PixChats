@@ -141,7 +141,7 @@ export async function sendMessage(chatId: string, text: string, options: SendMes
       .maybeSingle();
 
     if (senderId && chatRow && (chatRow.visibility === 'public' || chatRow.type === 'channel' || chatRow.type === 'group')) {
-      const { checkAutoModerationViolation, notifyAdminsAboutFreeze, muteUserInChat } = await import('./admin');
+      const { checkAutoModerationViolation, notifyAdminsAboutFreeze, muteUserInChat, autoFreezeUserAccount } = await import('./admin');
       const modResult = checkAutoModerationViolation(text);
       if (modResult.violated) {
         if (modResult.severity === 'light') {
@@ -149,9 +149,10 @@ export async function sendMessage(chatId: string, text: string, options: SendMes
           await muteUserInChat({ userId: senderId, chatId, durationHours: 24, reason: modResult.reason });
           throw new Error(`🔇 Вы получили автоматический мут в этом чате на 24 часа. Причина: ${modResult.reason}`);
         } else {
-          // Тяжёлое нарушение = Автозаморозка аккаунта
-          await supabase.from('profiles').update({ frozen: true, frozen_at: new Date().toISOString() }).eq('id', senderId);
-          await notifyAdminsAboutFreeze(senderId, `Автомодерация в чате "${chatRow.title || 'Публичный'}": ${modResult.reason || 'Запрещённые выражения'}`);
+          // Тяжёлое нарушение = Автозаморозка аккаунта (без ошибки при отсутствии колонки frozen_at)
+          const freezeReason = `Автомодерация в чате "${chatRow.title || 'Публичный'}": ${modResult.reason || 'Запрещённые выражения'}`;
+          await autoFreezeUserAccount(senderId, freezeReason);
+          await notifyAdminsAboutFreeze(senderId, freezeReason);
           throw new Error(`⚠️ ${modResult.reason || 'Нарушение правил общения'}. Ваш аккаунт автоматически заморожен.`);
         }
       }

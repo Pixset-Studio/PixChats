@@ -226,7 +226,8 @@ function renderInlineTokens(text: string): React.ReactNode[] {
           onClick={(e) => e.stopPropagation()}
           style={{
             color: 'var(--accent)',
-            textDecoration: 'underline',
+            textDecoration: 'none',
+            fontWeight: 600,
             wordBreak: 'break-all',
           }}
         >

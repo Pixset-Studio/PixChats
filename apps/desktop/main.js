@@ -52,10 +52,14 @@ function readDesktopConfig() {
   try {
     const file = getConfigFilePath();
     if (fs.existsSync(file)) {
-      return JSON.parse(fs.readFileSync(file, 'utf8'));
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+      return {
+        autoStart: parsed.autoStart !== false,
+        launchMinimized: parsed.launchMinimized !== false,
+      };
     }
   } catch {}
-  return { autoStart: true };
+  return { autoStart: true, launchMinimized: true };
 }
 
 function writeDesktopConfig(patch) {
@@ -347,6 +351,18 @@ function registerNativeIpcHandlers() {
     return Boolean(enabled);
   });
 
+  // 3b. Управление запуском приложения свёрнутым на ПК
+  ipcMain.handle('pixchats:get-launch-minimized', () => {
+    const cfg = readDesktopConfig();
+    return cfg.launchMinimized !== false;
+  });
+
+  ipcMain.handle('pixchats:set-launch-minimized', (_event, enabled) => {
+    writeDesktopConfig({ launchMinimized: Boolean(enabled) });
+    rebuildTrayMenu();
+    return Boolean(enabled);
+  });
+
   // 4. Автоматическое подтверждение разрешения на уведомления
   ipcMain.handle('pixchats:request-permission', () => {
     return 'granted';
@@ -415,6 +431,7 @@ function rebuildTrayMenu() {
   if (!tray) return;
   const cfg = readDesktopConfig();
   const autoStartEnabled = cfg.autoStart !== false;
+  const launchMinimizedEnabled = cfg.launchMinimized !== false;
 
   const contextMenu = Menu.buildFromTemplate([
     {
@@ -427,6 +444,15 @@ function rebuildTrayMenu() {
       checked: autoStartEnabled,
       click: (menuItem) => {
         configureAutoStartOnBoot(menuItem.checked);
+      },
+    },
+    {
+      label: 'Запускать приложение свёрнутым на ПК',
+      type: 'checkbox',
+      checked: launchMinimizedEnabled,
+      click: (menuItem) => {
+        writeDesktopConfig({ launchMinimized: Boolean(menuItem.checked) });
+        rebuildTrayMenu();
       },
     },
     { type: 'separator' },
@@ -485,6 +511,18 @@ function createWindow(startHidden = false) {
   });
 
   mainWindow.loadURL(`http://127.0.0.1:${PORT}/`);
+
+  const cfg = readDesktopConfig();
+  if (!startHidden && cfg.launchMinimized !== false) {
+    mainWindow.once('ready-to-show', () => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.minimize();
+      }
+    });
+    try {
+      mainWindow.minimize();
+    } catch {}
+  }
 
   mainWindow.on('focus', () => {
     if (mainWindow) mainWindow.flashFrame(false);

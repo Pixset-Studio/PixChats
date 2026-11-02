@@ -1909,11 +1909,36 @@ export function CallManager() {
             <button
               type="button"
               className="btn"
-              style={{ width: 'auto', padding: '6px 8px', fontSize: 12, background: micMuted ? 'var(--danger)' : undefined }}
+              style={{
+                width: 'auto',
+                padding: '6px 10px',
+                fontSize: 11.5,
+                fontWeight: 700,
+                background: micMuted ? '#dc2626' : 'rgba(34, 197, 94, 0.2)',
+                borderColor: micMuted ? '#ef4444' : '#22c55e',
+                color: micMuted ? '#fff' : '#22c55e',
+              }}
               onClick={handleToggleMic}
-              title={micMuted ? 'Включить микрофон' : 'Выключить микрофон'}
+              title={micMuted ? 'Микрофон ВЫКЛЮЧЕН — нажмите, чтобы включить' : 'Микрофон ВКЛЮЧЁН — нажмите, чтобы выключить'}
             >
-              {micMuted ? '🔇' : '🎤'}
+              {micMuted ? '🔇 ВЫКЛ' : '🎤 ВКЛ'}
+            </button>
+            <button
+              type="button"
+              className="btn"
+              style={{
+                width: 'auto',
+                padding: '6px 10px',
+                fontSize: 11.5,
+                fontWeight: 700,
+                background: cameraEnabled ? 'rgba(34, 197, 94, 0.2)' : 'var(--surface)',
+                borderColor: cameraEnabled ? '#22c55e' : 'var(--border)',
+                color: cameraEnabled ? '#22c55e' : 'var(--text-muted)',
+              }}
+              onClick={handleToggleCamera}
+              title={cameraEnabled ? 'Видео ВКЛЮЧЕНО' : 'Видео ВЫКЛЮЧЕНО'}
+            >
+              {cameraEnabled ? '📹 ВКЛ' : '📷 ВЫКЛ'}
             </button>
             <button
               type="button"
@@ -1963,9 +1988,11 @@ export function CallManager() {
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: 10,
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
             <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--accent)' }}>
               {session.callerIsDeveloper
                 ? '👑 Безлимитный звонок разработчика Pixset Studio'
@@ -1994,6 +2021,93 @@ export function CallManager() {
           </button>
         </div>
 
+        {/* Наглядная панель текущего статуса устройств в звонке */}
+        <div
+          style={{
+            width: '100%',
+            maxWidth: 960,
+            margin: '10px auto 0',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 8,
+            flexWrap: 'wrap',
+          }}
+        >
+          <span
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '5px 12px',
+              borderRadius: 999,
+              fontSize: 12,
+              fontWeight: 700,
+              background: micMuted ? 'rgba(239, 68, 68, 0.2)' : 'rgba(34, 197, 94, 0.18)',
+              border: `1.5px solid ${micMuted ? '#ef4444' : '#22c55e'}`,
+              color: micMuted ? '#ef4444' : '#22c55e',
+            }}
+          >
+            <span>{micMuted ? '🔇' : '🎤'}</span>
+            <span>Микрофон: {micMuted ? 'ВЫКЛЮЧЕН' : 'ВКЛЮЧЁН'}</span>
+          </span>
+
+          <span
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '5px 12px',
+              borderRadius: 999,
+              fontSize: 12,
+              fontWeight: 700,
+              background: cameraEnabled ? 'rgba(34, 197, 94, 0.18)' : 'rgba(138, 133, 120, 0.15)',
+              border: `1.5px solid ${cameraEnabled ? '#22c55e' : 'var(--border)'}`,
+              color: cameraEnabled ? '#22c55e' : 'var(--text-muted)',
+            }}
+          >
+            <span>{cameraEnabled ? '📹' : '📷'}</span>
+            <span>Видео: {cameraEnabled ? 'ВКЛЮЧЕНО' : 'ВЫКЛЮЧЕНО'}</span>
+          </span>
+
+          <span
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '5px 12px',
+              borderRadius: 999,
+              fontSize: 12,
+              fontWeight: 700,
+              background: speakerphoneActive ? 'var(--accent)' : 'rgba(138, 133, 120, 0.15)',
+              border: `1.5px solid ${speakerphoneActive ? 'var(--accent)' : 'var(--border)'}`,
+              color: speakerphoneActive ? '#000' : 'var(--text-muted)',
+            }}
+          >
+            <span>{speakerphoneActive ? '🔊' : '🔈'}</span>
+            <span>Громкая связь: {speakerphoneActive ? 'ВКЛ' : 'ВЫКЛ'}</span>
+          </span>
+
+          {screenSharing && (
+            <span
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '5px 12px',
+                borderRadius: 999,
+                fontSize: 12,
+                fontWeight: 700,
+                background: 'var(--accent)',
+                border: '1.5px solid var(--accent)',
+                color: '#000',
+              }}
+            >
+              🖥️ Экран: ВКЛ
+            </span>
+          )}
+        </div>
+
         {callNotice && (
           <div
             style={{
@@ -2018,7 +2132,7 @@ export function CallManager() {
             flex: 1,
             width: '100%',
             maxWidth: 960,
-            margin: '16px auto',
+            margin: '12px auto',
             borderRadius: 16,
             background: 'var(--surface)',
             border: '1px solid var(--border)',
@@ -2178,13 +2292,13 @@ export function CallManager() {
           )}
         </div>
 
-        {/* Нижняя панель управления звонком */}
+        {/* Нижняя панель управления звонком с чёткой индикацией ВКЛ / ВЫКЛ */}
         <div
           style={{
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            gap: 12,
+            gap: 10,
             flexWrap: 'wrap',
           }}
         >
@@ -2193,13 +2307,28 @@ export function CallManager() {
             className="btn"
             style={{
               width: 'auto',
-              padding: '11px 18px',
-              borderColor: micMuted ? 'var(--danger)' : undefined,
-              color: micMuted ? 'var(--danger)' : undefined,
+              padding: '11px 16px',
+              background: micMuted ? 'rgba(220, 38, 38, 0.22)' : 'rgba(34, 197, 94, 0.16)',
+              borderColor: micMuted ? '#ef4444' : '#22c55e',
+              borderWidth: 2,
+              color: micMuted ? '#ef4444' : '#22c55e',
+              fontWeight: 700,
             }}
             onClick={handleToggleMic}
           >
-            {micMuted ? '🔇 Микрофон выкл' : '🎤 Микрофон вкл'}
+            <span>{micMuted ? '🔇 Микрофон:' : '🎤 Микрофон:'}</span>
+            <span
+              style={{
+                padding: '2px 7px',
+                borderRadius: 6,
+                fontSize: 11,
+                fontWeight: 800,
+                background: micMuted ? '#ef4444' : '#22c55e',
+                color: '#000',
+              }}
+            >
+              {micMuted ? 'ВЫКЛ' : 'ВКЛ'}
+            </span>
           </button>
 
           <button
@@ -2207,13 +2336,28 @@ export function CallManager() {
             className="btn"
             style={{
               width: 'auto',
-              padding: '11px 18px',
-              borderColor: cameraEnabled ? 'var(--accent)' : undefined,
-              color: cameraEnabled ? 'var(--accent)' : undefined,
+              padding: '11px 16px',
+              background: cameraEnabled ? 'rgba(34, 197, 94, 0.16)' : 'var(--surface-raised)',
+              borderColor: cameraEnabled ? '#22c55e' : 'var(--border)',
+              borderWidth: 2,
+              color: cameraEnabled ? '#22c55e' : 'var(--text)',
+              fontWeight: 700,
             }}
             onClick={handleToggleCamera}
           >
-            {cameraEnabled ? '📷 Камера вкл' : '📷 Включить камеру'}
+            <span>{cameraEnabled ? '📹 Видео:' : '📷 Видео:'}</span>
+            <span
+              style={{
+                padding: '2px 7px',
+                borderRadius: 6,
+                fontSize: 11,
+                fontWeight: 800,
+                background: cameraEnabled ? '#22c55e' : 'rgba(255,255,255,0.12)',
+                color: cameraEnabled ? '#000' : 'var(--text-muted)',
+              }}
+            >
+              {cameraEnabled ? 'ВКЛ' : 'ВЫКЛ'}
+            </span>
           </button>
 
           <button
@@ -2221,14 +2365,57 @@ export function CallManager() {
             className="btn"
             style={{
               width: 'auto',
-              padding: '11px 18px',
-              borderColor: speakerphoneActive ? 'var(--accent)' : undefined,
-              color: speakerphoneActive ? 'var(--accent)' : undefined,
-              background: speakerphoneActive ? 'rgba(255, 212, 0, 0.12)' : undefined,
+              padding: '11px 16px',
+              borderColor: speakerphoneActive ? 'var(--accent)' : 'var(--border)',
+              borderWidth: 2,
+              color: speakerphoneActive ? '#000' : 'var(--text)',
+              background: speakerphoneActive ? 'var(--accent)' : 'var(--surface-raised)',
+              fontWeight: 700,
             }}
             onClick={handleToggleSpeakerphone}
           >
-            {speakerphoneActive ? '🔊 Громкая связь: Вкл' : '🔈 Разговорный динамик'}
+            <span>{speakerphoneActive ? '🔊 Громкая:' : '🔈 Динамик:'}</span>
+            <span
+              style={{
+                padding: '2px 7px',
+                borderRadius: 6,
+                fontSize: 11,
+                fontWeight: 800,
+                background: speakerphoneActive ? '#000' : 'rgba(255,255,255,0.12)',
+                color: speakerphoneActive ? 'var(--accent)' : 'var(--text-muted)',
+              }}
+            >
+              {speakerphoneActive ? 'ВКЛ' : 'ВЫКЛ'}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            className="btn"
+            style={{
+              width: 'auto',
+              padding: '11px 16px',
+              borderColor: screenSharing ? 'var(--accent)' : 'var(--border)',
+              borderWidth: 2,
+              color: screenSharing ? '#000' : 'var(--text)',
+              background: screenSharing ? 'var(--accent)' : 'var(--surface-raised)',
+              fontWeight: 700,
+            }}
+            onClick={handleToggleScreenShare}
+          >
+            <span>🖥️ Экран:</span>
+            <span
+              style={{
+                padding: '2px 7px',
+                borderRadius: 6,
+                fontSize: 11,
+                fontWeight: 800,
+                background: screenSharing ? '#000' : 'rgba(255,255,255,0.12)',
+                color: screenSharing ? 'var(--accent)' : 'var(--text-muted)',
+              }}
+            >
+              {screenSharing ? 'ВКЛ' : 'ВЫКЛ'}
+            </span>
           </button>
 
           <button
@@ -2242,20 +2429,6 @@ export function CallManager() {
             title="Перезапустить аудиопоток при разрыве или задержках"
           >
             🔄 Восстановить связь
-          </button>
-
-          <button
-            type="button"
-            className="btn"
-            style={{
-              width: 'auto',
-              padding: '11px 18px',
-              borderColor: screenSharing ? 'var(--accent)' : undefined,
-              color: screenSharing ? 'var(--accent)' : undefined,
-            }}
-            onClick={handleToggleScreenShare}
-          >
-            {screenSharing ? '🖥️ Остановить экран' : '🖥️ Демонстрация экрана'}
           </button>
 
           <button
