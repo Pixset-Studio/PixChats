@@ -72,6 +72,7 @@ import {
   EMOJI_STATUS_PRESETS,
 } from '../../lib/emojiStatus';
 import { EmojiPicker } from '../../components/EmojiPicker';
+import { PasswordInput } from '../../components/PasswordInput';
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -114,8 +115,8 @@ export default function SettingsPage() {
   const [appLock, setAppLock] = useState<AppLockConfig>(DEFAULT_APP_LOCK);
   const [pinDraft, setPinDraft] = useState('');
   const [twoFactor, setTwoFactor] = useState<TwoFactorConfig>(get2FAConfig());
-  const [twoFactorPassDraft, setTwoFactorPassDraft] = useState('');
-  const [twoFactorHintDraft, setTwoFactorHintDraft] = useState('');
+  const [twoFactorPassDraft, setTwoFactorPassDraft] = useState(() => get2FAConfig().passwordHash || '');
+  const [twoFactorHintDraft, setTwoFactorHintDraft] = useState(() => get2FAConfig().hint || '');
   const [autoTranslate, setAutoTranslate] = useState(getAutoTranslatePref());
   const [screenshotGuard, setScreenshotGuard] = useState(isScreenshotGuardEnabled());
   const [settingsTab, setSettingsTab] = useState<'general' | 'devices'>('general');
@@ -1805,8 +1806,7 @@ export default function SettingsPage() {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12, marginBottom: 14 }}>
             <div className="field" style={{ marginBottom: 0 }}>
               <label>Секретный PIN-код (4–8 символов)</label>
-              <input
-                type="password"
+              <PasswordInput
                 className="input"
                 maxLength={8}
                 placeholder="Например: 2580"
@@ -2088,9 +2088,8 @@ export default function SettingsPage() {
                 </div>
                 <div className="field">
                   <label>Пароль</label>
-                  <input
+                  <PasswordInput
                     className="input"
-                    type="password"
                     value={pixsetPassword}
                     onChange={(e) => setPixsetPassword(e.target.value)}
                     required
@@ -2130,9 +2129,8 @@ export default function SettingsPage() {
             </div>
             <div className="field">
               <label>Пароль</label>
-              <input
+              <PasswordInput
                 className="input"
-                type="password"
                 value={linkPassword}
                 onChange={(e) => setLinkPassword(e.target.value)}
                 required
@@ -2235,8 +2233,7 @@ export default function SettingsPage() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             <div className="field">
               <label>Облачный пароль 2FA</label>
-              <input
-                type="password"
+              <PasswordInput
                 className="input"
                 value={twoFactorPassDraft}
                 onChange={(e) => setTwoFactorPassDraft(e.target.value)}

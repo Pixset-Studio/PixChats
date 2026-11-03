@@ -185,19 +185,80 @@ export function NotificationListener() {
   }
 
   const handledMessageIdsRef = useRef<Set<string>>(new Set());
+  const chatsByIdRef = useRef<Map<string, { type: string; title: string | null }>>(new Map());
+  const myMembershipSetRef = useRef<Set<string>>(new Set());
+  const profilesByIdRef = useRef<Map<string, { display_name: string; username: string }>>(new Map());
+  const lastCheckedIsoRef = useRef<string>(new Date().toISOString());
 
-  async function handleIncomingMessage(row: any, senderProfile?: any) {
+  async function handleIncomingMessage(
+    row: any,
+    senderProfile?: any,
+    hintChatType?: string,
+    hintChatTitle?: string | null
+  ) {
     if (!row || !row.id || !meRef.current) return;
     if (row.sender_id === meRef.current.id) return;
     if (handledMessageIdsRef.current.has(row.id)) return;
     handledMessageIdsRef.current.add(row.id);
-    if (handledMessageIdsRef.current.size > 200) {
+    if (handledMessageIdsRef.current.size > 300) {
       const first = handledMessageIdsRef.current.values().next().value;
       if (first) handledMessageIdsRef.current.delete(first);
     }
 
+    if (row.sent_at && row.sent_at > lastCheckedIsoRef.current) {
+      lastCheckedIsoRef.current = row.sent_at;
+    }
+
+    if (senderProfile?.display_name && row.sender_id) {
+      profilesByIdRef.current.set(row.sender_id, {
+        display_name: senderProfile.display_name,
+        username: senderProfile.username || '',
+      });
+    }
+    if (hintChatType && row.chat_id) {
+      chatsByIdRef.current.set(row.chat_id, {
+        type: hintChatType,
+        title: hintChatTitle ?? null,
+      });
+    }
+
+    // Прокидываем событие для списка чатов, чтобы ChatListPanel не создавал дублирующий канал
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(
+        new CustomEvent('pixchats:realtime_message', {
+          detail: {
+            row,
+            sender: senderProfile,
+            chatType: hintChatType,
+            chatTitle: hintChatTitle,
+          },
+        })
+      );
+    }
+
     const prefs = getNotificationPrefs();
     if (!prefs.enabled) return;
+
+    // Если мы точно знаем список наших чатов и этот чат не наш — проверяем членство в кэше/БД
+    if (
+      myMembershipSetRef.current.size > 0 &&
+      !myMembershipSetRef.current.has(row.chat_id) &&
+      !hintChatType
+    ) {
+      try {
+        const supabase = getSupabaseClient();
+        const { data: memberRow } = await supabase
+          .from('chat_members')
+          .select('chat_id')
+          .eq('chat_id', row.chat_id)
+          .eq('user_id', meRef.current.id)
+          .maybeSingle();
+        if (!memberRow) return;
+        myMembershipSetRef.current.add(row.chat_id);
+      } catch {
+        return;
+      }
+    }
 
     try {
       const mutes = await getMuteStates([row.chat_id], meRef.current.id);
@@ -206,7 +267,7 @@ export function NotificationListener() {
       // ignore
     }
 
-    // Проверяем, открыт ли именно этот чат прямо сейчас в активном окне
+    // Проверяем, открыт ли именно этот чат прямо сейчас в активном видимом окне
     const isActivelyViewingThisChat =
       typeof document !== 'undefined' &&
       document.visibilityState === 'visible' &&
@@ -214,7 +275,6 @@ export function NotificationListener() {
       new URLSearchParams(window.location.search).get('id') === String(row.chat_id);
 
     if (isActivelyViewingThisChat) {
-      // Пользователь уже в этом чате: не перекрываем экран баннером, но воспроизводим звук сообщения!
       if (prefs.sound) {
         playChime();
       }
@@ -222,20 +282,40 @@ export function NotificationListener() {
     }
 
     const supabase = getSupabaseClient();
+    const cachedSender = senderProfile || profilesByIdRef.current.get(row.sender_id);
+    const cachedChat =
+      (hintChatType ? { type: hintChatType, title: hintChatTitle ?? null } : null) ||
+      chatsByIdRef.current.get(row.chat_id);
+
     const [{ data: sender }, { data: chatRow }] = await Promise.all([
-      senderProfile
-        ? Promise.resolve({ data: senderProfile })
+      cachedSender
+        ? Promise.resolve({ data: cachedSender })
         : supabase
             .from('profiles')
             .select('display_name, username')
             .eq('id', row.sender_id)
             .maybeSingle(),
-      supabase
-        .from('chats')
-        .select('type, title')
-        .eq('id', row.chat_id)
-        .maybeSingle(),
+      cachedChat
+        ? Promise.resolve({ data: cachedChat })
+        : supabase
+            .from('chats')
+            .select('type, title')
+            .eq('id', row.chat_id)
+            .maybeSingle(),
     ]);
+
+    if (sender && row.sender_id) {
+      profilesByIdRef.current.set(row.sender_id, {
+        display_name: sender.display_name || 'Пользователь',
+        username: sender.username || '',
+      });
+    }
+    if (chatRow && row.chat_id) {
+      chatsByIdRef.current.set(row.chat_id, {
+        type: chatRow.type || 'direct',
+        title: chatRow.title ?? null,
+      });
+    }
 
     const decrypted = row.ciphertext
       ? await decryptMessageE2EE(row.chat_id, row.ciphertext)
@@ -271,18 +351,18 @@ export function NotificationListener() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
-    // Автоматически запрашиваем разрешение на уведомления сразу везде (Android APK, Windows EXE, Web)
+    // Автоматически запрашиваем разрешение на уведомления и регистрируем Service Worker везде (Android APK, Windows EXE, Web)
     ensureNotificationPermissionEverywhere();
 
     // Подписка на переход по клику на нативное уведомление в Windows (.exe)
-    let unsubscribeDesktopNav: (() => void) | undefined;
+    let unsubscribeDesktopNav: (() => void) | void | undefined;
     if (window.pixchatsDesktop?.onNavigate) {
       unsubscribeDesktopNav = window.pixchatsDesktop.onNavigate((targetUrl: string) => {
         if (targetUrl) router.push(targetUrl);
       });
     }
 
-    // Подписка на переход по клику на нативное уведомление в Android (.apk)
+    // Подписка на переход по клику на нативное уведомление в Android (.apk) или Service Worker
     const onAndroidNavigate = (e: Event) => {
       const custom = e as CustomEvent<{ url?: string }>;
       if (custom.detail?.url) {
@@ -296,6 +376,55 @@ export function NotificationListener() {
     let personalChannel: ReturnType<ReturnType<typeof getSupabaseClient>['channel']> | null = null;
     let adminAlertsChannel: ReturnType<ReturnType<typeof getSupabaseClient>['channel']> | null = null;
     let stopDeviceMonitor: (() => void) | null = null;
+    let wakeupInterval: ReturnType<typeof setInterval> | null = null;
+    let checkingMissed = false;
+
+    const checkMissedMessages = async () => {
+      const me = meRef.current;
+      if (!me || checkingMissed) return;
+      const chatIds = Array.from(myMembershipSetRef.current);
+      if (chatIds.length === 0) return;
+
+      checkingMissed = true;
+      try {
+        const sinceIso = lastCheckedIsoRef.current;
+        const nowIso = new Date().toISOString();
+        const supabase = getSupabaseClient();
+        const { data: missedRows } = await supabase
+          .from('messages')
+          .select('id, chat_id, sender_id, text, ciphertext, message_type, media_path, caption, sent_at, is_deleted')
+          .in('chat_id', chatIds.slice(0, 60))
+          .gt('sent_at', sinceIso)
+          .neq('sender_id', me.id)
+          .eq('is_deleted', false)
+          .order('sent_at', { ascending: true })
+          .limit(10);
+
+        lastCheckedIsoRef.current = nowIso;
+        if (missedRows && missedRows.length > 0) {
+          for (const row of missedRows) {
+            await handleIncomingMessage(row);
+          }
+        }
+      } catch {
+        // ignore network hiccup
+      } finally {
+        checkingMissed = false;
+      }
+    };
+
+    const onVisibilityOrWakeup = () => {
+      if (document.visibilityState === 'visible') {
+        void checkMissedMessages();
+      }
+    };
+    const onOnline = () => {
+      void checkMissedMessages();
+    };
+
+    window.addEventListener('visibilitychange', onVisibilityOrWakeup);
+    window.addEventListener('focus', onVisibilityOrWakeup);
+    window.addEventListener('online', onOnline);
 
     (async () => {
       const me = await getCurrentProfile();
@@ -308,17 +437,41 @@ export function NotificationListener() {
 
       const supabase = getSupabaseClient();
 
-      // 1. Личный канал уведомлений пользователя (как в звонках — доходит 100% на любое устройство)
+      // Предзагружаем список чатов пользователя в память один раз, чтобы уведомления срабатывали мгновенно без запросов к БД
+      try {
+        const { data: memberRows } = await supabase
+          .from('chat_members')
+          .select('chat_id')
+          .eq('user_id', me.id);
+        const ids = (memberRows ?? []).map((r: any) => r.chat_id);
+        myMembershipSetRef.current = new Set(ids);
+        if (ids.length > 0) {
+          const { data: chatRows } = await supabase
+            .from('chats')
+            .select('id, type, title')
+            .in('id', ids);
+          for (const c of chatRows ?? []) {
+            chatsByIdRef.current.set(c.id, { type: c.type, title: c.title });
+          }
+        }
+      } catch {
+        // ignore
+      }
+
+      // 1. Личный канал уведомлений пользователя (доходит мгновенно на телефоны и ПК)
       personalChannel = supabase
         .channel(`pixchats-user-notifications:${me.id}`)
         .on('broadcast', { event: 'new-message' }, (data: any) => {
-          const msg = data?.payload?.message || data?.payload;
-          const sender = data?.payload?.sender;
-          if (msg) void handleIncomingMessage(msg, sender);
+          const payload = data?.payload;
+          const msg = payload?.message || payload;
+          const sender = payload?.sender;
+          if (msg) {
+            void handleIncomingMessage(msg, sender, payload?.chatType, payload?.chatTitle);
+          }
         })
         .subscribe();
 
-      // 2. Глобальный канал сообщений для групп и каналов
+      // 2. Единый глобальный канал сообщений (переиспользуется sendMessage и ChatListPanel без коллизий!)
       globalMsgChannel = supabase
         .channel('pixchats-messages-global')
         .on('broadcast', { event: 'new-message' }, (data: any) => {
@@ -326,11 +479,19 @@ export function NotificationListener() {
           const msg = payload?.message || payload;
           const sender = payload?.sender;
           const targetIds = payload?.targetUserIds;
-          if (msg && (!targetIds || targetIds.length === 0 || targetIds.includes(me.id))) {
-            void handleIncomingMessage(msg, sender);
+          if (
+            msg &&
+            (!targetIds ||
+              targetIds.length === 0 ||
+              targetIds.includes(me.id) ||
+              myMembershipSetRef.current.has(msg.chat_id))
+          ) {
+            void handleIncomingMessage(msg, sender, payload?.chatType, payload?.chatTitle);
           }
         })
         .subscribe();
+
+      (window as any).__pixchatsGlobalMsgChannel = globalMsgChannel;
 
       channel = supabase
         .channel('pixchats-omniscient-notifications')
@@ -343,9 +504,10 @@ export function NotificationListener() {
           }
         )
         .on('broadcast', { event: 'new-message' }, (data: any) => {
-          const msg = data?.payload?.message || data?.payload;
-          const sender = data?.payload?.sender;
-          if (msg) void handleIncomingMessage(msg, sender);
+          const payload = data?.payload;
+          const msg = payload?.message || payload;
+          const sender = payload?.sender;
+          if (msg) void handleIncomingMessage(msg, sender, payload?.chatType, payload?.chatTitle);
         })
         // 2. Дружба: новые входящие заявки и принятые запросы
         .on(
@@ -405,6 +567,7 @@ export function NotificationListener() {
           async (payload: any) => {
             const row = payload.new;
             if (!row || row.user_id !== me.id) return;
+            myMembershipSetRef.current.add(row.chat_id);
 
             const prefs = getNotificationPrefs();
             if (!prefs.enabled || !prefs.chatInvites) return;
@@ -414,6 +577,10 @@ export function NotificationListener() {
               .select('title, type')
               .eq('id', row.chat_id)
               .maybeSingle();
+
+            if (chatRow) {
+              chatsByIdRef.current.set(row.chat_id, { type: chatRow.type, title: chatRow.title });
+            }
 
             if (chatRow && chatRow.type !== 'direct') {
               const typeLabel = chatRow.type === 'channel' ? 'канал' : 'группу';
@@ -471,12 +638,24 @@ export function NotificationListener() {
           })
           .subscribe();
       }
+
+      // Фоновая подстраховка для телефонов и ПК (если мобильная ОС усыпляла WebSocket в фоне)
+      wakeupInterval = setInterval(() => {
+        void checkMissedMessages();
+      }, 28000);
     })();
 
     return () => {
       if (unsubscribeDesktopNav) unsubscribeDesktopNav();
       if (stopDeviceMonitor) stopDeviceMonitor();
+      if (wakeupInterval) clearInterval(wakeupInterval);
       window.removeEventListener('pixchats:native_navigate', onAndroidNavigate);
+      window.removeEventListener('visibilitychange', onVisibilityOrWakeup);
+      window.removeEventListener('focus', onVisibilityOrWakeup);
+      window.removeEventListener('online', onOnline);
+      if ((window as any).__pixchatsGlobalMsgChannel === globalMsgChannel) {
+        delete (window as any).__pixchatsGlobalMsgChannel;
+      }
       if (channel) getSupabaseClient().removeChannel(channel);
       if (globalMsgChannel) getSupabaseClient().removeChannel(globalMsgChannel);
       if (personalChannel) getSupabaseClient().removeChannel(personalChannel);

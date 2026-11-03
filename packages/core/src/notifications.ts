@@ -3,6 +3,22 @@ import { isMessageDeletedForMe } from './messages';
 
 const LOCAL_READ_STATE_KEY = 'pixchats:local_read_state_v2';
 
+// Кэш состояния прочитанности и счётчиков непрочитанных в памяти для снижения запросов к Supabase на >90%
+const lastSyncedDbReadAtMap = new Map<string, number>();
+let unreadCountsCache: {
+  userId: string;
+  key: string;
+  fetchedAt: number;
+  counts: Record<string, number>;
+} | null = null;
+
+// Кэш настроек мута уведомлений чатов (TTL 3 минуты)
+let muteStatesCache: {
+  userId: string;
+  fetchedAt: number;
+  byChatId: Record<string, MuteState>;
+} | null = null;
+
 function getLocalReadStateMap(userId: string): Record<string, string> {
   if (typeof window === 'undefined' || !userId) return {};
   try {
@@ -27,7 +43,7 @@ function setLocalReadState(userId: string, chatId: string, isoTimestamp: string)
 
 /**
  * Отметить чат прочитанным (вызывается при открытии окна чата и при получении сообщения в открытом чате).
- * Мгновенно сбрасывает счётчик непрочитанных локально и синхронизирует chat_read_state с учётом возможного рассинхрона часов клиента и сервера.
+ * Мгновенно сбрасывает счётчик непрочитанных локально и экономно синхронизирует chat_read_state с БД без лишних запросов.
  */
 export async function markChatAsRead(userId: string, chatId: string, latestMessageSentAt?: string): Promise<void> {
   if (!userId || !chatId) return;
@@ -35,9 +51,14 @@ export async function markChatAsRead(userId: string, chatId: string, latestMessa
   const nowMs = Date.now();
   const hintMs = latestMessageSentAt ? new Date(latestMessageSentAt).getTime() : 0;
   // +2000 мс защищает от микросекундного округления PostgreSQL timestamptz и небольшого отставания часов устройства
-  const initialIso = new Date(Math.max(nowMs, hintMs) + 2000).toISOString();
+  const targetMs = Math.max(nowMs, Number.isFinite(hintMs) ? hintMs : 0) + 2000;
+  const initialIso = new Date(targetMs).toISOString();
 
   setLocalReadState(userId, chatId, initialIso);
+
+  if (unreadCountsCache && unreadCountsCache.userId === userId) {
+    unreadCountsCache.counts[chatId] = 0;
+  }
 
   if (typeof window !== 'undefined') {
     window.dispatchEvent(
@@ -47,48 +68,59 @@ export async function markChatAsRead(userId: string, chatId: string, latestMessa
     );
   }
 
-  const supabase = getSupabaseClient();
-  let finalIso = initialIso;
+  // Троттлинг записи в БД: если мы уже синхронизировали этот чат недавно (< 20 сек назад) и нет более нового сообщения, пропускаем запрос к Supabase
+  const cacheKey = `${userId}:${chatId}`;
+  const prevSyncedMs = lastSyncedDbReadAtMap.get(cacheKey) || 0;
+  if (prevSyncedMs > 0 && nowMs - prevSyncedMs < 20_000 && (!hintMs || hintMs <= prevSyncedMs)) {
+    return;
+  }
+  lastSyncedDbReadAtMap.set(cacheKey, targetMs);
 
-  try {
-    if (!latestMessageSentAt) {
-      const { data: latestRow } = await supabase
-        .from('messages')
-        .select('sent_at')
-        .eq('chat_id', chatId)
-        .order('sent_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (latestRow?.sent_at) {
-        const dbLatestMs = new Date(latestRow.sent_at).getTime();
-        finalIso = new Date(Math.max(Date.now(), dbLatestMs) + 2000).toISOString();
-        setLocalReadState(userId, chatId, finalIso);
-      }
-    }
-  } catch {}
+  const supabase = getSupabaseClient();
 
   try {
     const { error } = await supabase
       .from('chat_read_state')
       .upsert(
-        { user_id: userId, chat_id: chatId, last_read_at: finalIso },
+        { user_id: userId, chat_id: chatId, last_read_at: initialIso },
         { onConflict: 'user_id,chat_id' }
       );
     if (error) {
-      // Фолбэк на случай обратного порядка уникального ключа (chat_id, user_id) или политики UPDATE
       await supabase
         .from('chat_read_state')
         .upsert(
-          { user_id: userId, chat_id: chatId, last_read_at: finalIso },
+          { user_id: userId, chat_id: chatId, last_read_at: initialIso },
           { onConflict: 'chat_id,user_id' }
         );
     }
   } catch {}
 }
 
-/** Количество непрочитанных (чужих и неудалённых) сообщений по каждому чату из списка. */
+/**
+ * Количество непрочитанных (чужих и неудалённых) сообщений по каждому чату из списка.
+ * Оптимизировано: вместо N отдельных запросов по каждому чату выполняет ОДИН пакетный запрос .in('chat_id', ...).
+ */
 export async function getUnreadCounts(chatIds: string[], userId: string): Promise<Record<string, number>> {
-  if (chatIds.length === 0) return {};
+  if (chatIds.length === 0 || !userId) return {};
+
+  const currentlyOpenChatId =
+    typeof window !== 'undefined' && /\/chat(\/|$)/.test(window.location.pathname)
+      ? new URLSearchParams(window.location.search).get('id')
+      : null;
+
+  const sortedKey = [...chatIds].sort().join(',');
+  const now = Date.now();
+  if (
+    unreadCountsCache &&
+    unreadCountsCache.userId === userId &&
+    unreadCountsCache.key === sortedKey &&
+    now - unreadCountsCache.fetchedAt < 25_000
+  ) {
+    const cachedCopy = { ...unreadCountsCache.counts };
+    if (currentlyOpenChatId) cachedCopy[currentlyOpenChatId] = 0;
+    return cachedCopy;
+  }
+
   const supabase = getSupabaseClient();
 
   const { data: readStates } = await supabase
@@ -98,48 +130,68 @@ export async function getUnreadCounts(chatIds: string[], userId: string): Promis
     .in('chat_id', chatIds);
 
   const localMap = getLocalReadStateMap(userId);
-  const lastReadByChat: Record<string, string> = {};
+  const lastReadByChat: Record<string, number> = {};
 
   for (const row of readStates ?? []) {
     if (row.last_read_at) {
-      lastReadByChat[row.chat_id] = row.last_read_at;
+      const ms = new Date(row.last_read_at).getTime();
+      if (Number.isFinite(ms)) lastReadByChat[row.chat_id] = ms;
     }
   }
 
   for (const [cId, localIso] of Object.entries(localMap)) {
-    const dbIso = lastReadByChat[cId];
-    if (!dbIso || new Date(localIso).getTime() > new Date(dbIso).getTime()) {
-      lastReadByChat[cId] = localIso;
+    const localMs = new Date(localIso).getTime();
+    const dbMs = lastReadByChat[cId] || 0;
+    if (Number.isFinite(localMs) && localMs > dbMs) {
+      lastReadByChat[cId] = localMs;
     }
   }
 
-  const currentlyOpenChatId =
-    typeof window !== 'undefined' && /\/chat(\/|$)/.test(window.location.pathname)
-      ? new URLSearchParams(window.location.search).get('id')
-      : null;
-
   const result: Record<string, number> = {};
-  await Promise.all(
-    chatIds.map(async (chatId) => {
-      if (currentlyOpenChatId && String(currentlyOpenChatId) === String(chatId)) {
-        result[chatId] = 0;
-        return;
-      }
-      const since = lastReadByChat[chatId] ?? '1970-01-01T00:00:00Z';
-      const { data: rows } = await supabase
-        .from('messages')
-        .select('id, sent_at, is_deleted')
-        .eq('chat_id', chatId)
-        .neq('sender_id', userId)
-        .gt('sent_at', since)
-        .limit(100);
+  for (const id of chatIds) {
+    result[id] = 0;
+  }
 
-      const unreadRows = (rows ?? []).filter(
-        (r: any) => !r.is_deleted && !isMessageDeletedForMe(r.id)
-      );
-      result[chatId] = unreadRows.length;
-    })
+  const targetChatIds = chatIds.filter(
+    (id) => !currentlyOpenChatId || String(currentlyOpenChatId) !== String(id)
   );
+
+  if (targetChatIds.length > 0) {
+    // Вычисляем минимальную границу времени (не старше 14 дней для экономии трафика)
+    const fourteenDaysAgoMs = now - 14 * 24 * 60 * 60 * 1000;
+    let minReadMs = now;
+    for (const id of targetChatIds) {
+      const readMs = lastReadByChat[id] ?? fourteenDaysAgoMs;
+      if (readMs < minReadMs) minReadMs = readMs;
+    }
+    const minSinceIso = new Date(Math.max(fourteenDaysAgoMs, minReadMs)).toISOString();
+
+    const { data: rows } = await supabase
+      .from('messages')
+      .select('id, chat_id, sent_at, is_deleted')
+      .in('chat_id', targetChatIds)
+      .neq('sender_id', userId)
+      .gt('sent_at', minSinceIso)
+      .order('sent_at', { ascending: false })
+      .limit(Math.min(250, targetChatIds.length * 25));
+
+    for (const r of (rows ?? []) as any[]) {
+      if (r.is_deleted || isMessageDeletedForMe(r.id)) continue;
+      const msgMs = new Date(r.sent_at).getTime();
+      const chatLastReadMs = lastReadByChat[r.chat_id] ?? 0;
+      if (msgMs > chatLastReadMs) {
+        result[r.chat_id] = (result[r.chat_id] ?? 0) + 1;
+      }
+    }
+  }
+
+  unreadCountsCache = {
+    userId,
+    key: sortedKey,
+    fetchedAt: Date.now(),
+    counts: { ...result },
+  };
+
   return result;
 }
 
@@ -150,20 +202,46 @@ export interface MuteState {
 }
 
 export async function getMuteStates(chatIds: string[], userId: string): Promise<Record<string, MuteState>> {
-  if (chatIds.length === 0) return {};
+  if (chatIds.length === 0 || !userId) return {};
+
+  const now = Date.now();
+  if (
+    muteStatesCache &&
+    muteStatesCache.userId === userId &&
+    now - muteStatesCache.fetchedAt < 180_000
+  ) {
+    const out: Record<string, MuteState> = {};
+    for (const cid of chatIds) {
+      if (muteStatesCache.byChatId[cid]) {
+        out[cid] = muteStatesCache.byChatId[cid];
+      }
+    }
+    return out;
+  }
+
   const supabase = getSupabaseClient();
   const { data } = await supabase
     .from('chat_mutes')
-    .select('*')
-    .eq('user_id', userId)
-    .in('chat_id', chatIds);
+    .select('chat_id, muted_forever, muted_until, is_penalty, reason')
+    .eq('user_id', userId);
 
-  const result: Record<string, MuteState> = {};
+  const byChatId: Record<string, MuteState> = {};
   for (const row of (data ?? []) as any[]) {
     // Пропускаем штрафные муты модерации, чтобы они не отображались как выключенные уведомления
     if (row.is_penalty || (row.reason && String(row.reason).trim().length > 0)) continue;
     const stillMuted = row.muted_forever || (row.muted_until && new Date(row.muted_until) > new Date());
-    result[row.chat_id] = { muted: !!stillMuted, mutedForever: row.muted_forever, mutedUntil: row.muted_until };
+    byChatId[row.chat_id] = { muted: !!stillMuted, mutedForever: row.muted_forever, mutedUntil: row.muted_until };
+  }
+
+  muteStatesCache = {
+    userId,
+    fetchedAt: now,
+    byChatId,
+  };
+
+  const result: Record<string, MuteState> = {};
+  for (const cid of chatIds) {
+    if (byChatId[cid]) result[cid] = byChatId[cid];
   }
   return result;
 }
@@ -176,10 +254,20 @@ export async function muteChat(userId: string, chatId: string, durationHours?: n
     .from('chat_mutes')
     .upsert({ user_id: userId, chat_id: chatId, muted_forever: !durationHours, muted_until: mutedUntil });
   if (error) throw error;
+  if (muteStatesCache && muteStatesCache.userId === userId) {
+    muteStatesCache.byChatId[chatId] = {
+      muted: true,
+      mutedForever: !durationHours,
+      mutedUntil,
+    };
+  }
 }
 
 export async function unmuteChat(userId: string, chatId: string): Promise<void> {
   const supabase = getSupabaseClient();
   const { error } = await supabase.from('chat_mutes').delete().eq('user_id', userId).eq('chat_id', chatId);
   if (error) throw error;
+  if (muteStatesCache && muteStatesCache.userId === userId) {
+    delete muteStatesCache.byChatId[chatId];
+  }
 }

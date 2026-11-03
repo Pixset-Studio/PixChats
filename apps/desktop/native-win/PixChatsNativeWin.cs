@@ -1,7 +1,7 @@
 // PixChats Native Windows Integration Module (C# / .NET Win32)
 // Обеспечивает нативную регистрацию AppUserModelID, автозапуска при старте Windows
-// (HKCU\Software\Microsoft\Windows\CurrentVersion\Run) в фоновом режиме (--autostart-background)
-// и поддержку системных уведомлений Windows Action Center и протокола pixchats://.
+// (HKCU\Software\Microsoft\Windows\CurrentVersion\Run) в фоновом режиме (--autostart-background),
+// запуск окна в свёрнутом состоянии (SW_SHOWMINNOACTIVE) и поддержку системных уведомлений Windows Action Center.
 
 using System;
 using System.Diagnostics;
@@ -15,9 +15,14 @@ namespace PixsetStudio.PixChats
     {
         public const string AppId = "studio.pixset.pixchats";
         public const string AppName = "PixChats";
+        private const int SW_MINIMIZE = 6;
+        private const int SW_SHOWMINNOACTIVE = 7;
 
         [DllImport("shell32.dll", SetLastError = true)]
         private static extern int SetCurrentProcessExplicitAppUserModelID([MarshalAs(UnmanagedType.LPWStr)] string AppID);
+
+        [DllImport("user32.dll")]
+        private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
         public static void Main(string[] args)
         {
@@ -27,10 +32,46 @@ namespace PixsetStudio.PixChats
                 RegisterAppUserModelIdInRegistry();
                 RegisterWindowsStartupBackground();
                 RegisterCustomProtocol();
+                MinimizeMainWindowOnStartupIfConfigured(args);
             }
             catch (Exception ex)
             {
                 Console.Error.WriteLine("[PixChatsNativeWin] Init warning: " + ex.Message);
+            }
+        }
+
+        private static void MinimizeMainWindowOnStartupIfConfigured(string[] args)
+        {
+            bool launchMinimized = true;
+            try
+            {
+                string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+                string cfgPath = Path.Combine(appData, "@pixchats", "desktop", "pixchats-desktop-config.json");
+                string altCfgPath = Path.Combine(appData, "PixChats", "pixchats-desktop-config.json");
+                string targetCfg = File.Exists(cfgPath) ? cfgPath : (File.Exists(altCfgPath) ? altCfgPath : null);
+                if (targetCfg != null)
+                {
+                    string json = File.ReadAllText(targetCfg);
+                    if (json.Contains("\"launchMinimized\": false") || json.Contains("\"launchMinimized\":false"))
+                    {
+                        launchMinimized = false;
+                    }
+                }
+            }
+            catch { }
+
+            if (launchMinimized)
+            {
+                try
+                {
+                    IntPtr hWnd = Process.GetCurrentProcess().MainWindowHandle;
+                    if (hWnd != IntPtr.Zero)
+                    {
+                        ShowWindow(hWnd, SW_SHOWMINNOACTIVE);
+                        ShowWindow(hWnd, SW_MINIMIZE);
+                    }
+                }
+                catch { }
             }
         }
 

@@ -1,39 +1,32 @@
-// Нативный Preload-мост между процессом Windows (Electron Main) и клиентским интерфейсом PixChats.
 const { contextBridge, ipcRenderer } = require('electron');
 
+// Мост для интеграции веб-клиента PixChats с нативной ОС Windows (.exe):
+// - Нативные системные уведомления Windows Action Center (в т.ч. в свёрнутом/фоновом режиме в трее)
+// - Входящие звонки поверх окон (разворачивание из трея)
+// - Управление автозапуском при старте компьютера
+// - Управление запуском в свёрнутом виде на ПК + мгновенное сворачивание/разворачивание окна
+// - Автоматическое скачивание и установка обновлений .exe из GitHub Releases
 contextBridge.exposeInMainWorld('pixchatsDesktop', {
   isDesktop: true,
-  platform: process.platform,
-
-  /** Отправить нативное системное уведомление Windows 10/11 */
+  platform: 'win32',
+  notify: (payload) => ipcRenderer.invoke('pixchats:notify', payload),
   sendNotification: (payload) => ipcRenderer.invoke('pixchats:notify', payload),
-
-  /** Разбудить окно из фонового режима и показать уведомление при входящем звонке */
   notifyIncomingCall: (payload) => ipcRenderer.invoke('pixchats:incoming-call', payload),
-
-  /** Автоматически запросить/подтвердить системное разрешение на уведомления */
-  requestNotificationPermission: () => ipcRenderer.invoke('pixchats:request-permission'),
-
-  /** Проверить статус автозапуска при старте компьютера */
   getAutoStartEnabled: () => ipcRenderer.invoke('pixchats:get-autostart'),
-
-  /** Включить или выключить автозапуск при старте компьютера (в фоновом режиме) */
-  setAutoStartEnabled: (enabled) => ipcRenderer.invoke('pixchats:set-autostart', Boolean(enabled)),
-
-  /** Проверить статус запуска приложения свёрнутым на ПК */
+  setAutoStartEnabled: (enabled) => ipcRenderer.invoke('pixchats:set-autostart', enabled),
   getLaunchMinimizedEnabled: () => ipcRenderer.invoke('pixchats:get-launch-minimized'),
-
-  /** Включить или выключить запуск приложения свёрнутым на ПК */
-  setLaunchMinimizedEnabled: (enabled) => ipcRenderer.invoke('pixchats:set-launch-minimized', Boolean(enabled)),
-
-  /** Скачать и автоматически запустить инсталлятор обновления .exe */
+  setLaunchMinimizedEnabled: (enabled) => ipcRenderer.invoke('pixchats:set-launch-minimized', enabled),
+  minimizeWindow: () => ipcRenderer.invoke('pixchats:minimize-window'),
+  restoreWindow: () => ipcRenderer.invoke('pixchats:restore-window'),
+  isWindowMinimized: () => ipcRenderer.invoke('pixchats:is-minimized'),
+  requestPermissions: () => ipcRenderer.invoke('pixchats:request-permission'),
+  requestNotificationPermission: () => ipcRenderer.invoke('pixchats:request-permission'),
+  downloadAndInstallUpdate: (payload) => ipcRenderer.invoke('pixchats:install-update', payload),
   installUpdate: (downloadUrl, fileName) =>
     ipcRenderer.invoke('pixchats:install-update', { downloadUrl, fileName }),
-
-  /** Подписка на переход в нужный чат при клике по системному уведомлению Windows */
   onNavigate: (callback) => {
     if (typeof callback !== 'function') return () => {};
-    const handler = (_event, url) => callback(url);
+    const handler = (_event, targetUrl) => callback(targetUrl);
     ipcRenderer.on('pixchats:navigate', handler);
     return () => ipcRenderer.removeListener('pixchats:navigate', handler);
   },

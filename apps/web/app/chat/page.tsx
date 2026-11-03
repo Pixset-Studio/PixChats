@@ -124,6 +124,7 @@ import {
 } from '../../lib/mediaDevicesStore';
 import { isMobilePhoneDevice } from '../../lib/nativePlatform';
 import { ReportMessageModal } from '../../components/ReportMessageModal';
+import { PasswordInput } from '../../components/PasswordInput';
 
 interface ScheduledMessageItem {
   id: string;
@@ -4373,8 +4374,7 @@ function ChatWindowInner() {
 
             <div style={{ marginBottom: 14 }}>
               <label className="label">Дополнительный секретный пароль чата (опционально)</label>
-              <input
-                type="password"
+              <PasswordInput
                 className="input"
                 value={customPassInput}
                 onChange={(e) => setCustomPassInput(e.target.value)}

@@ -134,6 +134,24 @@ export function IconRail() {
             <span className="icon-rail-label">Скачать</span>
           </button>
         )}
+
+        <button
+          type="button"
+          className="icon-rail-item"
+          title="Свернуть PixChats в фоновый режим"
+          onClick={() => {
+            window.dispatchEvent(new CustomEvent('pixchats:pc_minimize_now'));
+          }}
+          style={{
+            background: 'transparent',
+            border: '1px solid var(--border)',
+            cursor: 'pointer',
+            color: 'var(--text-muted)',
+          }}
+        >
+          <span className="icon-rail-icon" style={{ fontSize: 14, lineHeight: 1 }}>🗕</span>
+          <span className="icon-rail-label">Свернуть</span>
+        </button>
       </div>
     </nav>
   );

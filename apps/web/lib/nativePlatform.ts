@@ -4,7 +4,13 @@ export type RuntimePlatform = 'desktop-exe' | 'android-apk' | 'web';
 
 export interface NativeDesktopBridge {
   isDesktop: boolean;
-  platform: string;
+  platform?: string;
+  notify?: (payload: {
+    title: string;
+    body: string;
+    url?: string;
+    silent?: boolean;
+  }) => Promise<boolean> | boolean;
   sendNotification?: (payload: {
     title: string;
     body: string;
@@ -16,14 +22,19 @@ export interface NativeDesktopBridge {
     mode: 'audio' | 'video';
     chatId?: string;
   }) => Promise<boolean> | boolean;
+  requestPermissions?: () => Promise<'granted' | 'denied'>;
   requestNotificationPermission?: () => Promise<'granted' | 'denied'>;
   getAutoStartEnabled?: () => Promise<boolean>;
   setAutoStartEnabled?: (enabled: boolean) => Promise<boolean>;
   getLaunchMinimizedEnabled?: () => Promise<boolean>;
   setLaunchMinimizedEnabled?: (enabled: boolean) => Promise<boolean>;
+  minimizeWindow?: () => Promise<boolean>;
+  restoreWindow?: () => Promise<boolean>;
+  isWindowMinimized?: () => Promise<boolean>;
   setBadgeCount?: (count: number) => void;
   installUpdate?: (downloadUrl: string, fileName?: string) => Promise<boolean>;
-  onNavigate?: (callback: (url: string) => void) => () => void;
+  downloadAndInstallUpdate?: (payload: { downloadUrl: string; fileName?: string }) => Promise<boolean>;
+  onNavigate?: (callback: (url: string) => void) => (() => void) | void;
 }
 
 export interface NativeAndroidBridge {
@@ -129,17 +140,82 @@ export function isDesktopOrPcDevice(): boolean {
   return !isMobilePhoneDevice();
 }
 
+/**
+ * Проверяет, включён ли запуск приложения свёрнутым на ПК (по умолчанию ВКЛЮЧЁН = true).
+ */
+export function isPcLaunchMinimizedEnabled(): boolean {
+  if (typeof window === 'undefined') return true;
+  try {
+    const saved = localStorage.getItem('pixchats:desktop_launch_minimized');
+    return saved === null ? true : saved === '1';
+  } catch {
+    return true;
+  }
+}
+
+export async function setPcLaunchMinimizedEnabled(enabled: boolean): Promise<void> {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem('pixchats:desktop_launch_minimized', enabled ? '1' : '0');
+    if (window.pixchatsDesktop?.setLaunchMinimizedEnabled) {
+      await window.pixchatsDesktop.setLaunchMinimizedEnabled(enabled);
+    }
+    window.dispatchEvent(
+      new CustomEvent('pixchats:pc_launch_minimized_changed', { detail: { enabled } })
+    );
+  } catch {}
+}
+
+let swRegistrationPromise: Promise<ServiceWorkerRegistration | null> | null = null;
 let autoRequestInitialized = false;
+
+/**
+ * Регистрирует Service Worker (/sw.js) для работы системных уведомлений на мобильных телефонах
+ * (Android Chrome, Samsung Internet, Яндекс Браузер, iOS PWA) и ПК браузерах.
+ */
+export function ensureServiceWorkerRegistered(): Promise<ServiceWorkerRegistration | null> {
+  if (typeof window === 'undefined' || !('serviceWorker' in navigator)) {
+    return Promise.resolve(null);
+  }
+  if (swRegistrationPromise) return swRegistrationPromise;
+
+  swRegistrationPromise = (async () => {
+    try {
+      const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
+      const swUrl = `${basePath}/sw.js`;
+      const existing = await navigator.serviceWorker.getRegistration();
+      if (existing) return existing;
+      const reg = await navigator.serviceWorker.register(swUrl, {
+        scope: `${basePath}/`,
+      });
+      return reg;
+    } catch {
+      try {
+        const fallbackReg = await navigator.serviceWorker.getRegistration();
+        return fallbackReg || null;
+      } catch {
+        return null;
+      }
+    }
+  })();
+
+  return swRegistrationPromise;
+}
 
 export async function requestPermissionNow(): Promise<'granted' | 'denied' | 'default'> {
   if (typeof window === 'undefined') return 'default';
+
+  void ensureServiceWorkerRegistered();
 
   const platform = detectRuntimePlatform();
 
   if (platform === 'desktop-exe') {
     try {
-      if (window.pixchatsDesktop?.requestNotificationPermission) {
-        return await window.pixchatsDesktop.requestNotificationPermission();
+      const reqFn =
+        window.pixchatsDesktop?.requestNotificationPermission ||
+        window.pixchatsDesktop?.requestPermissions;
+      if (reqFn) {
+        return await reqFn();
       }
     } catch {
       // ignore
@@ -207,9 +283,24 @@ export function ensureNotificationPermissionEverywhere(): void {
   if (typeof window === 'undefined' || autoRequestInitialized) return;
   autoRequestInitialized = true;
 
+  void ensureServiceWorkerRegistered();
   void requestPermissionNow();
 
+  // Слушаем клики по уведомлениям из Service Worker (sw.js)
+  try {
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('message', (event) => {
+        if (event.data?.type === 'PIXCHATS_NOTIFICATION_CLICK' && event.data?.url) {
+          window.dispatchEvent(
+            new CustomEvent('pixchats:native_navigate', { detail: { url: event.data.url } })
+          );
+        }
+      });
+    }
+  } catch {}
+
   const triggerOnInteraction = async () => {
+    void ensureServiceWorkerRegistered();
     const status = await requestPermissionNow();
     if (status === 'granted' || status === 'denied') {
       window.removeEventListener('pointerdown', triggerOnInteraction);
@@ -224,7 +315,7 @@ export function ensureNotificationPermissionEverywhere(): void {
 }
 
 /**
- * Отправляет системное уведомление нативным способом для текущей платформы (.exe, .apk, web).
+ * Отправляет системное уведомление нативным способом для текущей платформы (.exe, .apk, мобильный/ПК браузер).
  */
 export async function sendNativeOrWebNotification(options: {
   title: string;
@@ -238,13 +329,23 @@ export async function sendNativeOrWebNotification(options: {
   const { title, body, url = '/chats/', silent = false, onNavigate } = options;
   const platform = detectRuntimePlatform();
 
-  // 1. Нативное приложение Windows (.exe)
-  if (platform === 'desktop-exe' && window.pixchatsDesktop?.sendNotification) {
+  // Тактильная вибрация на смартфонах
+  if (!silent && isMobilePhoneDevice()) {
     try {
-      await window.pixchatsDesktop.sendNotification({ title, body, url, silent });
-      return;
-    } catch {
-      // fallback ниже
+      navigator.vibrate?.([200, 90, 200]);
+    } catch {}
+  }
+
+  // 1. Нативное приложение Windows (.exe) — поддерживаем и notify, и sendNotification
+  if (platform === 'desktop-exe' && window.pixchatsDesktop) {
+    const notifyFn = window.pixchatsDesktop.notify || window.pixchatsDesktop.sendNotification;
+    if (notifyFn) {
+      try {
+        const ok = await notifyFn({ title, body, url, silent });
+        if (ok !== false) return;
+      } catch {
+        // fallback ниже
+      }
     }
   }
 
@@ -275,37 +376,43 @@ export async function sendNativeOrWebNotification(options: {
     }
   }
 
-  // 3. Стандартный Web Notification API / Service Worker
+  // 3. Стандартный Web Notification API + Service Worker (обязателен для всех мобильных браузеров)
   if ('Notification' in window) {
     if (Notification.permission === 'default') {
       await requestPermissionNow();
     }
     if (Notification.permission === 'granted') {
       const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
-      const iconUrl = `${basePath}/icon.svg`;
+      const iconUrl = `${basePath}/logo/icon.png`;
+      const tag = `pixchats-msg-${Date.now()}`;
 
       try {
-        if ('serviceWorker' in navigator) {
-          const reg = await navigator.serviceWorker.getRegistration();
-          if (reg && typeof reg.showNotification === 'function') {
-            await reg.showNotification(title, {
-              body,
-              icon: iconUrl,
-              badge: iconUrl,
-              silent,
-              data: { url },
-            });
-            return;
-          }
+        const reg =
+          (await ensureServiceWorkerRegistered()) ||
+          ('serviceWorker' in navigator ? await navigator.serviceWorker.getRegistration() : null);
+
+        if (reg && typeof reg.showNotification === 'function') {
+          await reg.showNotification(title, {
+            body,
+            icon: iconUrl,
+            badge: iconUrl,
+            tag,
+            renotify: true,
+            silent,
+            vibrate: silent ? undefined : [220, 100, 220],
+            data: { url },
+          } as any);
+          return;
         }
       } catch {
-        // fallback к конструктору Notification
+        // fallback к конструктору Notification на ПК
       }
 
       try {
         const notif = new Notification(title, {
           body,
           icon: iconUrl,
+          tag,
           silent,
         });
         notif.onclick = () => {
@@ -313,7 +420,18 @@ export async function sendNativeOrWebNotification(options: {
           if (onNavigate) onNavigate(url);
         };
       } catch {
-        // ignore
+        // На мобильных браузерах, где new Notification запрещён, отправляем команду в контроллер SW
+        try {
+          navigator.serviceWorker?.controller?.postMessage({
+            type: 'PIXCHATS_SHOW_NOTIFICATION',
+            title,
+            body,
+            icon: iconUrl,
+            tag,
+            url,
+            silent,
+          });
+        } catch {}
       }
     }
   }

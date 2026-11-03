@@ -12,6 +12,7 @@ export interface ChatListCache {
   partners: Record<string, Profile>;
   unreadCounts: Record<string, number>;
   muteStates: Record<string, MuteState>;
+  fetchedAt?: number;
 }
 
 let cache: ChatListCache | null = null;
@@ -20,8 +21,16 @@ export function getChatListCache(): ChatListCache | null {
   return cache;
 }
 
+export function isChatListCacheFresh(maxAgeMs = 90_000): boolean {
+  if (!cache || !cache.fetchedAt) return false;
+  return Date.now() - cache.fetchedAt < maxAgeMs;
+}
+
 export function setChatListCache(value: ChatListCache): void {
-  cache = value;
+  cache = {
+    ...value,
+    fetchedAt: value.fetchedAt ?? Date.now(),
+  };
 }
 
 /** Вызывать при выходе из аккаунта, чтобы следующий пользователь не увидел чужой список. */

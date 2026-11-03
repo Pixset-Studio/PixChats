@@ -10,6 +10,7 @@ import android.media.AudioAttributes
 import android.media.RingtoneManager
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.view.WindowManager
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -19,6 +20,7 @@ import com.getcapacitor.BridgeWebChromeClient
 /**
  * Нативная Android-активность PixChats (Kotlin).
  * - Создаёт системные каналы уведомлений (сообщения + входящие звонки с мелодией вызова)
+ * - Удерживает фоновый WakeLock и не замораживает таймеры WebView в фоне, чтобы уведомления приходили мгновенно
  * - Разрешает пробуждение экрана и показ входящего звонка поверх блокировки
  * - Автоматически запрашивает системные разрешения POST_NOTIFICATIONS, RECORD_AUDIO, CAMERA
  * - Разрешает WebRTC-захват микрофона и камеры внутри WebView без блокировок
@@ -35,11 +37,13 @@ class MainActivity : BridgeActivity() {
     }
 
     var pendingAutoInstallApk: java.io.File? = null
+    private var backgroundWakeLock: PowerManager.WakeLock? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         enableWakeAndLockScreenDisplay()
+        acquireRealtimeWakeLock()
         createNotificationChannels()
         requestNotificationPermissionIfNeeded()
 
@@ -68,8 +72,42 @@ class MainActivity : BridgeActivity() {
         handleNotificationIntent(intent)
     }
 
+    private fun acquireRealtimeWakeLock() {
+        try {
+            if (backgroundWakeLock == null) {
+                val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
+                backgroundWakeLock = pm?.newWakeLock(
+                    PowerManager.PARTIAL_WAKE_LOCK,
+                    "PixChats::BackgroundRealtimeWakeLock"
+                )?.apply {
+                    setReferenceCounted(false)
+                    acquire(24 * 60 * 60 * 1000L)
+                }
+            }
+        } catch (_: Exception) {}
+    }
+
+    override fun onPause() {
+        super.onPause()
+        // Не позволяем системе останавливать JS-таймеры и WebSocket в фоновом режиме на телефоне
+        try {
+            bridge?.webView?.onResume()
+            bridge?.webView?.resumeTimers()
+        } catch (_: Exception) {}
+    }
+
+    override fun onStop() {
+        super.onStop()
+        try {
+            bridge?.webView?.resumeTimers()
+        } catch (_: Exception) {}
+    }
+
     override fun onResume() {
         super.onResume()
+        try {
+            bridge?.webView?.resumeTimers()
+        } catch (_: Exception) {}
         val apkFile = pendingAutoInstallApk
         if (apkFile != null && apkFile.exists()) {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || packageManager.canRequestPackageInstalls()) {
@@ -77,6 +115,15 @@ class MainActivity : BridgeActivity() {
                 PixChatsNativeBridge(this).installApkFileWithPackageInstaller(apkFile)
             }
         }
+    }
+
+    override fun onDestroy() {
+        try {
+            if (backgroundWakeLock?.isHeld == true) {
+                backgroundWakeLock?.release()
+            }
+        } catch (_: Exception) {}
+        super.onDestroy()
     }
 
     fun emitUpdateProgress(percent: Int, status: String) {
@@ -143,7 +190,9 @@ class MainActivity : BridgeActivity() {
             ).apply {
                 description = "Мгновенные уведомления о сообщениях, упоминаниях и заявках в друзья в PixChats"
                 enableVibration(true)
+                vibrationPattern = longArrayOf(0, 240, 100, 240)
                 enableLights(true)
+                lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
             }
             manager.createNotificationChannel(msgChannel)
 
@@ -162,6 +211,7 @@ class MainActivity : BridgeActivity() {
                 enableVibration(true)
                 vibrationPattern = longArrayOf(0, 800, 400, 800, 400, 800)
                 enableLights(true)
+                lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
                 setSound(ringtoneUri, audioAttrs)
             }
             manager.createNotificationChannel(callChannel)

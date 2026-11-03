@@ -97,13 +97,25 @@ class PixChatsNativeBridge(private val activity: MainActivity) {
                     .setContentTitle(title.ifEmpty { "PixChats" })
                     .setContentText(body)
                     .setStyle(NotificationCompat.BigTextStyle().bigText(body))
-                    .setPriority(NotificationCompat.PRIORITY_HIGH)
+                    .setPriority(NotificationCompat.PRIORITY_MAX)
+                    .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+                    .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
                     .setDefaults(NotificationCompat.DEFAULT_ALL)
                     .setAutoCancel(true)
                     .setContentIntent(pendingIntent)
 
                 val manager = activity.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
                 manager.notify(notifId, builder.build())
+
+                try {
+                    val vibrator = activity.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        vibrator?.vibrate(VibrationEffect.createOneShot(220, VibrationEffect.DEFAULT_AMPLITUDE))
+                    } else {
+                        @Suppress("DEPRECATION")
+                        vibrator?.vibrate(220)
+                    }
+                } catch (_: Exception) {}
             } catch (_: Exception) {}
         }
     }

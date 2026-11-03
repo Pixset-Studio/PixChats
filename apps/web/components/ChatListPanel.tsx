@@ -24,7 +24,13 @@ import { VerifiedBadge } from './VerifiedBadge';
 import { AvatarWithStatus } from './AvatarWithStatus';
 import { ReadStatusTicks } from './ReadStatusTicks';
 import { ChatListSkeleton } from './Loading';
-import { getChatListCache, setChatListCache, clearChatListCache, clearUnreadInChatListCache } from '../lib/chatListCache';
+import {
+  getChatListCache,
+  setChatListCache,
+  clearChatListCache,
+  clearUnreadInChatListCache,
+  isChatListCacheFresh,
+} from '../lib/chatListCache';
 import { SearchIcon, PlusIcon, ChatsIcon } from './Icons';
 import {
   getArchivedChatIds,
@@ -273,7 +279,8 @@ export function ChatListPanel() {
     (async () => {
       const me = await getCurrentProfile();
       if (!me) return;
-      if (getChatListCache() && getChatListCache()!.profile.id !== me.id) {
+      const existingCache = getChatListCache();
+      if (existingCache && existingCache.profile.id !== me.id) {
         clearChatListCache();
         setChats([]);
         setPreviews({});
@@ -281,6 +288,10 @@ export function ChatListPanel() {
         setUnreadCounts({});
         setMuteStates({});
         setLoading(true);
+      } else if (existingCache && existingCache.profile.id === me.id && isChatListCacheFresh(90_000)) {
+        setProfile(me);
+        setLoading(false);
+        return;
       }
       setProfile(me);
       await loadChats(me);
@@ -353,13 +364,20 @@ export function ChatListPanel() {
       }
     };
 
-    const globalMsgChannel = supabase
-      .channel('pixchats-messages-global')
-      .on('broadcast', { event: 'new-message' }, (data: any) => {
-        const msg = data?.payload?.message || data?.payload;
-        if (msg) void processNewMessage(msg);
-      })
-      .subscribe();
+    const onRealtimeMessage = (e: Event) => {
+      const detail = (e as CustomEvent<{ row?: any }>).detail;
+      if (detail?.row) {
+        void processNewMessage(detail.row);
+      }
+    };
+    const onMessageSent = (e: Event) => {
+      const detail = (e as CustomEvent<{ chatId?: string; message?: any }>).detail;
+      if (detail?.message) {
+        void processNewMessage(detail.message);
+      }
+    };
+    window.addEventListener('pixchats:realtime_message', onRealtimeMessage);
+    window.addEventListener('pixchats:message_sent', onMessageSent);
 
     const messagesChannel = supabase
       .channel('chat-list-messages')
@@ -415,9 +433,11 @@ export function ChatListPanel() {
           if (!chatId) return;
           if (row?.user_id && row.user_id !== profile.id && row.last_read_at) {
             setPartnerLastRead((prev) => ({ ...prev, [chatId]: row.last_read_at }));
+            return;
           }
-          const counts = await getUnreadCounts([chatId], profile.id);
-          setUnreadCounts((prev) => ({ ...prev, [chatId]: counts[chatId] ?? 0 }));
+          if (row?.user_id === profile.id) {
+            setUnreadCounts((prev) => (prev[chatId] ? { ...prev, [chatId]: 0 } : prev));
+          }
         }
       )
       .subscribe();
@@ -456,9 +476,10 @@ export function ChatListPanel() {
       .subscribe();
 
     return () => {
+      window.removeEventListener('pixchats:realtime_message', onRealtimeMessage);
+      window.removeEventListener('pixchats:message_sent', onMessageSent);
       window.removeEventListener('pixchats:message_deleted', onLocalMessageDeleted);
       supabase.removeChannel(messagesChannel);
-      supabase.removeChannel(globalMsgChannel);
       supabase.removeChannel(readStateChannel);
       supabase.removeChannel(membersChannel);
       supabase.removeChannel(typingGlobalChannel);

@@ -13,6 +13,7 @@ import {
 } from '@pixchats/core';
 import { buildAppUrl } from '../../../lib/url';
 import { isRussianVisitor } from '../../../lib/geo';
+import { PasswordInput } from '../../../components/PasswordInput';
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -166,9 +167,8 @@ export default function RegisterPage() {
 
                 <div className="field">
                   <label>Пароль</label>
-                  <input
+                  <PasswordInput
                     className="input"
-                    type="password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     required

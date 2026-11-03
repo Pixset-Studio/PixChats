@@ -13,6 +13,7 @@ import {
 import { buildAppUrl } from '../../../lib/url';
 import { isRussianVisitor } from '../../../lib/geo';
 import { buildQrMatrix, generateQrSessionCode, listenForQrLoginApproval } from '../../../lib/qrAuth';
+import { PasswordInput } from '../../../components/PasswordInput';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -198,9 +199,8 @@ export default function LoginPage() {
                     Забыли пароль?
                   </Link>
                 </div>
-                <input
+                <PasswordInput
                   className="input"
-                  type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   required
@@ -313,9 +313,8 @@ export default function LoginPage() {
 
               <div className="field">
                 <label>Пароль</label>
-                <input
+                <PasswordInput
                   className="input"
-                  type="password"
                   value={pixsetPassword}
                   onChange={(e) => setPixsetPassword(e.target.value)}
                   required

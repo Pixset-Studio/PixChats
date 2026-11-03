@@ -61,17 +61,34 @@ export function deleteMessageForMe(messageId: string, chatId?: string): void {
   } catch {}
 }
 
+// Кэш расшифрованных текстов сообщений (ключ: id + edited_at) и метаданных чатов/участников для экономии CPU и запросов к БД
+const decryptedTextCache = new Map<string, string>();
+const chatMetaCache = new Map<string, { type: string; visibility: string; title: string | null; direct_pair_key: string | null; memberIds: string[]; fetchedAt: number }>();
+const activeChatChannels = new Map<string, any>();
+
 async function mapRowAsync(row: any): Promise<Message> {
-  const decryptedText = row.is_deleted
-    ? ''
-    : await decryptMessageE2EE(row.chat_id, row.ciphertext);
+  const cacheKey = `${row.id}:${row.edited_at || ''}:${row.is_deleted ? '1' : '0'}`;
+  let decryptedText = '';
+  if (!row.is_deleted) {
+    const cached = decryptedTextCache.get(cacheKey);
+    if (cached !== undefined) {
+      decryptedText = cached;
+    } else {
+      decryptedText = await decryptMessageE2EE(row.chat_id, row.ciphertext);
+      if (decryptedTextCache.size > 1500) {
+        const firstKey = decryptedTextCache.keys().next().value;
+        if (firstKey) decryptedTextCache.delete(firstKey);
+      }
+      decryptedTextCache.set(cacheKey, decryptedText);
+    }
+  }
   return {
     id: row.id,
     chat_id: row.chat_id,
     sender_id: row.sender_id,
     text: decryptedText,
     message_type: row.message_type,
-    media_path: row.media_path,
+    media_path: row.media_path ?? null,
     caption: row.caption,
     caption_position: row.caption_position ?? 'below',
     sent_at: row.sent_at,
@@ -81,6 +98,59 @@ async function mapRowAsync(row: any): Promise<Message> {
     forwarded_from_chat_id: row.forwarded_from_chat_id,
     is_e2ee: isEncryptedE2EEPayload(row.ciphertext),
   };
+}
+
+/**
+ * Безопасная отправка Realtime broadcast без дублирования и закрытия уже подписанных каналов.
+ */
+function safeBroadcastOnChannel(chName: string, event: string, payload: any): void {
+  try {
+    // 1. Проверяем глобальный канал NotificationListener в window
+    if (typeof window !== 'undefined' && chName === 'pixchats-messages-global') {
+      const globalCh = (window as any).__pixchatsGlobalMsgChannel;
+      if (globalCh && typeof globalCh.send === 'function') {
+        void globalCh.send({ type: 'broadcast', event, payload });
+        return;
+      }
+    }
+
+    // 2. Проверяем активный канал открытого чата
+    const activeChatCh = activeChatChannels.get(chName);
+    if (activeChatCh && typeof activeChatCh.send === 'function') {
+      void activeChatCh.send({ type: 'broadcast', event, payload });
+      return;
+    }
+
+    const supabase = getSupabaseClient();
+    // 3. Ищем уже открытый канал в supabase.getChannels()
+    const existing =
+      typeof (supabase as any).getChannels === 'function'
+        ? (supabase as any)
+            .getChannels()
+            .find((c: any) => c.topic === `realtime:${chName}` || c.topic === chName)
+        : null;
+
+    if (existing && (existing.state === 'joined' || existing.state === 'joining')) {
+      void existing.send({ type: 'broadcast', event, payload });
+      return;
+    }
+
+    // 4. Временный канал для однократной отправки (например, в личный канал получателя) с автоочисткой
+    const tempChannel = supabase.channel(chName);
+    tempChannel.subscribe((status: string) => {
+      if (status === 'SUBSCRIBED') {
+        void tempChannel
+          .send({ type: 'broadcast', event, payload })
+          .finally(() => {
+            setTimeout(() => {
+              try {
+                supabase.removeChannel(tempChannel);
+              } catch {}
+            }, 600);
+          });
+      }
+    });
+  } catch {}
 }
 
 export interface SendMessageOptions {
@@ -132,25 +202,39 @@ export async function sendMessage(chatId: string, text: string, options: SendMes
     }
   }
 
-  // 0. Автомодерация для публичных чатов, групп и каналов
-  try {
-    const { data: chatRow } = await supabase
-      .from('chats')
-      .select('type, visibility, title')
-      .eq('id', chatId)
-      .maybeSingle();
+  // 0. Кэшированная загрузка метаданных чата и его участников (обновляется раз в 3 минуты)
+  let chatMeta = chatMetaCache.get(chatId);
+  if (!chatMeta || Date.now() - chatMeta.fetchedAt > 180_000) {
+    try {
+      const [{ data: chatRow }, { data: members }] = await Promise.all([
+        supabase.from('chats').select('type, visibility, title, direct_pair_key').eq('id', chatId).maybeSingle(),
+        supabase.from('chat_members').select('user_id').eq('chat_id', chatId),
+      ]);
+      if (chatRow) {
+        chatMeta = {
+          type: chatRow.type,
+          visibility: chatRow.visibility,
+          title: chatRow.title,
+          direct_pair_key: chatRow.direct_pair_key,
+          memberIds: (members ?? []).map((m: any) => m.user_id).filter(Boolean),
+          fetchedAt: Date.now(),
+        };
+        chatMetaCache.set(chatId, chatMeta);
+      }
+    } catch {}
+  }
 
-    if (senderId && chatRow && (chatRow.visibility === 'public' || chatRow.type === 'channel' || chatRow.type === 'group')) {
+  // Автомодерация для публичных чатов, групп и каналов
+  try {
+    if (senderId && chatMeta && (chatMeta.visibility === 'public' || chatMeta.type === 'channel' || chatMeta.type === 'group')) {
       const { checkAutoModerationViolation, notifyAdminsAboutFreeze, muteUserInChat, autoFreezeUserAccount } = await import('./admin');
       const modResult = checkAutoModerationViolation(text);
       if (modResult.violated) {
         if (modResult.severity === 'light') {
-          // Лёгкое нарушение = Мут только в этом чате на 24 часа
           await muteUserInChat({ userId: senderId, chatId, durationHours: 24, reason: modResult.reason });
           throw new Error(`🔇 Вы получили автоматический мут в этом чате на 24 часа. Причина: ${modResult.reason}`);
         } else {
-          // Тяжёлое нарушение = Автозаморозка аккаунта (без ошибки при отсутствии колонки frozen_at)
-          const freezeReason = `Автомодерация в чате "${chatRow.title || 'Публичный'}": ${modResult.reason || 'Запрещённые выражения'}`;
+          const freezeReason = `Автомодерация в чате "${chatMeta.title || 'Публичный'}": ${modResult.reason || 'Запрещённые выражения'}`;
           await autoFreezeUserAccount(senderId, freezeReason);
           await notifyAdminsAboutFreeze(senderId, freezeReason);
           throw new Error(`⚠️ ${modResult.reason || 'Нарушение правил общения'}. Ваш аккаунт автоматически заморожен.`);
@@ -192,73 +276,60 @@ export async function sendMessage(chatId: string, text: string, options: SendMes
     } catch {}
   }
 
-  // Рассылаем мгновенный Realtime broadcast для моментального появления сообщения и надёжного срабатывания уведомлений
+  // Рассылаем мгновенный Realtime broadcast для моментального появления сообщения и 100% срабатывания уведомлений
   try {
-    const { data: senderProfile } = await supabase
-      .from('profiles')
-      .select('id, display_name, username, avatar_url')
-      .eq('id', senderId)
-      .maybeSingle();
-
-    // Находим всех получателей сообщения (по chat_members и direct_pair_key)
-    const recipientIds = new Set<string>();
-    try {
-      const { data: members } = await supabase
-        .from('chat_members')
-        .select('user_id')
-        .eq('chat_id', chatId);
-
-      if (members) {
-        for (const m of members) {
-          if (m.user_id && m.user_id !== senderId) recipientIds.add(m.user_id);
-        }
-      }
-
-      if (recipientIds.size === 0) {
-        const { data: chatRow } = await supabase
-          .from('chats')
-          .select('direct_pair_key')
-          .eq('id', chatId)
-          .maybeSingle();
-        if (chatRow?.direct_pair_key) {
-          const parts = chatRow.direct_pair_key.split(':');
-          for (const p of parts) {
-            if (p && p !== senderId) recipientIds.add(p);
+    const { getCachedCurrentProfile } = await import('./auth');
+    const cachedMe = getCachedCurrentProfile();
+    let senderProfile: any =
+      cachedMe && cachedMe.id === senderId
+        ? {
+            id: cachedMe.id,
+            display_name: cachedMe.display_name,
+            username: cachedMe.username,
+            avatar_url: cachedMe.avatar_url,
           }
+        : null;
+
+    if (!senderProfile && senderId) {
+      const { data: sp } = await supabase
+        .from('profiles')
+        .select('id, display_name, username, avatar_url')
+        .eq('id', senderId)
+        .maybeSingle();
+      senderProfile = sp;
+    }
+
+    const recipientIds = new Set<string>();
+    if (chatMeta) {
+      for (const uid of chatMeta.memberIds) {
+        if (uid && uid !== senderId) recipientIds.add(uid);
+      }
+      if (recipientIds.size === 0 && chatMeta.direct_pair_key) {
+        for (const p of chatMeta.direct_pair_key.split(':')) {
+          if (p && p !== senderId) recipientIds.add(p);
         }
       }
-    } catch {}
+    }
 
+    // Не пересылаем тяжёлый Base64 media_path через WebSocket broadcast (экономит память и исключает превышение лимита кадра WebSocket)
+    const lightRow = { ...insertedRow, media_path: null };
     const broadcastPayload = {
       message: mapped,
-      row: insertedRow,
+      row: lightRow,
       sender: senderProfile,
       chatId,
+      chatType: chatMeta?.type || 'direct',
+      chatTitle: chatMeta?.title || null,
       targetUserIds: Array.from(recipientIds),
     };
 
-    const sendBroadcast = (chName: string) => {
-      try {
-        const ch = supabase.channel(chName);
-        if ((ch as any).state === 'joined') {
-          void ch.send({ type: 'broadcast', event: 'new-message', payload: broadcastPayload });
-          return;
-        }
-        ch.subscribe((st) => {
-          if (st === 'SUBSCRIBED') {
-            void ch.send({ type: 'broadcast', event: 'new-message', payload: broadcastPayload });
-          }
-        });
-      } catch {}
-    };
-
     // 1. В канал конкретного чата
-    sendBroadcast(`messages:${chatId}`);
-    // 2. В глобальный канал сообщений
-    sendBroadcast('pixchats-messages-global');
+    safeBroadcastOnChannel(`messages:${chatId}`, 'new-message', broadcastPayload);
+    // 2. В глобальный канал сообщений (использует уже открытый сокет без переподключения)
+    safeBroadcastOnChannel('pixchats-messages-global', 'new-message', broadcastPayload);
     // 3. Персонально каждому получателю в личный канал уведомлений
     for (const uid of recipientIds) {
-      sendBroadcast(`pixchats-user-notifications:${uid}`);
+      safeBroadcastOnChannel(`pixchats-user-notifications:${uid}`, 'new-message', broadcastPayload);
     }
   } catch {
     // broadcast failure should not block message send
@@ -344,14 +415,10 @@ export async function deleteMessage(messageId: string, chatId?: string): Promise
 
   // Мгновенно рассылаем событие удаления всем открытым клиентам чата
   if (targetChatId) {
-    try {
-      const channel = supabase.channel(`messages:${targetChatId}`);
-      channel.send({
-        type: 'broadcast',
-        event: 'delete-message',
-        payload: { messageId, chatId: targetChatId },
-      });
-    } catch {}
+    safeBroadcastOnChannel(`messages:${targetChatId}`, 'delete-message', {
+      messageId,
+      chatId: targetChatId,
+    });
   }
 
   if (typeof window !== 'undefined') {
@@ -392,7 +459,7 @@ export async function forwardMessage(message: Message, targetChatId: string): Pr
 export async function getLastMessagesForChats(chatIds: string[]): Promise<Record<string, Message>> {
   if (chatIds.length === 0) return {};
   const supabase = getSupabaseClient();
-  const rowLimit = Math.min(180, Math.max(30, chatIds.length * 6));
+  const rowLimit = Math.min(80, Math.max(15, chatIds.length * 3));
   const { data, error } = await supabase
     .from('messages')
     .select(PREVIEW_SELECT_FIELDS)
@@ -511,15 +578,10 @@ export async function toggleMessageReaction(
   current[messageId] = msgReactions;
   saveStoredReactions(chatId, current);
 
-  // Broadcast через Supabase Realtime канал чата
+  // Broadcast через Supabase Realtime канал чата без создания дубликата канала
   try {
     const supabase = getSupabaseClient();
-    const channel = supabase.channel(`messages:${chatId}`);
-    channel.send({
-      type: 'broadcast',
-      event: 'reaction',
-      payload: { messageId, emoji, userId, action },
-    });
+    safeBroadcastOnChannel(`messages:${chatId}`, 'reaction', { messageId, emoji, userId, action });
 
     if (action === 'add') {
       supabase.from('message_reactions').insert({ message_id: messageId, emoji, user_id: userId }).then(() => {});
@@ -541,8 +603,17 @@ export function subscribeToMessages(
   onReaction?: (reaction: ReactionPayload) => void
 ): () => void {
   const supabase = getSupabaseClient();
+  const topicName = `messages:${chatId}`;
+  const prevCh = activeChatChannels.get(topicName);
+  if (prevCh) {
+    try {
+      supabase.removeChannel(prevCh);
+    } catch {}
+    activeChatChannels.delete(topicName);
+  }
+
   const channel = supabase
-    .channel(`messages:${chatId}`)
+    .channel(topicName)
     .on(
       'postgres_changes',
       { event: 'INSERT', schema: 'public', table: 'messages', filter: `chat_id=eq.${chatId}` },
@@ -589,7 +660,12 @@ export function subscribeToMessages(
     })
     .subscribe();
 
+  activeChatChannels.set(topicName, channel);
+
   return () => {
+    if (activeChatChannels.get(topicName) === channel) {
+      activeChatChannels.delete(topicName);
+    }
     supabase.removeChannel(channel);
   };
 }

@@ -111,30 +111,69 @@ export async function createDirectChat(otherUserId: string): Promise<Chat> {
   return chat as Chat;
 }
 
-/** Для списка direct-чатов: профиль собеседника по каждому chat_id (не свой). */
+// Лёгкий список колонок профиля без тяжёлого массива одноразовых криптоключей public_one_time_prekeys
+const LIGHT_PROFILE_FIELDS =
+  'id, username, display_name, bio, avatar_url, role, is_verified, is_pixset_staff, custom_badge_text, custom_role_id, banned_until, ban_reason, frozen, frozen_reason, moderator_comment, privacy_who_can_message, privacy_show_last_seen, privacy_who_can_add_to_groups, last_seen, theme, created_at';
+
+const profileByIdCache = new Map<string, { profile: Profile; fetchedAt: number }>();
+const directPartnerIdByChatCache = new Map<string, string>();
+
+/** Для списка direct-чатов: профиль собеседника по каждому chat_id (не свой) с кэшированием в памяти. */
 export async function getDirectChatPartners(chatIds: string[], myUserId: string): Promise<Record<string, Profile>> {
   if (chatIds.length === 0) return {};
   const supabase = getSupabaseClient();
+  const now = Date.now();
 
-  const { data: memberRows, error: memberError } = await supabase
-    .from('chat_members')
-    .select('chat_id, user_id')
-    .in('chat_id', chatIds)
-    .neq('user_id', myUserId);
-  if (memberError) throw memberError;
+  const missingMemberChatIds = chatIds.filter((cid) => !directPartnerIdByChatCache.has(`${myUserId}:${cid}`));
+  if (missingMemberChatIds.length > 0) {
+    const { data: memberRows, error: memberError } = await supabase
+      .from('chat_members')
+      .select('chat_id, user_id')
+      .in('chat_id', missingMemberChatIds)
+      .neq('user_id', myUserId);
+    if (memberError) throw memberError;
+    for (const row of memberRows ?? []) {
+      directPartnerIdByChatCache.set(`${myUserId}:${row.chat_id}`, row.user_id);
+    }
+  }
 
-  const partnerIds = Array.from(new Set((memberRows ?? []).map((r) => r.user_id)));
+  const partnerIdByChat: Record<string, string> = {};
+  const partnerIdsSet = new Set<string>();
+  for (const cid of chatIds) {
+    const pid = directPartnerIdByChatCache.get(`${myUserId}:${cid}`);
+    if (pid) {
+      partnerIdByChat[cid] = pid;
+      partnerIdsSet.add(pid);
+    }
+  }
+
+  const partnerIds = Array.from(partnerIdsSet);
   if (partnerIds.length === 0) return {};
 
-  const { data: profiles, error: profileError } = await supabase.from('profiles').select('*').in('id', partnerIds);
-  if (profileError) throw profileError;
+  const missingProfileIds = partnerIds.filter((pid) => {
+    const cached = profileByIdCache.get(pid);
+    return !cached || now - cached.fetchedAt > 180_000;
+  });
 
-  const profileById: Record<string, Profile> = {};
-  for (const p of profiles ?? []) profileById[p.id] = p as Profile;
+  if (missingProfileIds.length > 0) {
+    let { data: profiles, error: profileError } = await supabase
+      .from('profiles')
+      .select(LIGHT_PROFILE_FIELDS)
+      .in('id', missingProfileIds);
+    if (profileError) {
+      const fallback = await supabase.from('profiles').select('*').in('id', missingProfileIds);
+      profiles = fallback.data as any;
+    }
+    for (const p of (profiles ?? []) as any[]) {
+      profileByIdCache.set(p.id, { profile: p as Profile, fetchedAt: now });
+    }
+  }
 
   const result: Record<string, Profile> = {};
-  for (const row of memberRows ?? []) {
-    if (profileById[row.user_id]) result[row.chat_id] = profileById[row.user_id];
+  for (const cid of chatIds) {
+    const pid = partnerIdByChat[cid];
+    const cached = pid ? profileByIdCache.get(pid) : undefined;
+    if (cached) result[cid] = cached.profile;
   }
   return result;
 }
@@ -283,9 +322,25 @@ export async function getChatMembers(chatId: string): Promise<Profile[]> {
   if (error) throw error;
   const ids = (memberRows ?? []).map((r) => r.user_id);
   if (ids.length === 0) return [];
-  const { data: profiles, error: profileError } = await supabase.from('profiles').select('*').in('id', ids);
-  if (profileError) throw profileError;
-  return (profiles ?? []) as Profile[];
+  const now = Date.now();
+  const missingIds = ids.filter((id) => {
+    const cached = profileByIdCache.get(id);
+    return !cached || now - cached.fetchedAt > 120_000;
+  });
+  if (missingIds.length > 0) {
+    let { data: profiles, error: profileError } = await supabase
+      .from('profiles')
+      .select(LIGHT_PROFILE_FIELDS)
+      .in('id', missingIds);
+    if (profileError) {
+      const fallback = await supabase.from('profiles').select('*').in('id', missingIds);
+      profiles = fallback.data as any;
+    }
+    for (const p of (profiles ?? []) as any[]) {
+      profileByIdCache.set(p.id, { profile: p as Profile, fetchedAt: now });
+    }
+  }
+  return ids.map((id) => profileByIdCache.get(id)?.profile).filter(Boolean) as Profile[];
 }
 
 /** Найти id уже существующего личного чата с пользователем, не создавая новый. */

@@ -16,6 +16,7 @@ import {
 } from '@pixchats/core';
 import { DesktopShell } from '../../components/DesktopShell';
 import { BottomNav } from '../../components/BottomNav';
+import { PasswordInput } from '../../components/PasswordInput';
 import { isBanned } from '../../lib/ban';
 
 const QUICK_DEV_PROMPTS = [
@@ -694,8 +695,7 @@ export default function DeveloperAiAssistantPage() {
 
             <div className="field" style={{ marginBottom: 14 }}>
               <label style={{ fontWeight: 700, fontSize: 12.5 }}>Gemini API ключ (AIzaSy...)</label>
-              <input
-                type="password"
+              <PasswordInput
                 className="input"
                 placeholder="Вставьте ваш Gemini API Key…"
                 value={apiKey}

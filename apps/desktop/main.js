@@ -363,6 +363,35 @@ function registerNativeIpcHandlers() {
     return Boolean(enabled);
   });
 
+  ipcMain.handle('pixchats:minimize-window', () => {
+    try {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        if (!mainWindow.isVisible()) {
+          mainWindow.showInactive();
+        }
+        mainWindow.minimize();
+        return true;
+      }
+    } catch {}
+    return false;
+  });
+
+  ipcMain.handle('pixchats:restore-window', () => {
+    try {
+      showAndFocusMainWindow();
+      return true;
+    } catch {}
+    return false;
+  });
+
+  ipcMain.handle('pixchats:is-minimized', () => {
+    try {
+      return Boolean(mainWindow && !mainWindow.isDestroyed() && (mainWindow.isMinimized() || !mainWindow.isVisible()));
+    } catch {
+      return false;
+    }
+  });
+
   // 4. Автоматическое подтверждение разрешения на уведомления
   ipcMain.handle('pixchats:request-permission', () => {
     return 'granted';
@@ -492,12 +521,16 @@ function createSystemTray() {
 
 function createWindow(startHidden = false) {
   const iconPath = resolveAppIcon();
+  const cfg = readDesktopConfig();
+  const shouldLaunchMinimized = !startHidden && cfg.launchMinimized !== false;
+
+  // Создаём окно с show: false, чтобы при включённом «Запускать свёрнутым» окно НЕ всплывало на весь экран
   mainWindow = new BrowserWindow({
     width: 1240,
     height: 820,
     minWidth: 420,
     minHeight: 540,
-    show: !startHidden,
+    show: false,
     title: 'PixChats',
     ...(iconPath ? { icon: iconPath } : {}),
     autoHideMenuBar: true,
@@ -510,19 +543,38 @@ function createWindow(startHidden = false) {
     },
   });
 
-  mainWindow.loadURL(`http://127.0.0.1:${PORT}/`);
+  let initialShowHandled = false;
 
-  const cfg = readDesktopConfig();
-  if (!startHidden && cfg.launchMinimized !== false) {
-    mainWindow.once('ready-to-show', () => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
+  const applyInitialWindowState = () => {
+    if (initialShowHandled || !mainWindow || mainWindow.isDestroyed()) return;
+    initialShowHandled = true;
+    const latestCfg = readDesktopConfig();
+    const minNow = !startHidden && latestCfg.launchMinimized !== false;
+
+    if (startHidden) {
+      // Автозапуск при старте Windows (--autostart-background) — оставляем полностью скрытым в системном трее
+      mainWindow.hide();
+    } else if (minNow || shouldLaunchMinimized) {
+      // Запуск в свёрнутом виде на ПК: помещаем иконку на панель задач без перехвата фокуса и сразу сворачиваем
+      try {
+        mainWindow.showInactive();
         mainWindow.minimize();
-      }
-    });
-    try {
-      mainWindow.minimize();
-    } catch {}
-  }
+        setTimeout(() => {
+          if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isMinimized()) {
+            mainWindow.minimize();
+          }
+        }, 90);
+      } catch {}
+    } else {
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  };
+
+  mainWindow.once('ready-to-show', applyInitialWindowState);
+  mainWindow.webContents.once('did-finish-load', applyInitialWindowState);
+
+  mainWindow.loadURL(`http://127.0.0.1:${PORT}/`);
 
   mainWindow.on('focus', () => {
     if (mainWindow) mainWindow.flashFrame(false);

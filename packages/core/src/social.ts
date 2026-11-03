@@ -82,10 +82,19 @@ export async function getOutgoingRequests(userId: string): Promise<FriendWithPro
   return (data ?? []).map((row: any) => ({ ...row, friend_profile: row.addressee }));
 }
 
+let blockedByMeCache: {
+  myId: string;
+  fetchedAt: number;
+  blockedSet: Set<string>;
+} | null = null;
+
 export async function blockUser(blockerId: string, blockedId: string): Promise<void> {
   const supabase = getSupabaseClient();
   const { error } = await supabase.from('blocked_users').insert({ blocker_id: blockerId, blocked_id: blockedId });
   if (error) throw error;
+  if (blockedByMeCache && blockedByMeCache.myId === blockerId) {
+    blockedByMeCache.blockedSet.add(blockedId);
+  }
 }
 
 export async function unblockUser(blockerId: string, blockedId: string): Promise<void> {
@@ -96,17 +105,29 @@ export async function unblockUser(blockerId: string, blockedId: string): Promise
     .eq('blocker_id', blockerId)
     .eq('blocked_id', blockedId);
   if (error) throw error;
+  if (blockedByMeCache && blockedByMeCache.myId === blockerId) {
+    blockedByMeCache.blockedSet.delete(blockedId);
+  }
 }
 
 export async function isUserBlockedByMe(myId: string, otherId: string): Promise<boolean> {
+  if (!myId || !otherId) return false;
+  const now = Date.now();
+  if (blockedByMeCache && blockedByMeCache.myId === myId && now - blockedByMeCache.fetchedAt < 180_000) {
+    return blockedByMeCache.blockedSet.has(otherId);
+  }
   const supabase = getSupabaseClient();
   const { data } = await supabase
     .from('blocked_users')
-    .select('blocker_id')
-    .eq('blocker_id', myId)
-    .eq('blocked_id', otherId)
-    .maybeSingle();
-  return !!data;
+    .select('blocked_id')
+    .eq('blocker_id', myId);
+  const set = new Set<string>((data ?? []).map((r: any) => String(r.blocked_id)));
+  blockedByMeCache = {
+    myId,
+    fetchedAt: now,
+    blockedSet: set,
+  };
+  return set.has(otherId);
 }
 
 export async function areFriends(userA: string, userB: string): Promise<boolean> {

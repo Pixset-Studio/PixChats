@@ -9,6 +9,7 @@ import {
   verifyRecoveryCodeAndSetNewPassword,
   updateUserPassword,
 } from '@pixchats/core';
+import { PasswordInput } from '../../../components/PasswordInput';
 
 export default function ResetPasswordPage() {
   const router = useRouter();
@@ -235,9 +236,8 @@ export default function ResetPasswordPage() {
 
               <div className="field">
                 <label>Новый пароль</label>
-                <input
+                <PasswordInput
                   className="input"
-                  type="password"
                   placeholder="Минимум 6 символов"
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
@@ -247,9 +247,8 @@ export default function ResetPasswordPage() {
 
               <div className="field">
                 <label>Повторите новый пароль</label>
-                <input
+                <PasswordInput
                   className="input"
-                  type="password"
                   placeholder="Повторите новый пароль"
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}

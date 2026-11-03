@@ -7,10 +7,12 @@ import {
   verifyAndUnlockSession,
   lockSessionNow,
 } from '../lib/appLock';
+import { PasswordInput } from './PasswordInput';
 
 export function AppLockGuard() {
   const [locked, setLocked] = useState(false);
   const [pinInput, setPinInput] = useState('');
+  const [showPinDigits, setShowPinDigits] = useState(false);
   const [errorShake, setErrorShake] = useState(false);
 
   useEffect(() => {
@@ -147,10 +149,34 @@ export function AppLockGuard() {
           Введите ваш PIN-код для доступа к чатам
         </p>
 
-        {/* Точки введённого PIN */}
-        <div style={{ display: 'flex', justifyContent: 'center', gap: 12, marginBottom: 20 }}>
+        {/* Точки (или цифры при нажатом глазике) введённого PIN */}
+        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 12, marginBottom: 20 }}>
           {Array.from({ length: targetLen }).map((_, idx) => {
             const filled = idx < pinInput.length;
+            const char = pinInput[idx] || '';
+            if (showPinDigits && filled) {
+              return (
+                <span
+                  key={idx}
+                  style={{
+                    minWidth: 22,
+                    height: 24,
+                    borderRadius: 6,
+                    padding: '0 4px',
+                    background: 'rgba(255, 212, 0, 0.14)',
+                    border: `1.5px solid ${errorShake ? 'var(--danger)' : 'var(--accent)'}`,
+                    color: errorShake ? 'var(--danger)' : 'var(--accent)',
+                    fontSize: 13,
+                    fontWeight: 800,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  {char}
+                </span>
+              );
+            }
             return (
               <span
                 key={idx}
@@ -170,10 +196,10 @@ export function AppLockGuard() {
         </div>
 
         <form onSubmit={handleSubmitForm} style={{ marginBottom: 14 }}>
-          <input
-            type="password"
+          <PasswordInput
             className="input"
             value={pinInput}
+            onVisibilityChange={setShowPinDigits}
             onChange={(e) => {
               const val = e.target.value;
               setPinInput(val);
