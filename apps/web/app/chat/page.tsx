@@ -117,6 +117,10 @@ import {
   SketchPadModal,
   encodeLocationMessage,
   LocationPickerModal,
+  TableCreatorModal,
+  AlbumCreatorModal,
+  PhotoEditorModal,
+  ScheduledMessagesModal,
 } from '../../components/ChatInteractiveTools';
 import {
   getPreferredAudioConstraints,
@@ -125,12 +129,19 @@ import {
 import { isMobilePhoneDevice } from '../../lib/nativePlatform';
 import { ReportMessageModal } from '../../components/ReportMessageModal';
 import { PasswordInput } from '../../components/PasswordInput';
-
-interface ScheduledMessageItem {
-  id: string;
-  text: string;
-  sendAt: number; // timestamp ms
-}
+import {
+  getUserPremiumStatus,
+  getChatDraft,
+  saveChatDraft,
+  getGroupExtraConfig,
+  saveGroupExtraConfig,
+  applyChannelWatermarkToDataUrl,
+  getScheduledMessages,
+  addScheduledMessage,
+  removeScheduledMessage as removeStoredScheduledMessage,
+  type GroupExtraConfig,
+  type ScheduledMessageItem,
+} from '../../lib/premiumAndFeatures';
 
 function formatMessageTime(iso: string): string {
   return new Date(iso).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
@@ -287,11 +298,31 @@ function ChatWindowInner() {
   // Пункт 5: Панель быстрого форматирования текста (Markdown + Спойлер)
   const [showFormatToolbar, setShowFormatToolbar] = useState(false);
 
-  // Пункт 4: Модальное окно создания опроса (Polls)
+  // Пункт 4: Модальное окно создания опроса и викторины (Polls & Quizzes)
   const [showPollModal, setShowPollModal] = useState(false);
   const [pollQuestion, setPollQuestion] = useState('');
   const [pollOptions, setPollOptions] = useState<string[]>(['', '']);
   const [pollMulti, setPollMulti] = useState(false);
+  const [pollIsQuiz, setPollIsQuiz] = useState(false);
+  const [pollCorrectIndex, setPollCorrectIndex] = useState(0);
+  const [pollExplanation, setPollExplanation] = useState('');
+  const [pollCloseMinutes, setPollCloseMinutes] = useState(0);
+
+  // Зум и увеличение окна видеокружка
+  const [videoNoteZoom, setVideoNoteZoom] = useState(1);
+  const [videoNoteEnlarged, setVideoNoteEnlarged] = useState(false);
+
+  // Расширенные настройки группы/канала, несколько закрепов, тихие сообщения, таблицы, альбомы, фоторедактор
+  const [groupExtraCfg, setGroupExtraCfg] = useState<GroupExtraConfig>(() => getGroupExtraConfig(chatId));
+  const [pinnedCycleIndex, setPinnedCycleIndex] = useState(0);
+  const [savedHashtagFilter, setSavedHashtagFilter] = useState<string>('all');
+  const [lastSentByMeAt, setLastSentByMeAt] = useState<number>(0);
+  const [sendSilentMode, setSendSilentMode] = useState(false);
+  const [showTableModal, setShowTableModal] = useState(false);
+  const [showAlbumModal, setShowAlbumModal] = useState(false);
+  const [photoEditorDataUrl, setPhotoEditorDataUrl] = useState<string | null>(null);
+  const [showScheduledModal, setShowScheduledModal] = useState(false);
+  const [fullscreenEmojiBurst, setFullscreenEmojiBurst] = useState<string | null>(null);
 
   // Поиск по сообщениям и Меню «Три точки» ⋮
   const [showChatSearch, setShowChatSearch] = useState(false);
@@ -644,22 +675,65 @@ function ChatWindowInner() {
     } catch {}
   }
 
-  // Загрузка и проверка очереди отложенных сообщений для этого чата (Пункт 9)
+  // Загрузка черновика, расширенных настроек группы/канала и очереди отложенных сообщений для этого чата
   useEffect(() => {
     if (!chatId) return;
-    const storageKey = `pixchats:scheduled_msgs:${chatId}`;
-    try {
-      const raw = localStorage.getItem(storageKey);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) setScheduledMessages(parsed);
-      } else {
-        setScheduledMessages([]);
-      }
-    } catch {
-      setScheduledMessages([]);
-    }
+    setDraft(getChatDraft(chatId));
+    setGroupExtraCfg(getGroupExtraConfig(chatId));
+    setPinnedCycleIndex(0);
+    setSavedHashtagFilter('all');
+
+    const syncScheduled = () => {
+      const globalList = getScheduledMessages(chatId);
+      const storageKey = `pixchats:scheduled_msgs:${chatId}`;
+      let legacyList: ScheduledMessageItem[] = [];
+      try {
+        const raw = localStorage.getItem(storageKey);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) {
+            legacyList = parsed.map((x: any) => ({ ...x, chatId }));
+          }
+        }
+      } catch {}
+      const mergedMap = new Map<string, ScheduledMessageItem>();
+      [...globalList, ...legacyList].forEach((it) => mergedMap.set(it.id, it));
+      setScheduledMessages(
+        Array.from(mergedMap.values()).sort((a, b) => a.sendAt - b.sendAt)
+      );
+    };
+    syncScheduled();
+    const onSchedChanged = () => syncScheduled();
+    const onGroupCfgChanged = () => setGroupExtraCfg(getGroupExtraConfig(chatId));
+    window.addEventListener('pixchats:scheduled_changed', onSchedChanged);
+    window.addEventListener('pixchats:group_extra_changed', onGroupCfgChanged);
+    return () => {
+      window.removeEventListener('pixchats:scheduled_changed', onSchedChanged);
+      window.removeEventListener('pixchats:group_extra_changed', onGroupCfgChanged);
+    };
   }, [chatId]);
+
+  // Перемотка голосовых и видеосообщений по клику на таймкод 01:25 (Звонки #15)
+  useEffect(() => {
+    const onSeekTimecode = (e: Event) => {
+      const detail = (e as CustomEvent<{ seconds: number; messageId?: string }>).detail;
+      if (!detail || typeof detail.seconds !== 'number') return;
+      if (detail.messageId && audioRefs.current[detail.messageId]) {
+        const el = audioRefs.current[detail.messageId]!;
+        el.currentTime = detail.seconds;
+        void el.play().catch(() => {});
+        return;
+      }
+      const allAudios = Object.values(audioRefs.current).filter(Boolean) as HTMLAudioElement[];
+      const playingAudio = allAudios.find((a) => !a.paused) || allAudios[allAudios.length - 1];
+      if (playingAudio) {
+        playingAudio.currentTime = detail.seconds;
+        void playingAudio.play().catch(() => {});
+      }
+    };
+    window.addEventListener('pixchats:seek_media_timecode', onSeekTimecode);
+    return () => window.removeEventListener('pixchats:seek_media_timecode', onSeekTimecode);
+  }, []);
 
   useEffect(() => {
     if (!chatId || scheduledMessages.length === 0) return;
@@ -673,10 +747,14 @@ function ChatWindowInner() {
       const remaining = scheduledMessages.filter((item) => item.sendAt > now);
       setScheduledMessages(remaining);
       localStorage.setItem(storageKey, JSON.stringify(remaining));
+      due.forEach((d) => removeStoredScheduledMessage(d.id));
 
       for (const item of due) {
         try {
-          await sendMessage(chatId, item.text);
+          const textPayload = item.silent && !item.text.startsWith('__SILENT__:')
+            ? `__SILENT__:${item.text}`
+            : item.text;
+          await sendMessage(chatId, textPayload);
         } catch {}
       }
     }, 1000);
@@ -690,19 +768,22 @@ function ChatWindowInner() {
       channelGroupCfg.structureMode === 'topics' && activeTopicId !== 'all'
         ? encodeTopicPrefix(activeTopicId, draft.trim())
         : draft.trim();
-    const textToSend = ttlSeconds > 0 ? encodeSelfDestructPrefix(ttlSeconds, baseText) : baseText;
-    const item: ScheduledMessageItem = {
-      id: `sched-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    const withTtl = ttlSeconds > 0 ? encodeSelfDestructPrefix(ttlSeconds, baseText) : baseText;
+    const textToSend = sendSilentMode ? `__SILENT__:${withTtl}` : withTtl;
+    const created = addScheduledMessage({
+      chatId,
       text: textToSend,
       sendAt: Date.now() + delayMs,
-    };
-    const next = [...scheduledMessages, item].sort((a, b) => a.sendAt - b.sendAt);
+      silent: sendSilentMode,
+    });
+    const next = [...scheduledMessages, created].sort((a, b) => a.sendAt - b.sendAt);
     setScheduledMessages(next);
     localStorage.setItem(`pixchats:scheduled_msgs:${chatId}`, JSON.stringify(next));
     setDraft('');
+    saveChatDraft(chatId, '');
     setShowTimerPopover(false);
     setNotice(
-      `⏰ Сообщение запланировано на ${new Date(item.sendAt).toLocaleTimeString('ru-RU', {
+      `⏰ Сообщение запланировано на ${new Date(created.sendAt).toLocaleTimeString('ru-RU', {
         hour: '2-digit',
         minute: '2-digit',
       })}`
@@ -711,6 +792,7 @@ function ChatWindowInner() {
   }
 
   function removeScheduledMessage(id: string) {
+    removeStoredScheduledMessage(id);
     const next = scheduledMessages.filter((x) => x.id !== id);
     setScheduledMessages(next);
     localStorage.setItem(`pixchats:scheduled_msgs:${chatId}`, JSON.stringify(next));
@@ -723,6 +805,9 @@ function ChatWindowInner() {
 
   function handleDraftChange(text: string) {
     setDraft(text);
+    if (chatId) {
+      saveChatDraft(chatId, text);
+    }
     if (text.trim()) {
       broadcastLiveActivity('typing');
     }
@@ -734,13 +819,12 @@ function ChatWindowInner() {
     if (!chatId) return;
     try {
       if (stickerId) {
-        // Вместо записи 30 КБ base64 в каждую строку messages, сохраняем только тег [STICKER:id] (~35 байт!)
         const stickerTag = encodeStickerTag(stickerId, caption || 'Стикер');
         const payload =
           channelGroupCfg.structureMode === 'topics' && activeTopicId !== 'all'
             ? encodeTopicPrefix(activeTopicId, stickerTag)
             : stickerTag;
-        await sendMessage(chatId, payload, { messageType: 'text' });
+        await sendMessage(chatId, sendSilentMode ? `__SILENT__:${payload}` : payload, { messageType: 'text' });
       } else {
         await sendMessage(chatId, caption || 'GIF', {
           messageType: 'image',
@@ -765,18 +849,26 @@ function ChatWindowInner() {
     const encoded = encodePollMessage({
       question: q,
       options: opts,
-      multi: pollMulti,
+      multi: pollIsQuiz ? false : pollMulti,
+      isQuiz: pollIsQuiz,
+      correctIndex: pollIsQuiz ? Math.min(pollCorrectIndex, opts.length - 1) : undefined,
+      explanation: pollIsQuiz && pollExplanation.trim() ? pollExplanation.trim() : undefined,
+      closesAt: pollCloseMinutes > 0 ? Date.now() + pollCloseMinutes * 60 * 1000 : null,
     });
     const withTopic =
       channelGroupCfg.structureMode === 'topics' && activeTopicId !== 'all'
         ? encodeTopicPrefix(activeTopicId, encoded)
         : encoded;
     const finalPayload = ttlSeconds > 0 ? encodeSelfDestructPrefix(ttlSeconds, withTopic) : withTopic;
-    await sendMessage(chatId, finalPayload);
+    await sendMessage(chatId, sendSilentMode ? `__SILENT__:${finalPayload}` : finalPayload);
     setShowPollModal(false);
     setPollQuestion('');
     setPollOptions(['', '']);
     setPollMulti(false);
+    setPollIsQuiz(false);
+    setPollCorrectIndex(0);
+    setPollExplanation('');
+    setPollCloseMinutes(0);
   }
 
   async function startRecording() {
@@ -1683,11 +1775,12 @@ function ChatWindowInner() {
     const isSpecial =
       emoji.startsWith('📊') || emoji.startsWith('☑️') || emoji.startsWith('💬:');
     const isDev = me.role === 'developer';
+    const isPremium = getUserPremiumStatus(me.id, me.username).active || isDev;
+    const maxReactionsAllowed = isPremium ? 3 : 1;
 
-    // Check 3-reaction limit per message for non-developers before adding a new emoji reaction
     const msgReactionMap = reactions[messageId] ?? {};
     const alreadyReactedWithThis = Boolean(msgReactionMap[emoji]?.includes(me.id));
-    if (!alreadyReactedWithThis && !isSpecial && !isDev) {
+    if (!alreadyReactedWithThis && !isSpecial) {
       let myEmojiCount = 0;
       for (const [kEmoji, uList] of Object.entries(msgReactionMap)) {
         if (
@@ -1700,9 +1793,13 @@ function ChatWindowInner() {
           myEmojiCount++;
         }
       }
-      if (myEmojiCount >= 3) {
-        setNotice('Можно поставить максимум 3 реакции на одно сообщение (безлимит для разработчика)');
-        setTimeout(() => setNotice(null), 3000);
+      if (myEmojiCount >= maxReactionsAllowed) {
+        setNotice(
+          isPremium
+            ? '★ В PixChats Premium можно поставить максимум 3 реакции на одно сообщение'
+            : 'Без подписки PixChats Premium можно поставить только 1 реакцию на сообщение (с ★ Premium — до 3 реакций)'
+        );
+        setTimeout(() => setNotice(null), 3200);
         return;
       }
     }
@@ -1712,7 +1809,7 @@ function ChatWindowInner() {
       setParticleEmoji(emoji.replace(/📊\d+/, '👍').replace(/☑️\d+/, '✅'));
     }
     try {
-      const payload = await toggleMessageReaction(chatId, messageId, emoji, me.id, isDev);
+      const payload = await toggleMessageReaction(chatId, messageId, emoji, me.id, isPremium);
       setReactions((prev) => {
         const msgReactions = { ...(prev[payload.messageId] ?? {}) };
         const currentUsers = msgReactions[payload.emoji] ?? [];
@@ -1736,15 +1833,27 @@ function ChatWindowInner() {
     }
   }
 
-  // Фильтрация удалённых сообщений (без заглушек «Сообщение удалено») и фильтрация по выбранной теме (Топику)
+  // Фильтрация удалённых сообщений, автоудаление по расписанию (Сообщения #12), фильтр #тегов в Избранном (Продуктивность #9) и фильтр по Топикам
   const visibleMessages = useMemo(() => {
-    const nonDeleted = messages.filter(
-      (m) => !m.is_deleted && m.text !== 'Сообщение удалено' && !isMessageDeletedForMe(m.id)
+    const cutoffMs =
+      groupExtraCfg.autoDeleteHours > 0
+        ? Date.now() - groupExtraCfg.autoDeleteHours * 3600 * 1000
+        : 0;
+    let list = messages.filter(
+      (m) =>
+        !m.is_deleted &&
+        m.text !== 'Сообщение удалено' &&
+        !isMessageDeletedForMe(m.id) &&
+        (cutoffMs === 0 || new Date(m.sent_at).getTime() >= cutoffMs)
     );
-    if (channelGroupCfg.structureMode !== 'topics' || activeTopicId === 'all') {
-      return nonDeleted;
+    if (savedHashtagFilter !== 'all') {
+      const tagLower = savedHashtagFilter.toLowerCase();
+      list = list.filter((m) => (m.text || '').toLowerCase().includes(tagLower));
     }
-    return nonDeleted.filter((m) => {
+    if (channelGroupCfg.structureMode !== 'topics' || activeTopicId === 'all') {
+      return list;
+    }
+    return list.filter((m) => {
       const { cleanText } = extractSelfDestructInfo(m.text || '');
       const { topicId } = extractTopicFromText(cleanText);
       if (!topicId) {
@@ -1752,7 +1861,21 @@ function ChatWindowInner() {
       }
       return topicId === activeTopicId;
     });
-  }, [messages, channelGroupCfg, activeTopicId]);
+  }, [messages, channelGroupCfg, activeTopicId, groupExtraCfg.autoDeleteHours, savedHashtagFilter]);
+
+  // Все закреплённые сообщения чата (поддержка нескольких закрепов — Сообщения #5)
+  const allPinnedMessages = useMemo(() => {
+    const idSet = new Set<string>();
+    if (pinnedMessage?.id) idSet.add(pinnedMessage.id);
+    (groupExtraCfg.pinnedMessageIds || []).forEach((id) => idSet.add(id));
+    const found: Message[] = [];
+    idSet.forEach((id) => {
+      const msg = messages.find((m) => m.id === id && !m.is_deleted);
+      if (msg) found.push(msg);
+      else if (pinnedMessage && pinnedMessage.id === id) found.push(pinnedMessage);
+    });
+    return found;
+  }, [pinnedMessage, groupExtraCfg.pinnedMessageIds, messages]);
 
   // Поиск внутри чата (Пункт 6)
   const searchMatchedMessageIds = useMemo(() => {
@@ -1799,7 +1922,6 @@ function ChatWindowInner() {
     }
 
     if (initialScrolledChatIdRef.current !== chatId) {
-      // Мгновенная установка позиции в самый низ без какой-либо анимации пролистывания чата
       if (highlightMsgId) {
         const el = messageRefs.current[highlightMsgId];
         if (el) {
@@ -1815,7 +1937,6 @@ function ChatWindowInner() {
       return;
     }
 
-    // Новые сообщения в уже открытом чате — мгновенный переход вниз без прокрутки через всю историю
     if (highlightMsgId) {
       scrollToMessageById(highlightMsgId);
     } else {
@@ -1832,6 +1953,23 @@ function ChatWindowInner() {
     }
 
     if (!draft.trim()) return;
+
+    // Проверка Анти-флуда (Slow Mode) в группах для обычных участников (Группы #6)
+    if (
+      chat?.type === 'group' &&
+      !canModerate &&
+      groupExtraCfg.slowModeSeconds > 0 &&
+      lastSentByMeAt > 0
+    ) {
+      const elapsedSec = Math.floor((Date.now() - lastSentByMeAt) / 1000);
+      if (elapsedSec < groupExtraCfg.slowModeSeconds) {
+        const rem = groupExtraCfg.slowModeSeconds - elapsedSec;
+        setNotice(`🐢 Медленный режим в группе: подождите ещё ${rem} сек. перед следующим сообщением`);
+        setTimeout(() => setNotice(null), 2600);
+        return;
+      }
+    }
+
     const rawDraft = draft.trim();
 
     if (editingMessage) {
@@ -1841,6 +1979,7 @@ function ChatWindowInner() {
       );
       setEditingMessage(null);
       setDraft('');
+      saveChatDraft(chatId, '');
       return;
     }
 
@@ -1848,8 +1987,11 @@ function ChatWindowInner() {
       channelGroupCfg.structureMode === 'topics' && activeTopicId !== 'all'
         ? encodeTopicPrefix(activeTopicId, rawDraft)
         : rawDraft;
-    const finalText = ttlSeconds > 0 ? encodeSelfDestructPrefix(ttlSeconds, withTopic) : withTopic;
+    const withTtl = ttlSeconds > 0 ? encodeSelfDestructPrefix(ttlSeconds, withTopic) : withTopic;
+    const finalText = sendSilentMode ? `__SILENT__:${withTtl}` : withTtl;
     setDraft('');
+    saveChatDraft(chatId, '');
+    setLastSentByMeAt(Date.now());
     await sendMessage(chatId, finalText, { replyToId: replyingTo?.id });
     setReplyingTo(null);
   }
@@ -1857,12 +1999,32 @@ function ChatWindowInner() {
   async function handlePin(message: Message) {
     await pinMessage(chatId, message.id);
     setPinnedMessage(message);
+    const nextPinnedIds = Array.from(
+      new Set([...(groupExtraCfg.pinnedMessageIds || []), message.id])
+    );
+    const nextCfg = saveGroupExtraConfig(chatId, { pinnedMessageIds: nextPinnedIds });
+    setGroupExtraCfg(nextCfg);
+    setPinnedCycleIndex(nextPinnedIds.length - 1);
     setOpenMenuId(null);
   }
 
-  async function handleUnpin() {
-    await unpinMessage(chatId);
-    setPinnedMessage(null);
+  async function handleUnpin(targetId?: string) {
+    const idToRemove = targetId || allPinnedMessages[pinnedCycleIndex]?.id || pinnedMessage?.id;
+    const remainingIds = (groupExtraCfg.pinnedMessageIds || []).filter((id) => id !== idToRemove);
+    const nextCfg = saveGroupExtraConfig(chatId, { pinnedMessageIds: remainingIds });
+    setGroupExtraCfg(nextCfg);
+    if (remainingIds.length === 0) {
+      await unpinMessage(chatId);
+      setPinnedMessage(null);
+      setPinnedCycleIndex(0);
+    } else {
+      const nextPrimary = messages.find((m) => m.id === remainingIds[0]) || null;
+      if (nextPrimary) {
+        await pinMessage(chatId, nextPrimary.id);
+        setPinnedMessage(nextPrimary);
+      }
+      setPinnedCycleIndex(0);
+    }
     setOpenMenuId(null);
   }
 
@@ -2521,27 +2683,76 @@ function ChatWindowInner() {
         </div>
       )}
 
-      {pinnedMessage && (
+      {/* Продуктивность #9: Папка заметок и фильтр по #тегам в «Избранном» */}
+      {isSavedChat && (
         <div
-          className="pinned-bar"
-          style={{ cursor: 'pointer' }}
-          onClick={() => scrollToMessageById(pinnedMessage.id)}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '7px 14px',
+            background: 'var(--surface)',
+            borderBottom: '1px solid var(--border)',
+            overflowX: 'auto',
+          }}
         >
-          <span>📌 {extractTopicFromText(extractSelfDestructInfo(pinnedMessage.text).cleanText).cleanText}</span>
-          {canPin && (
+          {[
+            { id: 'all', label: '🗂️ Все заметки' },
+            { id: '#важное', label: '🔥 #важное' },
+            { id: '#работа', label: '💼 #работа' },
+            { id: '#идеи', label: '💡 #идеи' },
+            { id: '#покупки', label: '🛒 #покупки' },
+            { id: '#ссылки', label: '🔗 #ссылки' },
+          ].map((tag) => (
             <button
-              className="btn-ghost"
-              style={{ width: 'auto', padding: '2px 8px' }}
-              onClick={(e) => {
-                e.stopPropagation();
-                handleUnpin();
-              }}
+              key={tag.id}
+              type="button"
+              className={`folder-tab ${savedHashtagFilter === tag.id ? 'active' : ''}`}
+              onClick={() => setSavedHashtagFilter(tag.id)}
             >
-              ✕
+              {tag.label}
             </button>
-          )}
+          ))}
         </div>
       )}
+
+      {/* Сообщения #5: Панель закреплённых сообщений с переключением (1 / N) */}
+      {allPinnedMessages.length > 0 && (() => {
+        const activePin = allPinnedMessages[pinnedCycleIndex % allPinnedMessages.length] || allPinnedMessages[0];
+        return (
+          <div
+            className="pinned-bar"
+            style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}
+            onClick={() => {
+              scrollToMessageById(activePin.id);
+              if (allPinnedMessages.length > 1) {
+                setPinnedCycleIndex((prev) => (prev + 1) % allPinnedMessages.length);
+              }
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flex: 1 }}>
+              <span style={{ color: 'var(--accent)', fontWeight: 800, flexShrink: 0 }}>
+                📌 {allPinnedMessages.length > 1 ? `${(pinnedCycleIndex % allPinnedMessages.length) + 1}/${allPinnedMessages.length}` : ''}
+              </span>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {extractTopicFromText(extractSelfDestructInfo(activePin.text).cleanText).cleanText}
+              </span>
+            </div>
+            {canPin && (
+              <button
+                className="btn-ghost"
+                style={{ width: 'auto', padding: '2px 8px', flexShrink: 0 }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void handleUnpin(activePin.id);
+                }}
+              >
+                ✕
+              </button>
+            )}
+          </div>
+        );
+      })()}
 
       {notice && <div className="toast">{notice}</div>}
 
@@ -2644,9 +2855,26 @@ function ChatWindowInner() {
                     onComplete={() => setParticleMsgId(null)}
                   />
                   {showSenderHeader && (
-                    <Link href={`/user/?id=${sender!.id}`} className="sender-name-link">
-                      {sender!.display_name}
-                    </Link>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2, flexWrap: 'wrap' }}>
+                      <Link href={`/user/?id=${sender!.id}`} className="sender-name-link" style={{ marginBottom: 0 }}>
+                        {sender!.display_name}
+                      </Link>
+                      {groupExtraCfg.memberTags?.[sender!.id]?.title && (
+                        <span
+                          style={{
+                            fontSize: 10,
+                            fontWeight: 800,
+                            padding: '1px 6px',
+                            borderRadius: 5,
+                            background: 'rgba(255, 212, 0, 0.16)',
+                            border: '1px solid rgba(255, 212, 0, 0.4)',
+                            color: 'var(--accent)',
+                          }}
+                        >
+                          {groupExtraCfg.memberTags[sender!.id].title}
+                        </span>
+                      )}
+                    </div>
                   )}
 
                   {msgTopicObj && activeTopicId === 'all' && (
@@ -2669,6 +2897,16 @@ function ChatWindowInner() {
                       e.stopPropagation();
                       setActiveReactionPickerMsgId(null);
                       setFullEmojiPickerMsgId(null);
+                      const trimmedRaw = (cleanTopicText || '').trim();
+                      if (
+                        !m.is_deleted &&
+                        trimmedRaw.length > 0 &&
+                        trimmedRaw.length <= 4 &&
+                        /^(🔥|❤️|🎉|🚀|💎|😂|👍|⚡|🥳|💯)$/.test(trimmedRaw)
+                      ) {
+                        setFullscreenEmojiBurst(trimmedRaw);
+                        setTimeout(() => setFullscreenEmojiBurst(null), 1800);
+                      }
                       if (!m.is_deleted) setOpenMenuId(openMenuId === m.id ? null : m.id);
                     }}
                     style={{ cursor: 'pointer' }}
@@ -2966,19 +3204,51 @@ function ChatWindowInner() {
                               if (localEl && !localEl.paused) {
                                 localEl.pause();
                               }
-                              playGlobalAudioTrack({
-                                id: m.id,
-                                src: m.media_path!,
-                                title:
-                                  m.message_type === 'voice'
-                                    ? '🎤 Голосовое сообщение'
-                                    : `🎵 ${m.text || 'Аудиозапись'}`,
-                                senderName: isMine ? me.display_name : sender?.display_name || otherProfile?.display_name || 'Собеседник',
-                                chatId: chat.id,
-                                chatTitle: isSavedChat ? 'Избранное' : otherProfile ? otherProfile.display_name : chat.title || 'Чат',
-                              });
+                              const chatTitleStr = isSavedChat
+                                ? 'Избранное'
+                                : otherProfile
+                                  ? otherProfile.display_name
+                                  : chat.title || 'Чат';
+                              const playlist = visibleMessages
+                                .filter(
+                                  (msg) =>
+                                    (msg.message_type === 'audio' || msg.message_type === 'voice') &&
+                                    Boolean(msg.media_path)
+                                )
+                                .map((msg) => ({
+                                  id: msg.id,
+                                  src: msg.media_path!,
+                                  title:
+                                    msg.message_type === 'voice'
+                                      ? '🎤 Голосовое сообщение'
+                                      : `🎵 ${msg.text || 'Аудиозапись'}`,
+                                  senderName:
+                                    msg.sender_id === me.id
+                                      ? me.display_name
+                                      : senderProfiles[msg.sender_id]?.display_name ||
+                                        otherProfile?.display_name ||
+                                        'Собеседник',
+                                  chatId: chat.id,
+                                  chatTitle: chatTitleStr,
+                                }));
+                              playGlobalAudioTrack(
+                                {
+                                  id: m.id,
+                                  src: m.media_path!,
+                                  title:
+                                    m.message_type === 'voice'
+                                      ? '🎤 Голосовое сообщение'
+                                      : `🎵 ${m.text || 'Аудиозапись'}`,
+                                  senderName: isMine
+                                    ? me.display_name
+                                    : sender?.display_name || otherProfile?.display_name || 'Собеседник',
+                                  chatId: chat.id,
+                                  chatTitle: chatTitleStr,
+                                },
+                                playlist
+                              );
                             }}
-                            title="Слушать в фоновом мини-плеере (не прерывается при переходе в другие чаты)"
+                            title="Слушать в фоновом мини-плеере с плейлистом чата"
                           >
                             🎧 В фоне
                           </button>
@@ -3216,12 +3486,12 @@ function ChatWindowInner() {
                         </button>
                       )}
                       {canPin &&
-                        (pinnedMessage?.id === m.id ? (
-                          <button onClick={handleUnpin}>
+                        (allPinnedMessages.some((p) => p.id === m.id) ? (
+                          <button onClick={() => void handleUnpin(m.id)}>
                             <PinIcon size={15} /> Открепить
                           </button>
                         ) : (
-                          <button onClick={() => handlePin(m)}>
+                          <button onClick={() => void handlePin(m)}>
                             <PinIcon size={15} /> Закрепить
                           </button>
                         ))}
@@ -3648,11 +3918,65 @@ function ChatWindowInner() {
                   style={{ justifyContent: 'flex-start', gap: 10, fontSize: 13 }}
                   onClick={() => {
                     setShowToolsMenu(false);
+                    setShowAlbumModal(true);
+                  }}
+                >
+                  <span>🖼️</span>
+                  <span>Фотоальбом (Сетка 2–10 фото)</span>
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ justifyContent: 'flex-start', gap: 10, fontSize: 13 }}
+                  onClick={() => {
+                    setShowToolsMenu(false);
+                    setShowTableModal(true);
+                  }}
+                >
+                  <span>📋</span>
+                  <span>Вставить таблицу</span>
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ justifyContent: 'flex-start', gap: 10, fontSize: 13 }}
+                  onClick={() => {
+                    setShowToolsMenu(false);
+                    setShowScheduledModal(true);
+                  }}
+                >
+                  <span>📅</span>
+                  <span>Отложенные сообщения</span>
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  style={{
+                    justifyContent: 'flex-start',
+                    gap: 10,
+                    fontSize: 13,
+                    borderColor: sendSilentMode ? 'var(--accent)' : undefined,
+                    color: sendSilentMode ? 'var(--accent)' : undefined,
+                  }}
+                  onClick={() => {
+                    setSendSilentMode((v) => !v);
+                    setShowToolsMenu(false);
+                  }}
+                >
+                  <span>🔇</span>
+                  <span>{sendSilentMode ? '✓ Тихий режим (без звука) ВКЛ' : 'Отправить без звука (тихое)'}</span>
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ justifyContent: 'flex-start', gap: 10, fontSize: 13 }}
+                  onClick={() => {
+                    setShowToolsMenu(false);
                     setShowFormatToolbar((v) => !v);
                   }}
                 >
                   <span>Aa</span>
-                  <span>Форматирование текста</span>
+                  <span>Форматирование текста и спойлер</span>
                 </button>
                 <button
                   type="button"
@@ -3942,28 +4266,45 @@ function ChatWindowInner() {
         </div>
       )}
 
-      {/* Пункт 1: Модальное окно записи видеосообщения в кружочке (Video Note) */}
+      {/* Пункт 1: Модальное окно записи видеосообщения в кружочке (Video Note) с зумом и увеличением камеры */}
       {showVideoNoteModal && (
         <div className="modal-overlay" style={{ zIndex: 9999 }} onClick={() => cleanupVideoNoteStream()}>
           <div
             className="modal-card"
-            style={{ maxWidth: 340, textAlign: 'center', padding: 24 }}
+            style={{
+              maxWidth: videoNoteEnlarged ? 440 : 350,
+              textAlign: 'center',
+              padding: 20,
+              transition: 'max-width 0.2s ease',
+            }}
             onClick={(e) => e.stopPropagation()}
           >
-            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--accent)', marginBottom: 12 }}>
-              🎥 Запись видеокружка · 00:{String(videoNoteSeconds).padStart(2, '0')}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--accent)' }}>
+                🎥 Видеокружок · 00:{String(videoNoteSeconds).padStart(2, '0')}
+              </div>
+              <button
+                type="button"
+                className="btn btn-compact"
+                style={{ width: 'auto', fontSize: 11.5, padding: '3px 9px' }}
+                onClick={() => setVideoNoteEnlarged((v) => !v)}
+                title="Увеличить или уменьшить окно камеры"
+              >
+                {videoNoteEnlarged ? '🗕 Обычный' : '🗖 Крупнее'}
+              </button>
             </div>
 
             <div
               style={{
-                width: 224,
-                height: 224,
+                width: videoNoteEnlarged ? 310 : 224,
+                height: videoNoteEnlarged ? 310 : 224,
                 borderRadius: '50%',
                 overflow: 'hidden',
-                margin: '0 auto 14px',
+                margin: '0 auto 12px',
                 border: '4px solid var(--accent)',
                 boxShadow: '0 0 0 8px rgba(255, 212, 0, 0.16)',
                 background: '#000',
+                transition: 'width 0.2s ease, height 0.2s ease',
               }}
             >
               <video
@@ -3975,9 +4316,35 @@ function ChatWindowInner() {
                   width: '100%',
                   height: '100%',
                   objectFit: 'cover',
-                  transform: videoNoteFacingMode === 'user' ? 'scaleX(-1)' : 'none',
+                  transform: `${videoNoteFacingMode === 'user' ? 'scaleX(-1) ' : ''}scale(${videoNoteZoom})`,
+                  transition: 'transform 0.15s ease',
                 }}
               />
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'center', marginBottom: 12 }}>
+              <span style={{ fontSize: 11.5, color: 'var(--text-muted)', fontWeight: 700 }}>
+                🔍 Зум {videoNoteZoom.toFixed(1)}x
+              </span>
+              <input
+                type="range"
+                min={1}
+                max={3}
+                step={0.1}
+                value={videoNoteZoom}
+                onChange={(e) => setVideoNoteZoom(Number(e.target.value))}
+                style={{ width: 120 }}
+              />
+              {videoNoteZoom > 1 && (
+                <button
+                  type="button"
+                  className="btn btn-compact"
+                  style={{ width: 'auto', fontSize: 11, padding: '2px 7px' }}
+                  onClick={() => setVideoNoteZoom(1)}
+                >
+                  1x
+                </button>
+              )}
             </div>
 
             {isMobilePhone && (
@@ -4133,14 +4500,14 @@ function ChatWindowInner() {
         </div>
       )}
 
-      {/* Модальное окно создания опроса (Пункт 4) */}
+      {/* Модальное окно создания опроса и викторины с таймером (Группы #12) */}
       {showPollModal && (
         <div className="modal-overlay" onClick={() => setShowPollModal(false)}>
-          <div className="modal-card" style={{ maxWidth: 420 }} onClick={(e) => e.stopPropagation()}>
-            <h3 style={{ marginTop: 0 }}>📊 Создать опрос</h3>
+          <div className="modal-card" style={{ maxWidth: 440 }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ marginTop: 0 }}>📊 Создать опрос или викторину</h3>
             <form onSubmit={handleCreatePoll}>
               <div className="field">
-                <label>Вопрос опроса</label>
+                <label>Вопрос</label>
                 <input
                   className="input"
                   value={pollQuestion}
@@ -4151,10 +4518,19 @@ function ChatWindowInner() {
               </div>
 
               <div className="field">
-                <label>Варианты ответа</label>
+                <label>Варианты ответа {pollIsQuiz ? '(отметьте правильный)' : ''}</label>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   {pollOptions.map((opt, idx) => (
-                    <div key={idx} style={{ display: 'flex', gap: 6 }}>
+                    <div key={idx} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      {pollIsQuiz && (
+                        <input
+                          type="radio"
+                          name="quiz_correct"
+                          checked={pollCorrectIndex === idx}
+                          onChange={() => setPollCorrectIndex(idx)}
+                          title="Правильный ответ викторины"
+                        />
+                      )}
                       <input
                         className="input"
                         value={opt}
@@ -4190,24 +4566,161 @@ function ChatWindowInner() {
                 )}
               </div>
 
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, marginBottom: 14, cursor: 'pointer' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, marginBottom: 8, cursor: 'pointer' }}>
                 <input
                   type="checkbox"
-                  checked={pollMulti}
-                  onChange={(e) => setPollMulti(e.target.checked)}
+                  checked={pollIsQuiz}
+                  onChange={(e) => setPollIsQuiz(e.target.checked)}
                 />
-                <span>Разрешить выбор нескольких вариантов</span>
+                <span>🧠 Режим викторины (с правильным ответом)</span>
               </label>
+
+              {pollIsQuiz ? (
+                <div className="field">
+                  <label>Объяснение правильного ответа (покажется после выбора)</label>
+                  <input
+                    className="input"
+                    placeholder="Почему этот вариант верный…"
+                    value={pollExplanation}
+                    onChange={(e) => setPollExplanation(e.target.value)}
+                  />
+                </div>
+              ) : (
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, marginBottom: 10, cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={pollMulti}
+                    onChange={(e) => setPollMulti(e.target.checked)}
+                  />
+                  <span>Разрешить выбор нескольких вариантов</span>
+                </label>
+              )}
+
+              <div className="field">
+                <label>⏱ Таймер автоматического завершения опроса</label>
+                <select
+                  className="input"
+                  value={pollCloseMinutes}
+                  onChange={(e) => setPollCloseMinutes(Number(e.target.value))}
+                >
+                  <option value={0}>Без таймера (бессрочный опрос)</option>
+                  <option value={5}>Через 5 минут</option>
+                  <option value={15}>Через 15 минут</option>
+                  <option value={60}>Через 1 час</option>
+                  <option value={1440}>Через 24 часа</option>
+                </select>
+              </div>
 
               <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
                 <button type="button" className="btn" style={{ width: 'auto' }} onClick={() => setShowPollModal(false)}>
                   Отмена
                 </button>
                 <button type="submit" className="btn btn-primary" style={{ width: 'auto' }}>
-                  Отправить опрос
+                  Отправить {pollIsQuiz ? 'викторину 🧠' : 'опрос 📊'}
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Сообщения #18: Редактор таблиц в сообщении */}
+      {showTableModal && (
+        <TableCreatorModal
+          onClose={() => setShowTableModal(false)}
+          onSendTableMessage={async (encodedTable) => {
+            const withTopic =
+              channelGroupCfg.structureMode === 'topics' && activeTopicId !== 'all'
+                ? encodeTopicPrefix(activeTopicId, encodedTable)
+                : encodedTable;
+            const finalPayload = ttlSeconds > 0 ? encodeSelfDestructPrefix(ttlSeconds, withTopic) : withTopic;
+            await sendMessage(chatId, sendSilentMode ? `__SILENT__:${finalPayload}` : finalPayload);
+          }}
+        />
+      )}
+
+      {/* Медиа #15: Сетка фотоальбома (2–10 фото) */}
+      {showAlbumModal && (
+        <AlbumCreatorModal
+          onClose={() => setShowAlbumModal(false)}
+          channelWatermarkText={
+            chat.type === 'channel' && groupExtraCfg.watermarkEnabled
+              ? groupExtraCfg.watermarkText || `@${chat.username || chat.title || 'PixChats'}`
+              : null
+          }
+          onSendAlbumMessage={async (encodedAlbum) => {
+            const withTopic =
+              channelGroupCfg.structureMode === 'topics' && activeTopicId !== 'all'
+                ? encodeTopicPrefix(activeTopicId, encodedAlbum)
+                : encodedAlbum;
+            const finalPayload = ttlSeconds > 0 ? encodeSelfDestructPrefix(ttlSeconds, withTopic) : withTopic;
+            await sendMessage(chatId, sendSilentMode ? `__SILENT__:${finalPayload}` : finalPayload);
+          }}
+        />
+      )}
+
+      {/* Медиа #1: Встроенный фоторедактор перед отправкой */}
+      {photoEditorDataUrl && (
+        <PhotoEditorModal
+          initialDataUrl={photoEditorDataUrl}
+          channelWatermarkText={
+            chat.type === 'channel' && groupExtraCfg.watermarkEnabled
+              ? groupExtraCfg.watermarkText || `@${chat.username || chat.title || 'PixChats'}`
+              : null
+          }
+          onClose={() => setPhotoEditorDataUrl(null)}
+          onSendEditedPhoto={async (editedDataUrl, caption) => {
+            setPhotoEditorDataUrl(null);
+            setPendingFile(null);
+            setDraft('');
+            saveChatDraft(chatId, '');
+            await sendMessage(chatId, caption || '📸 Фото', {
+              messageType: 'image',
+              mediaPath: editedDataUrl,
+              caption: caption || undefined,
+              captionPosition,
+            });
+          }}
+        />
+      )}
+
+      {/* Сообщения #1: Очередь отложенных сообщений */}
+      {showScheduledModal && (
+        <ScheduledMessagesModal
+          chatId={chatId}
+          initialText={draft}
+          onClose={() => setShowScheduledModal(false)}
+          onScheduledAdded={() => {
+            setDraft('');
+            saveChatDraft(chatId, '');
+            setScheduledMessages(getScheduledMessages(chatId));
+          }}
+        />
+      )}
+
+      {/* Медиа #4: Полноэкранный взрыв анимированного эмодзи при клике */}
+      {fullscreenEmojiBurst && (
+        <div
+          onClick={() => setFullscreenEmojiBurst(null)}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 99999,
+            pointerEvents: 'none',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: 'radial-gradient(circle, rgba(255,212,0,0.18) 0%, transparent 70%)',
+          }}
+        >
+          <div
+            style={{
+              fontSize: 120,
+              filter: 'drop-shadow(0 16px 40px rgba(0,0,0,0.65))',
+              animation: 'pulse 0.6s ease-in-out infinite alternate',
+            }}
+          >
+            {fullscreenEmojiBurst}
           </div>
         </div>
       )}

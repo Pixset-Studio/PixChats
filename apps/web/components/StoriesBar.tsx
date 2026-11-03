@@ -33,6 +33,12 @@ import {
   getPreferredVideoConstraints,
 } from '../lib/mediaDevicesStore';
 import { isMobilePhoneDevice } from '../lib/nativePlatform';
+import {
+  getUserPremiumStatus,
+  getMaxDailyStoriesForUser,
+  isUserInCloseFriends,
+  syncExtendedProfilesFromCloud,
+} from '../lib/premiumAndFeatures';
 
 interface StoriesBarProps {
   profile: Profile;
@@ -78,17 +84,20 @@ export function StoriesBar({ profile }: StoriesBarProps) {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [draftText, setDraftText] = useState('');
   const [selectedGradient, setSelectedGradient] = useState(STORY_GRADIENTS[0].css);
-  const [privacy, setPrivacy] = useState<'all' | 'friends'>('all');
+  const [privacy, setPrivacy] = useState<'all' | 'friends' | 'close_friends'>('all');
   const [mediaPreview, setMediaPreview] = useState<string | null>(null);
   const [mediaType, setMediaType] = useState<'image' | 'video' | 'none'>('none');
   const [rawVideoFile, setRawVideoFile] = useState<File | null>(null);
   const [videoMuted, setVideoMuted] = useState(false);
   const [publishing, setPublishing] = useState(false);
+  const [publishError, setPublishError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Встроенная камера для съёмки фото или записи видео прямо в окне Историй
   const [cameraOpen, setCameraOpen] = useState(false);
   const [cameraFacing, setCameraFacing] = useState<'user' | 'environment'>('user');
+  const [cameraZoom, setCameraZoom] = useState<number>(1);
+  const [cameraExpanded, setCameraExpanded] = useState<boolean>(false);
   const [isRecordingVideo, setIsRecordingVideo] = useState(false);
   const [recordingSec, setRecordingSec] = useState(0);
   const cameraVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -268,7 +277,16 @@ export function StoriesBar({ profile }: StoriesBarProps) {
         return;
       }
 
-      const sortedAsc = [...userStories].sort(
+      // Фильтрация историй «Близкие друзья» (close_friends)
+      const visibleStories = userStories.filter((st) => {
+        if (st.privacy === 'close_friends' && !isMine && !isChannel) {
+          return isUserInCloseFriends(uid, profile.id);
+        }
+        return true;
+      });
+      if (visibleStories.length === 0) return;
+
+      const sortedAsc = [...visibleStories].sort(
         (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
       );
       const first = sortedAsc[0];
@@ -674,6 +692,26 @@ export function StoriesBar({ profile }: StoriesBarProps) {
   async function handlePublish(e: React.FormEvent) {
     e.preventDefault();
     if (!draftText.trim() && !mediaPreview && !overlayText.trim() && !drawingDataUrl) return;
+    setPublishError(null);
+
+    const targetChannel = selectedPublisherChannelId
+      ? adminChannels.find((ch) => ch.id === selectedPublisherChannelId)
+      : null;
+
+    // Проверка лимита 1 история в сутки без подписки PixChats Premium
+    if (!targetChannel) {
+      const maxDaily = getMaxDailyStoriesForUser(profile.id, profile.username);
+      const myActivePersonalCount = stories.filter(
+        (s) => s.userId === profile.id && !s.isChannelStory
+      ).length;
+      if (myActivePersonalCount >= maxDaily) {
+        setPublishError(
+          '⭐ Без подписки PixChats Premium можно выкладывать не более 1 истории в день. С Premium доступно безлимитное количество историй!'
+        );
+        return;
+      }
+    }
+
     setPublishing(true);
     try {
       let finalMediaUrl = mediaPreview;
@@ -692,10 +730,6 @@ export function StoriesBar({ profile }: StoriesBarProps) {
           }
         }
       }
-
-      const targetChannel = selectedPublisherChannelId
-        ? adminChannels.find((ch) => ch.id === selectedPublisherChannelId)
-        : null;
 
       await publishNewStory({
         userId: targetChannel ? `channel:${targetChannel.id}` : profile.id,
@@ -868,9 +902,15 @@ export function StoriesBar({ profile }: StoriesBarProps) {
                   borderRadius: '50%',
                   padding: 2.5,
                   background: group.hasUnviewed
-                    ? 'linear-gradient(135deg, #ffd400 0%, #f59e0b 50%, #ec4899 100%)'
+                    ? group.stories.some((st) => st.privacy === 'close_friends')
+                      ? 'linear-gradient(135deg, #22c55e 0%, #10b981 50%, #4ade80 100%)'
+                      : 'linear-gradient(135deg, #ffd400 0%, #f59e0b 50%, #ec4899 100%)'
                     : 'rgba(255,255,255,0.18)',
-                  boxShadow: group.hasUnviewed ? '0 0 12px rgba(255, 212, 0, 0.28)' : 'none',
+                  boxShadow: group.hasUnviewed
+                    ? group.stories.some((st) => st.privacy === 'close_friends')
+                      ? '0 0 12px rgba(34, 197, 94, 0.45)'
+                      : '0 0 12px rgba(255, 212, 0, 0.28)'
+                    : 'none',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -964,11 +1004,11 @@ export function StoriesBar({ profile }: StoriesBarProps) {
                 </div>
               )}
 
-              {/* Превью истории ИЛИ живая камера */}
+              {/* Превью истории ИЛИ живая камера (с поддержкой увеличения и зума) */}
               <div
                 style={{
                   position: 'relative',
-                  height: 310,
+                  height: cameraOpen && cameraExpanded ? 480 : 310,
                   borderRadius: 16,
                   background: selectedGradient,
                   overflow: 'hidden',
@@ -979,6 +1019,7 @@ export function StoriesBar({ profile }: StoriesBarProps) {
                   marginBottom: 12,
                   border: '1px solid var(--border)',
                   userSelect: 'none',
+                  transition: 'height 0.22s ease',
                 }}
               >
                 {cameraOpen ? (
@@ -992,9 +1033,48 @@ export function StoriesBar({ profile }: StoriesBarProps) {
                         width: '100%',
                         height: '100%',
                         objectFit: 'cover',
-                        transform: cameraFacing === 'user' ? 'scaleX(-1)' : 'none',
+                        transform: `${cameraFacing === 'user' ? 'scaleX(-1)' : ''} scale(${cameraZoom})`,
+                        transition: 'transform 0.15s ease',
                       }}
                     />
+                    {/* Верхняя панель управления зумом и размером камеры */}
+                    <div
+                      style={{
+                        position: 'absolute',
+                        top: 10,
+                        right: 10,
+                        zIndex: 15,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        background: 'rgba(0,0,0,0.68)',
+                        padding: '4px 10px',
+                        borderRadius: 999,
+                      }}
+                    >
+                      <span style={{ fontSize: 11, color: '#ffd400', fontWeight: 700 }}>
+                        🔍 {cameraZoom.toFixed(1)}x
+                      </span>
+                      <input
+                        type="range"
+                        min={1}
+                        max={3}
+                        step={0.1}
+                        value={cameraZoom}
+                        onChange={(e) => setCameraZoom(Number(e.target.value))}
+                        style={{ width: 72, accentColor: '#ffd400', cursor: 'pointer' }}
+                        title="Приблизить камеру (Zoom)"
+                      />
+                      <button
+                        type="button"
+                        className="btn-ghost"
+                        style={{ width: 'auto', padding: '2px 6px', fontSize: 11.5, color: '#fff' }}
+                        onClick={() => setCameraExpanded((v) => !v)}
+                        title={cameraExpanded ? 'Уменьшить окно камеры' : 'Увеличить окно камеры'}
+                      >
+                        {cameraExpanded ? '🗕 Меньше' : '🗖 Крупнее'}
+                      </button>
+                    </div>
                     {isRecordingVideo && (
                       <div
                         style={{
@@ -1560,8 +1640,39 @@ export function StoriesBar({ profile }: StoriesBarProps) {
                   >
                     👥 Друзья
                   </button>
+                  <button
+                    type="button"
+                    className="btn"
+                    style={{
+                      width: 'auto',
+                      padding: '4px 10px',
+                      fontSize: 12,
+                      borderColor: privacy === 'close_friends' ? '#22c55e' : undefined,
+                      color: privacy === 'close_friends' ? '#22c55e' : undefined,
+                    }}
+                    onClick={() => setPrivacy('close_friends')}
+                  >
+                    💚 Близкие друзья
+                  </button>
                 </div>
               </div>
+
+              {publishError && (
+                <div
+                  style={{
+                    marginBottom: 10,
+                    padding: '10px 12px',
+                    borderRadius: 10,
+                    background: 'rgba(255, 212, 0, 0.14)',
+                    border: '1px solid var(--accent)',
+                    color: 'var(--accent)',
+                    fontSize: 12.5,
+                    fontWeight: 700,
+                  }}
+                >
+                  {publishError}
+                </div>
+              )}
 
               <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
                 <button
@@ -1909,10 +2020,16 @@ export function StoriesBar({ profile }: StoriesBarProps) {
                   onSelect={async (emoji) => {
                     setShowReactionPicker(false);
                     setPaused(false);
+                    const isPrem = getUserPremiumStatus(profile.id, profile.username).active;
                     const updated = await toggleStoryReaction(activeStory.id, emoji, profile.id, {
                       isDeveloper: profile.role === 'developer',
-                      onLimitReached: () => {
-                        setStoryNotice('Максимум 3 реакции на одну историю (безлимит для разработчика)');
+                      isPremium: isPrem,
+                      onLimitReached: (maxAllowed) => {
+                        setStoryNotice(
+                          maxAllowed === 1
+                            ? '⭐ Без PixChats Premium доступна 1 реакция на историю (с Premium — до 3 реакций!)'
+                            : 'Максимум 3 реакции на одну историю'
+                        );
                         setTimeout(() => setStoryNotice(null), 3200);
                       },
                     });
@@ -1950,10 +2067,16 @@ export function StoriesBar({ profile }: StoriesBarProps) {
                       key={emoji}
                       type="button"
                       onClick={async () => {
+                        const isPrem = getUserPremiumStatus(profile.id, profile.username).active;
                         const updated = await toggleStoryReaction(activeStory.id, emoji, profile.id, {
                           isDeveloper: profile.role === 'developer',
-                          onLimitReached: () => {
-                            setStoryNotice('Максимум 3 реакции на одну историю (безлимит для разработчика)');
+                          isPremium: isPrem,
+                          onLimitReached: (maxAllowed) => {
+                            setStoryNotice(
+                              maxAllowed === 1
+                                ? '⭐ Без PixChats Premium доступна 1 реакция на историю (с Premium — до 3 реакций!)'
+                                : 'Максимум 3 реакции на одну историю'
+                            );
                             setTimeout(() => setStoryNotice(null), 3200);
                           },
                         });

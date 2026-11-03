@@ -14,9 +14,16 @@ interface SharedChatAttachmentsProps {
   title?: string;
 }
 
-type TabType = 'stories' | 'media' | 'files' | 'voice' | 'links';
+type TabType = 'stories' | 'media' | 'videonotes' | 'files' | 'voice' | 'links';
 
 const URL_REGEX = /(https?:\/\/[^\s<>"']+)/gi;
+
+function isVideoNoteAttachment(msg: Message): boolean {
+  if (!msg.media_path) return false;
+  if (msg.message_type === 'video_note') return true;
+  if (msg.caption?.startsWith('__VIDEONOTE__') || msg.text?.startsWith('__VIDEONOTE__')) return true;
+  return false;
+}
 
 function isImageAttachment(msg: Message): boolean {
   if (!msg.media_path) return false;
@@ -27,7 +34,8 @@ function isImageAttachment(msg: Message): boolean {
 
 function isVideoAttachment(msg: Message): boolean {
   if (!msg.media_path) return false;
-  if (msg.message_type === 'video' || msg.message_type === 'video_note') return true;
+  if (isVideoNoteAttachment(msg)) return false;
+  if (msg.message_type === 'video') return true;
   if (msg.media_path.startsWith('data:video/')) return true;
   return /\.(mp4|webm|mov|m4v)(\?|$)/i.test(msg.media_path);
 }
@@ -132,8 +140,11 @@ export function SharedChatAttachments({
     });
   }, [stories, targetUserId, channelId]);
 
-  const { mediaItems, fileItems, voiceItems, linkItems } = useMemo(() => {
+  const [playingCircleId, setPlayingCircleId] = useState<string | null>(null);
+
+  const { mediaItems, videoNoteItems, fileItems, voiceItems, linkItems } = useMemo(() => {
     const media: Message[] = [];
+    const videoNotes: Message[] = [];
     const files: Message[] = [];
     const voice: Message[] = [];
     const links: Array<{ id: string; url: string; text: string; createdAt: string }> = [];
@@ -144,7 +155,9 @@ export function SharedChatAttachments({
 
     for (const m of sortedDesc) {
       if (m.media_path) {
-        if (isImageAttachment(m) || isVideoAttachment(m)) {
+        if (isVideoNoteAttachment(m)) {
+          videoNotes.push(m);
+        } else if (isImageAttachment(m) || isVideoAttachment(m)) {
           media.push(m);
         } else if (isVoiceAttachment(m)) {
           voice.push(m);
@@ -154,7 +167,7 @@ export function SharedChatAttachments({
       }
 
       const bodyText = m.text || m.caption || '';
-      if (bodyText && !bodyText.startsWith('📊 POLL:')) {
+      if (bodyText && !bodyText.startsWith('📊 POLL:') && !bodyText.startsWith('__VIDEONOTE__')) {
         const found = bodyText.match(URL_REGEX);
         if (found && found.length > 0) {
           for (const url of found) {
@@ -171,6 +184,7 @@ export function SharedChatAttachments({
 
     return {
       mediaItems: media,
+      videoNoteItems: videoNotes,
       fileItems: files,
       voiceItems: voice,
       linkItems: links,
@@ -180,6 +194,7 @@ export function SharedChatAttachments({
   const totalCount =
     relevantStories.length +
     mediaItems.length +
+    videoNoteItems.length +
     fileItems.length +
     voiceItems.length +
     linkItems.length;
@@ -378,6 +393,14 @@ export function SharedChatAttachments({
         </button>
         <button
           type="button"
+          className={`btn btn-compact ${tab === 'videonotes' ? 'btn-primary' : ''}`}
+          style={{ padding: '7px 10px', fontSize: 12, flexShrink: 0, width: 'auto', whiteSpace: 'nowrap' }}
+          onClick={() => setTab('videonotes')}
+        >
+          🔵 Кружочки ({videoNoteItems.length})
+        </button>
+        <button
+          type="button"
           className={`btn btn-compact ${tab === 'files' ? 'btn-primary' : ''}`}
           style={{ padding: '7px 10px', fontSize: 12, flexShrink: 0, width: 'auto', whiteSpace: 'nowrap' }}
           onClick={() => setTab('files')}
@@ -544,6 +567,114 @@ export function SharedChatAttachments({
                             loading="lazy"
                           />
                         )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </>
+          )}
+
+          {tab === 'videonotes' && (
+            <>
+              {videoNoteItems.length === 0 ? (
+                <div style={{ fontSize: 13, color: 'var(--text-muted)', padding: '8px 0' }}>
+                  В этом чате пока нет видеосообщений (кружочков).
+                </div>
+              ) : (
+                <div
+                  style={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: 14,
+                    maxHeight: 320,
+                    overflowY: 'auto',
+                    padding: '6px 2px',
+                  }}
+                >
+                  {videoNoteItems.map((item) => {
+                    const isPlaying = playingCircleId === item.id;
+                    return (
+                      <div
+                        key={item.id}
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          gap: 4,
+                        }}
+                      >
+                        <div
+                          onClick={() => setPlayingCircleId(isPlaying ? null : item.id)}
+                          style={{
+                            width: isPlaying ? 168 : 114,
+                            height: isPlaying ? 168 : 114,
+                            borderRadius: '50%',
+                            overflow: 'hidden',
+                            border: isPlaying
+                              ? '3px solid var(--accent)'
+                              : '2.5px solid rgba(255, 212, 0, 0.65)',
+                            boxShadow: isPlaying
+                              ? '0 0 22px rgba(255, 212, 0, 0.45)'
+                              : '0 6px 16px rgba(0, 0, 0, 0.4)',
+                            position: 'relative',
+                            cursor: 'pointer',
+                            background: '#09090b',
+                            transition: 'width 0.22s ease, height 0.22s ease, border-color 0.2s ease',
+                          }}
+                          title="Нажмите для воспроизведения кружочка"
+                        >
+                          <video
+                            src={item.media_path!}
+                            style={{
+                              width: '100%',
+                              height: '100%',
+                              objectFit: 'cover',
+                              borderRadius: '50%',
+                            }}
+                            autoPlay={isPlaying}
+                            muted={!isPlaying}
+                            loop
+                            playsInline
+                            preload="metadata"
+                          />
+                          {!isPlaying && (
+                            <span
+                              style={{
+                                position: 'absolute',
+                                inset: 0,
+                                borderRadius: '50%',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                background: 'rgba(0, 0, 0, 0.26)',
+                              }}
+                            >
+                              <span
+                                style={{
+                                  width: 32,
+                                  height: 32,
+                                  borderRadius: '50%',
+                                  background: 'rgba(255, 212, 0, 0.92)',
+                                  color: '#000',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  fontWeight: 900,
+                                  fontSize: 13,
+                                }}
+                              >
+                                ▶
+                              </span>
+                            </span>
+                          )}
+                        </div>
+                        <span style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>
+                          {new Date(item.sent_at).toLocaleTimeString('ru-RU', {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })}
+                        </span>
                       </div>
                     );
                   })}

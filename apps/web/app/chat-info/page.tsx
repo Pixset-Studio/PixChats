@@ -46,6 +46,11 @@ import { QrCodeModal } from '../../components/QrCodeModal';
 import { publishNewStory, STORY_GRADIENTS } from '../../lib/stories';
 import { compressImageToDataUrl } from '../../lib/fileStorage';
 import { uploadMessageFile } from '@pixchats/core';
+import {
+  getGroupExtraConfig,
+  saveGroupExtraConfig,
+  type GroupExtraConfig,
+} from '../../lib/premiumAndFeatures';
 
 const TYPE_LABEL: Record<Chat['type'], string> = {
   direct: 'Личный чат',
@@ -96,9 +101,20 @@ function ChatInfoInner() {
   const [notice, setNotice] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
 
+  // Группы и каналы: Анти-флуд (Slow Mode), автоудаление истории, водяной знак, временные ссылки, теги участников
+  const [groupExtraCfg, setGroupExtraCfg] = useState<GroupExtraConfig>(() =>
+    getGroupExtraConfig(chatId)
+  );
+  const [newInviteMaxUses, setNewInviteMaxUses] = useState<number>(10);
+  const [newInviteHours, setNewInviteHours] = useState<number>(24);
+  const [tagTargetUserId, setTagTargetUserId] = useState('');
+  const [tagTitleInput, setTagTitleInput] = useState('');
+  const [chatMembersList, setChatMembersList] = useState<{ id: string; name: string }[]>([]);
+
   useEffect(() => {
     setCustomFolders(getCustomFolders());
     if (!chatId) return;
+    setGroupExtraCfg(getGroupExtraConfig(chatId));
     try {
       const list: string[] = JSON.parse(localStorage.getItem('pixchats:pinned_chats') || '[]');
       setIsPinned(list.includes(chatId));
@@ -745,6 +761,331 @@ function ChatInfoInner() {
             <span>🔥 Пиковый час общения:</span>
             <strong style={{ color: 'var(--accent)' }}>18:00 — 21:00</strong>
           </div>
+        </div>
+      )}
+
+      {/* Управление группой/каналом: Анти-флуд, автоудаление истории, водяной знак, временные ссылки и локальные теги */}
+      {canEdit && chat.type !== 'direct' && (
+        <div className="card" style={{ maxWidth: 460, margin: '0 auto 16px', display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <h3 style={{ margin: 0, fontSize: 16 }}>🛡️ Расширенные настройки {chat.type === 'channel' ? 'канала' : 'группы'}</h3>
+
+          {chat.type === 'group' && (
+            <div className="field" style={{ marginBottom: 0 }}>
+              <label>🐢 Анти-флуд (Slow Mode — интервал между сообщениями)</label>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                {[
+                  { label: 'Выкл', sec: 0 },
+                  { label: '5 сек', sec: 5 },
+                  { label: '15 сек', sec: 15 },
+                  { label: '30 сек', sec: 30 },
+                  { label: '1 мин', sec: 60 },
+                  { label: '5 мин', sec: 300 },
+                ].map((opt) => (
+                  <button
+                    key={opt.sec}
+                    type="button"
+                    className={`btn btn-compact ${groupExtraCfg.slowModeSeconds === opt.sec ? 'btn-primary' : ''}`}
+                    style={{ width: 'auto' }}
+                    onClick={() => {
+                      const next = saveGroupExtraConfig(chat.id, { slowModeSeconds: opt.sec });
+                      setGroupExtraCfg(next);
+                      setNotice(`Анти-флуд: ${opt.label}`);
+                      setTimeout(() => setNotice(null), 1800);
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="field" style={{ marginBottom: 0 }}>
+            <label>🧹 Автоудаление истории чата по расписанию</label>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {[
+                { label: 'Выкл', hours: 0 },
+                { label: '24 часа', hours: 24 },
+                { label: '7 дней', hours: 168 },
+                { label: '30 дней', hours: 720 },
+              ].map((opt) => (
+                <button
+                  key={opt.hours}
+                  type="button"
+                  className={`btn btn-compact ${groupExtraCfg.autoDeleteHours === opt.hours ? 'btn-primary' : ''}`}
+                  style={{ width: 'auto' }}
+                  onClick={() => {
+                    const next = saveGroupExtraConfig(chat.id, { autoDeleteHours: opt.hours });
+                    setGroupExtraCfg(next);
+                    setNotice(`Автоудаление истории: ${opt.label}`);
+                    setTimeout(() => setNotice(null), 1800);
+                  }}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {chat.type === 'channel' && (
+            <div
+              style={{
+                padding: 10,
+                borderRadius: 10,
+                background: 'var(--bg-secondary)',
+                border: '1px solid var(--border)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 8,
+              }}
+            >
+              <label style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', fontSize: 13, fontWeight: 700 }}>
+                <span>🏷️ Автоматический водяной знак на фото канала</span>
+                <input
+                  type="checkbox"
+                  checked={groupExtraCfg.watermarkEnabled}
+                  onChange={(e) => {
+                    const next = saveGroupExtraConfig(chat.id, {
+                      watermarkEnabled: e.target.checked,
+                      watermarkText: groupExtraCfg.watermarkText || `@${chat.username || chat.title || 'PixChats'}`,
+                    });
+                    setGroupExtraCfg(next);
+                  }}
+                />
+              </label>
+              {groupExtraCfg.watermarkEnabled && (
+                <input
+                  className="input"
+                  placeholder="Текст водяного знака (например: @pixset_news)"
+                  value={groupExtraCfg.watermarkText}
+                  onChange={(e) => {
+                    const next = saveGroupExtraConfig(chat.id, { watermarkText: e.target.value });
+                    setGroupExtraCfg(next);
+                  }}
+                />
+              )}
+            </div>
+          )}
+
+          {/* Временные пригласительные ссылки (Группы #7) */}
+          <div
+            style={{
+              padding: 10,
+              borderRadius: 10,
+              background: 'var(--bg-secondary)',
+              border: '1px solid var(--border)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 8,
+            }}
+          >
+            <div style={{ fontWeight: 700, fontSize: 13 }}>🔗 Временные пригласительные ссылки</div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+              <select
+                className="input"
+                style={{ width: 'auto', flex: 1 }}
+                value={newInviteMaxUses}
+                onChange={(e) => setNewInviteMaxUses(Number(e.target.value))}
+              >
+                <option value={1}>Лимит: 1 вход</option>
+                <option value={5}>Лимит: 5 входов</option>
+                <option value={10}>Лимит: 10 входов</option>
+                <option value={50}>Лимит: 50 входов</option>
+                <option value={0}>Без лимита входов</option>
+              </select>
+              <select
+                className="input"
+                style={{ width: 'auto', flex: 1 }}
+                value={newInviteHours}
+                onChange={(e) => setNewInviteHours(Number(e.target.value))}
+              >
+                <option value={1}>Срок: 1 час</option>
+                <option value={24}>Срок: 24 часа</option>
+                <option value={168}>Срок: 7 дней</option>
+                <option value={0}>Бессрочно</option>
+              </select>
+              <button
+                type="button"
+                className="btn btn-primary btn-compact"
+                style={{ width: 'auto' }}
+                onClick={() => {
+                  const code = Math.random().toString(36).slice(2, 8).toUpperCase();
+                  const newLink = {
+                    code,
+                    chatId: chat.id,
+                    maxUses: newInviteMaxUses > 0 ? newInviteMaxUses : null,
+                    usedCount: 0,
+                    expiresAt:
+                      newInviteHours > 0
+                        ? new Date(Date.now() + newInviteHours * 3600 * 1000).toISOString()
+                        : null,
+                    createdBy: me.id,
+                  };
+                  const next = saveGroupExtraConfig(chat.id, {
+                    inviteLinks: [...(groupExtraCfg.inviteLinks || []), newLink],
+                  });
+                  setGroupExtraCfg(next);
+                }}
+              >
+                + Создать ссылку
+              </button>
+            </div>
+
+            {groupExtraCfg.inviteLinks && groupExtraCfg.inviteLinks.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {groupExtraCfg.inviteLinks.map((lnk) => {
+                  const fullInviteUrl = buildAppUrl(`/chat/?id=${chat.id}&invite=${lnk.code}`);
+                  return (
+                    <div
+                      key={lnk.code}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: 8,
+                        padding: '6px 8px',
+                        borderRadius: 8,
+                        background: 'var(--surface-raised)',
+                        fontSize: 12,
+                      }}
+                    >
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontWeight: 700, color: 'var(--accent)', fontFamily: 'monospace' }}>
+                          Код: {lnk.code}
+                        </div>
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                          Входов: {lnk.usedCount}{lnk.maxUses ? `/${lnk.maxUses}` : ' (безлимит)'}
+                          {lnk.expiresAt ? ` • до ${new Date(lnk.expiresAt).toLocaleString('ru-RU')}` : ''}
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', gap: 4 }}>
+                        <button
+                          type="button"
+                          className="btn btn-compact"
+                          style={{ width: 'auto' }}
+                          onClick={() => {
+                            void navigator.clipboard.writeText(fullInviteUrl);
+                            setNotice('Пригласительная ссылка скопирована 🔗');
+                            setTimeout(() => setNotice(null), 1800);
+                          }}
+                        >
+                          📋 Копировать
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-ghost"
+                          style={{ width: 'auto', padding: '2px 6px', color: 'var(--danger)' }}
+                          onClick={() => {
+                            const next = saveGroupExtraConfig(chat.id, {
+                              inviteLinks: (groupExtraCfg.inviteLinks || []).filter((x) => x.code !== lnk.code),
+                            });
+                            setGroupExtraCfg(next);
+                          }}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Локальные роли/теги участников внутри группы (Группы #9) */}
+          {chat.type === 'group' && (
+            <div
+              style={{
+                padding: 10,
+                borderRadius: 10,
+                background: 'var(--bg-secondary)',
+                border: '1px solid var(--border)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 8,
+              }}
+            >
+              <div style={{ fontWeight: 700, fontSize: 13 }}>🏷️ Локальные роли/теги участников группы</div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                <select
+                  className="input"
+                  style={{ flex: 1, minWidth: 130 }}
+                  value={tagTargetUserId}
+                  onChange={(e) => setTagTargetUserId(e.target.value)}
+                >
+                  <option value="">Выберите участника…</option>
+                  {chatMembersList.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  className="input"
+                  style={{ flex: 1, minWidth: 130 }}
+                  placeholder="Тег (например: Глава клана, Дизайнер)"
+                  value={tagTitleInput}
+                  onChange={(e) => setTagTitleInput(e.target.value)}
+                />
+                <button
+                  type="button"
+                  className="btn btn-primary btn-compact"
+                  style={{ width: 'auto' }}
+                  disabled={!tagTargetUserId || !tagTitleInput.trim()}
+                  onClick={() => {
+                    const nextTags = {
+                      ...(groupExtraCfg.memberTags || {}),
+                      [tagTargetUserId]: { title: tagTitleInput.trim(), color: '#ffd400' },
+                    };
+                    const next = saveGroupExtraConfig(chat.id, { memberTags: nextTags });
+                    setGroupExtraCfg(next);
+                    setTagTitleInput('');
+                    setNotice('Локальный тег участника назначен 🏷️');
+                    setTimeout(() => setNotice(null), 1800);
+                  }}
+                >
+                  Назначить
+                </button>
+              </div>
+
+              {groupExtraCfg.memberTags && Object.keys(groupExtraCfg.memberTags).length > 0 && (
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {Object.entries(groupExtraCfg.memberTags).map(([uId, tagObj]) => {
+                    const mName = chatMembersList.find((x) => x.id === uId)?.name || 'Участник';
+                    return (
+                      <span
+                        key={uId}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 6,
+                          padding: '3px 9px',
+                          borderRadius: 6,
+                          background: 'rgba(255, 212, 0, 0.14)',
+                          border: '1px solid rgba(255, 212, 0, 0.4)',
+                          fontSize: 11.5,
+                        }}
+                      >
+                        <strong>{mName}:</strong> <span style={{ color: 'var(--accent)' }}>{tagObj.title}</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const copy = { ...(groupExtraCfg.memberTags || {}) };
+                            delete copy[uId];
+                            const next = saveGroupExtraConfig(chat.id, { memberTags: copy });
+                            setGroupExtraCfg(next);
+                          }}
+                          style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: 0 }}
+                        >
+                          ✕
+                        </button>
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 

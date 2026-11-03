@@ -12,6 +12,7 @@ import {
   getIncomingRequests,
   getOutgoingRequests,
   createDirectChat,
+  sendMessage,
   getSupabaseClient,
 } from '@pixchats/core';
 import type { Profile, FriendWithProfile } from '@pixchats/core';
@@ -21,6 +22,13 @@ import { DesktopShell } from '../../components/DesktopShell';
 import { resolveLastSeenLabel } from '../../lib/lastSeen';
 import { isBanned } from '../../lib/ban';
 import { SearchIcon } from '../../components/Icons';
+import {
+  getExtendedProfile,
+  syncExtendedProfilesFromCloud,
+  isBirthdayToday,
+  toggleCloseFriend,
+  getCloseFriendIds,
+} from '../../lib/premiumAndFeatures';
 
 export default function FriendsPage() {
   const router = useRouter();
@@ -30,7 +38,9 @@ export default function FriendsPage() {
   const [outgoing, setOutgoing] = useState<FriendWithProfile[]>([]);
   const [query, setQuery] = useState('');
   const [lastSeenLabels, setLastSeenLabels] = useState<Record<string, string>>({});
+  const [closeFriends, setCloseFriends] = useState<string[]>(() => getCloseFriendIds());
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   async function loadLastSeenLabels(viewerId: string, profiles: Profile[]) {
     const entries = await Promise.all(
@@ -46,6 +56,7 @@ export default function FriendsPage() {
     setFriends(f);
     setIncoming(inc);
     setOutgoing(out);
+    await syncExtendedProfilesFromCloud(false);
     await loadLastSeenLabels(userId, [
       ...f.map((x) => x.friend_profile),
       ...inc.map((x) => x.friend_profile),
@@ -73,7 +84,6 @@ export default function FriendsPage() {
       setMe(profile);
       await reload(profile.id);
 
-      // Realtime subscription: обновление списка друзей и заявок без перезагрузки страницы
       const supabase = getSupabaseClient();
       channel = supabase
         .channel(`realtime-friends-${profile.id}`)
@@ -117,9 +127,23 @@ export default function FriendsPage() {
     }
   }
 
+  async function handleSendBirthdayGreeting(friendProfile: Profile) {
+    setError(null);
+    try {
+      const chat = await createDirectChat(friendProfile.id);
+      await sendMessage(
+        chat.id,
+        `🎂🎉 С Днём Рождения, ${friendProfile.display_name}! Желаю счастья, вдохновения и ярких побед вместе с PixChats! 🥳✨`
+      );
+      setNotice(`🎉 Поздравление отправлено для ${friendProfile.display_name}!`);
+      setTimeout(() => router.push(`/chat/?id=${chat.id}`), 400);
+    } catch (err: any) {
+      setError(err.message ?? 'Не удалось отправить поздравление');
+    }
+  }
+
   if (!me) return null;
 
-  // Поиск теперь только по уже добавленным друзьям — искать новых людей можно через поиск на странице чатов.
   const q = query.trim().toLowerCase();
   const filteredFriends = q
     ? friends.filter(
@@ -129,6 +153,11 @@ export default function FriendsPage() {
       )
     : friends;
 
+  const birthdayFriends = friends.filter((f) => {
+    const ext = getExtendedProfile(f.friend_profile.id, f.friend_profile.username);
+    return isBirthdayToday(ext.birthDate);
+  });
+
   return (
     <DesktopShell>
       <main className="container-wide with-bottom-nav">
@@ -136,7 +165,62 @@ export default function FriendsPage() {
           <h1 style={{ fontFamily: 'var(--font-display)', fontSize: 20, margin: 0 }}>Друзья</h1>
         </header>
 
+        {notice && <p className="notice">{notice}</p>}
         {error && <p className="error">{error}</p>}
+
+        {/* Праздничный блок именинников среди друзей */}
+        {birthdayFriends.length > 0 && (
+          <div
+            className="card"
+            style={{
+              marginBottom: 18,
+              background: 'linear-gradient(135deg, rgba(255, 212, 0, 0.2), rgba(236, 72, 153, 0.14), var(--surface))',
+              border: '2px solid var(--accent)',
+            }}
+          >
+            <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 10 }}>
+              🎂 Сегодня день рождения у ваших друзей ({birthdayFriends.length})!
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {birthdayFriends.map((bf) => (
+                <div
+                  key={`bday-${bf.id}`}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 10,
+                    flexWrap: 'wrap',
+                    padding: '10px 12px',
+                    borderRadius: 12,
+                    background: 'var(--bg-secondary)',
+                    border: '1px solid var(--border)',
+                  }}
+                >
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 14.5 }}>
+                      🎂 {bf.friend_profile.display_name}{' '}
+                      <span style={{ color: 'var(--text-muted)', fontSize: 12.5 }}>
+                        (@{bf.friend_profile.username})
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--accent)', marginTop: 2 }}>
+                      Празднует день рождения сегодня! Отправьте открытку-поздравление:
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-compact"
+                    style={{ fontWeight: 800 }}
+                    onClick={() => handleSendBirthdayGreeting(bf.friend_profile)}
+                  >
+                    🎉 Отправить поздравление
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div style={{ position: 'relative', marginBottom: 16 }}>
           <SearchIcon
@@ -152,7 +236,7 @@ export default function FriendsPage() {
           />
         </div>
         <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: -12, marginBottom: 16 }}>
-          Чтобы добавить нового друга — найдите человека через поиск на странице «Чаты».
+          Чтобы добавить нового друга — найдите человека через поиск на странице «Чаты». Нажмите 💚, чтобы добавить друга в «Близкие друзья» для Историй.
         </p>
 
         {incoming.length > 0 && (
@@ -207,23 +291,57 @@ export default function FriendsPage() {
           </div>
         ) : (
           <div>
-            {filteredFriends.map((f) => (
-              <UserRow
-                key={f.id}
-                profile={f.friend_profile}
-                lastSeenLabel={lastSeenLabels[f.friend_profile.id]}
-                action={
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    <button className="btn btn-primary" style={{ width: 'auto', padding: '6px 12px' }} onClick={() => handleMessage(f.friend_profile.id)}>
-                      Написать
-                    </button>
-                    <button className="btn" style={{ width: 'auto', padding: '6px 12px' }} onClick={() => handleRemove(f.id)}>
-                      Удалить
-                    </button>
-                  </div>
-                }
-              />
-            ))}
+            {filteredFriends.map((f) => {
+              const isClose = closeFriends.includes(f.friend_profile.id);
+              const ext = getExtendedProfile(f.friend_profile.id, f.friend_profile.username);
+              const isBday = isBirthdayToday(ext.birthDate);
+              return (
+                <UserRow
+                  key={f.id}
+                  profile={f.friend_profile}
+                  lastSeenLabel={
+                    isBday
+                      ? `🎂 День рождения сегодня! • ${lastSeenLabels[f.friend_profile.id] || ''}`
+                      : lastSeenLabels[f.friend_profile.id]
+                  }
+                  action={
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      {isBday && (
+                        <button
+                          type="button"
+                          className="btn btn-primary btn-compact"
+                          onClick={() => handleSendBirthdayGreeting(f.friend_profile)}
+                          title="Поздравить с днём рождения в 1 клик"
+                        >
+                          🎉 Поздравить
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="btn btn-compact"
+                        style={{
+                          borderColor: isClose ? '#22c55e' : 'var(--border)',
+                          color: isClose ? '#22c55e' : 'var(--text-muted)',
+                        }}
+                        onClick={() => {
+                          toggleCloseFriend(f.friend_profile.id);
+                          setCloseFriends(getCloseFriendIds());
+                        }}
+                        title="Близкие друзья для Историй"
+                      >
+                        {isClose ? '💚 Близкий' : '🤍'}
+                      </button>
+                      <button className="btn btn-primary btn-compact" onClick={() => handleMessage(f.friend_profile.id)}>
+                        Написать
+                      </button>
+                      <button className="btn btn-compact" onClick={() => handleRemove(f.id)}>
+                        Удалить
+                      </button>
+                    </div>
+                  }
+                />
+              );
+            })}
           </div>
         )}
       </main>

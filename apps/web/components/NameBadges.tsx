@@ -8,6 +8,7 @@ import {
   type CustomRoleDefinition,
 } from '@pixchats/core';
 import { getUserEmojiStatus, syncAllEmojiStatusesFromCloud } from '../lib/emojiStatus';
+import { getUserPremiumStatus, syncPremiumRegistryFromCloud } from '../lib/premiumAndFeatures';
 import { EmojiOrFlag } from './EmojiOrFlag';
 
 const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH || '';
@@ -74,26 +75,38 @@ export function NameWithBadges({
   emojiStatus,
 }: NameWithBadgesProps) {
   const [tip, setTip] = useState<string | null>(null);
-  const [resolvedEmoji, setResolvedEmoji] = useState<string | null>(() =>
-    emojiStatus !== undefined ? emojiStatus : getUserEmojiStatus(userId, username || name)
-  );
+  const [resolvedEmoji, setResolvedEmoji] = useState<string | null>(() => {
+    const prem = getUserPremiumStatus(userId, username || name);
+    if (!prem.active) return null;
+    return emojiStatus !== undefined ? emojiStatus : getUserEmojiStatus(userId, username || name);
+  });
   const [customRoles, setCustomRoles] = useState<CustomRoleDefinition[]>(() =>
     getUserCustomRolesSync(userId, username)
   );
 
   useEffect(() => {
-    if (emojiStatus !== undefined) {
-      setResolvedEmoji(emojiStatus);
-      return;
-    }
     const update = () => {
-      setResolvedEmoji(getUserEmojiStatus(userId, username || name));
+      const prem = getUserPremiumStatus(userId, username || name);
+      if (!prem.active) {
+        setResolvedEmoji(null);
+        return;
+      }
+      if (emojiStatus !== undefined) {
+        setResolvedEmoji(emojiStatus);
+      } else {
+        setResolvedEmoji(getUserEmojiStatus(userId, username || name));
+      }
     };
     update();
     syncAllEmojiStatusesFromCloud().then(update).catch(() => {});
+    syncPremiumRegistryFromCloud(false).then(update).catch(() => {});
     if (typeof window !== 'undefined') {
       window.addEventListener('pixchats-emoji-status-changed', update);
-      return () => window.removeEventListener('pixchats-emoji-status-changed', update);
+      window.addEventListener('pixchats:premium_changed', update);
+      return () => {
+        window.removeEventListener('pixchats-emoji-status-changed', update);
+        window.removeEventListener('pixchats:premium_changed', update);
+      };
     }
   }, [userId, username, name, emojiStatus]);
 

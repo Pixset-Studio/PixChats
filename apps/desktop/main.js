@@ -551,19 +551,11 @@ function createWindow(startHidden = false) {
     const latestCfg = readDesktopConfig();
     const minNow = !startHidden && latestCfg.launchMinimized !== false;
 
-    if (startHidden) {
-      // Автозапуск при старте Windows (--autostart-background) — оставляем полностью скрытым в системном трее
-      mainWindow.hide();
-    } else if (minNow || shouldLaunchMinimized) {
-      // Запуск в свёрнутом виде на ПК: помещаем иконку на панель задач без перехвата фокуса и сразу сворачиваем
+    if (startHidden || minNow || shouldLaunchMinimized) {
+      // Запуск в фоновом режиме (в системном трее без открытия окна):
+      // WebContents продолжает работать в фоне (backgroundThrottling: false), принимая уведомления и звонки
       try {
-        mainWindow.showInactive();
-        mainWindow.minimize();
-        setTimeout(() => {
-          if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isMinimized()) {
-            mainWindow.minimize();
-          }
-        }, 90);
+        mainWindow.hide();
       } catch {}
     } else {
       mainWindow.show();

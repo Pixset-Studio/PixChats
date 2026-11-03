@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { getCurrentProfile, getSupabaseClient, getMuteStates, decryptMessageE2EE } from '@pixchats/core';
+import { getCurrentProfile, getSupabaseClient, getMuteStates, decryptMessageE2EE, getFriends, sendMessage } from '@pixchats/core';
 import type { Profile } from '@pixchats/core';
 import { getNotificationPrefs } from '../lib/notificationPrefs';
 import {
@@ -10,6 +10,12 @@ import {
   sendNativeOrWebNotification,
 } from '../lib/nativePlatform';
 import { startDeviceSessionMonitor } from '../lib/deviceSessions';
+import {
+  getExtendedProfile,
+  syncExtendedProfilesFromCloud,
+  isBirthdayToday,
+  popDueScheduledMessages,
+} from '../lib/premiumAndFeatures';
 
 const MEDIA_LABELS: Record<string, string> = {
   image: '📷 Фото',
@@ -159,11 +165,11 @@ export function NotificationListener() {
   const [toasts, setToasts] = useState<InAppToast[]>([]);
   const meRef = useRef<Profile | null>(null);
 
-  function pushAlert(title: string, body: string, url?: string, badge?: string) {
+  function pushAlert(title: string, body: string, url?: string, badge?: string, forceSilent = false) {
     const prefs = getNotificationPrefs();
     if (!prefs.enabled) return;
 
-    if (prefs.sound) {
+    if (prefs.sound && !forceSilent) {
       playChime();
     }
 
@@ -172,7 +178,7 @@ export function NotificationListener() {
       title,
       body,
       url,
-      silent: !prefs.sound,
+      silent: !prefs.sound || forceSilent,
       onNavigate: (targetUrl) => router.push(targetUrl),
     });
 
@@ -317,9 +323,11 @@ export function NotificationListener() {
       });
     }
 
-    const decrypted = row.ciphertext
+    const rawDecrypted = row.ciphertext
       ? await decryptMessageE2EE(row.chat_id, row.ciphertext)
       : row.text || '';
+    const isSilentMsg = rawDecrypted.startsWith('__SILENT__:');
+    const decrypted = isSilentMsg ? rawDecrypted.slice('__SILENT__:'.length) : rawDecrypted;
     const text =
       row.message_type !== 'text' && MEDIA_LABELS[row.message_type]
         ? MEDIA_LABELS[row.message_type]
@@ -342,10 +350,10 @@ export function NotificationListener() {
     const title = isMention
       ? `📣 ${sender?.display_name ?? 'Кто-то'} упомянул вас`
       : isDirect
-        ? (sender?.display_name ?? 'Новое сообщение')
+        ? `${isSilentMsg ? '🔇 ' : ''}${sender?.display_name ?? 'Новое сообщение'}`
         : `${chatRow?.title ?? 'Группа'}: ${sender?.display_name ?? 'Сообщение'}`;
 
-    pushAlert(title, text, `/chat/?id=${row.chat_id}`, '💬');
+    pushAlert(title, text, `/chat/?id=${row.chat_id}`, isSilentMsg ? '🔇' : '💬', isSilentMsg);
   }
 
   useEffect(() => {
@@ -639,10 +647,42 @@ export function NotificationListener() {
           .subscribe();
       }
 
-      // Фоновая подстраховка для телефонов и ПК (если мобильная ОС усыпляла WebSocket в фоне)
+      // Проверка дней рождения друзей (1 раз в сутки)
+      try {
+        await syncExtendedProfilesFromCloud(false);
+        const todayKey = new Date().toISOString().slice(0, 10);
+        const notifiedKey = `pixchats:birthday_notified:${me.id}:${todayKey}`;
+        if (!localStorage.getItem(notifiedKey)) {
+          const friendsList = await getFriends(me.id);
+          const birthdayFriends = friendsList.filter((f) => {
+            const ext = getExtendedProfile(f.friend_profile.id, f.friend_profile.username);
+            return isBirthdayToday(ext.birthDate);
+          });
+          if (birthdayFriends.length > 0) {
+            localStorage.setItem(notifiedKey, '1');
+            for (const bf of birthdayFriends) {
+              pushAlert(
+                '🎂 День рождения друга!',
+                `Сегодня день рождения у ${bf.friend_profile.display_name} (@${bf.friend_profile.username})! Нажмите, чтобы отправить поздравление 🎉`,
+                `/user/?id=${bf.friend_profile.id}`,
+                '🎂'
+              );
+            }
+          }
+        }
+      } catch {}
+
+      // Фоновая подстраховка для телефонов и ПК + автоотправка отложенных сообщений
       wakeupInterval = setInterval(() => {
         void checkMissedMessages();
-      }, 28000);
+        const due = popDueScheduledMessages();
+        if (due.length > 0) {
+          for (const item of due) {
+            const payloadText = item.silent ? `__SILENT__:${item.text}` : item.text;
+            void sendMessage(item.chatId, payloadText).catch(() => {});
+          }
+        }
+      }, 15000);
     })();
 
     return () => {

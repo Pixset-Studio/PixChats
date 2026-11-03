@@ -11,10 +11,10 @@ import { useIsDesktop } from '../../lib/useIsDesktop';
 import { isBanned } from '../../lib/ban';
 import { Loading } from '../../components/Loading';
 import { getChatListCache } from '../../lib/chatListCache';
-
 import { useConnectionStatus } from '../../lib/useConnectionStatus';
 import { detectRuntimePlatform } from '../../lib/nativePlatform';
 import { openDownloadAppModal } from '../../components/DownloadAppModal';
+import { getUserPremiumStatus, syncPremiumManifestFromCloud } from '../../lib/premiumAndFeatures';
 
 const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || '0.2.0';
 
@@ -26,6 +26,9 @@ export default function ChatsPage() {
   const [profile, setProfile] = useState<Profile | null>(initialProfile);
   const [loading, setLoading] = useState(!initialProfile);
   const [isWebBrowser, setIsWebBrowser] = useState(false);
+  const [isPremium, setIsPremium] = useState(() =>
+    initialProfile ? getUserPremiumStatus(initialProfile.id, initialProfile.username).active : false
+  );
 
   useEffect(() => {
     setIsWebBrowser(detectRuntimePlatform() === 'web');
@@ -45,7 +48,11 @@ export default function ChatsPage() {
         return;
       }
       setProfile(me);
+      setIsPremium(getUserPremiumStatus(me.id, me.username).active);
       setLoading(false);
+      void syncPremiumManifestFromCloud(false).then(() => {
+        setIsPremium(getUserPremiumStatus(me.id, me.username).active);
+      });
       await ensureKeyBundle(me);
       if (typeof window !== 'undefined') {
         const currentSaved = localStorage.getItem('pixchats:theme');
@@ -58,6 +65,13 @@ export default function ChatsPage() {
         }
       }
     })();
+
+    const onPremiumUpdated = () => {
+      const me = getCachedCurrentProfile();
+      if (me) setIsPremium(getUserPremiumStatus(me.id, me.username).active);
+    };
+    window.addEventListener('pixchats:premium_updated', onPremiumUpdated);
+    return () => window.removeEventListener('pixchats:premium_updated', onPremiumUpdated);
   }, [router]);
 
   // На ПК список чатов уже показан слева в PersistentAppShell — здесь просто заглушка справа без мигания.
@@ -73,25 +87,19 @@ export default function ChatsPage() {
 
   if (loading || !profile) return <Loading />;
 
-  // На ПК список чатов уже показан слева в DesktopShell — здесь просто заглушка справа.
-  if (isDesktop) {
-    return (
-      <DesktopShell>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)' }}>
-          Выберите чат слева, чтобы начать общение
-        </div>
-      </DesktopShell>
-    );
-  }
-
   return (
     <>
       <main className="container-wide with-bottom-nav">
         <header className="app-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
           <span className="brand" style={{ fontSize: 20, display: 'inline-flex', alignItems: 'center', gap: 8 }}>
             <img src={`${process.env.NEXT_PUBLIC_BASE_PATH || ''}/logo/icon.png`} alt="" width={34} height={34} style={{ objectFit: 'contain' }} />
-            <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 6 }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
               <span>PixChats</span>
+              {isPremium && (
+                <span className="premium-shimmer-badge" title="У вас активен статус PixChats Premium">
+                  ★ Premium
+                </span>
+              )}
               <span
                 style={{
                   fontSize: 11,

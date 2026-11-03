@@ -15,8 +15,7 @@ namespace PixsetStudio.PixChats
     {
         public const string AppId = "studio.pixset.pixchats";
         public const string AppName = "PixChats";
-        private const int SW_MINIMIZE = 6;
-        private const int SW_SHOWMINNOACTIVE = 7;
+        private const int SW_HIDE = 0;
 
         [DllImport("shell32.dll", SetLastError = true)]
         private static extern int SetCurrentProcessExplicitAppUserModelID([MarshalAs(UnmanagedType.LPWStr)] string AppID);
@@ -32,7 +31,7 @@ namespace PixsetStudio.PixChats
                 RegisterAppUserModelIdInRegistry();
                 RegisterWindowsStartupBackground();
                 RegisterCustomProtocol();
-                MinimizeMainWindowOnStartupIfConfigured(args);
+                HideWindowToBackgroundIfConfigured(args);
             }
             catch (Exception ex)
             {
@@ -40,9 +39,9 @@ namespace PixsetStudio.PixChats
             }
         }
 
-        private static void MinimizeMainWindowOnStartupIfConfigured(string[] args)
+        private static void HideWindowToBackgroundIfConfigured(string[] args)
         {
-            bool launchMinimized = true;
+            bool runInBackground = true;
             try
             {
                 string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
@@ -54,21 +53,20 @@ namespace PixsetStudio.PixChats
                     string json = File.ReadAllText(targetCfg);
                     if (json.Contains("\"launchMinimized\": false") || json.Contains("\"launchMinimized\":false"))
                     {
-                        launchMinimized = false;
+                        runInBackground = false;
                     }
                 }
             }
             catch { }
 
-            if (launchMinimized)
+            if (runInBackground)
             {
                 try
                 {
                     IntPtr hWnd = Process.GetCurrentProcess().MainWindowHandle;
                     if (hWnd != IntPtr.Zero)
                     {
-                        ShowWindow(hWnd, SW_SHOWMINNOACTIVE);
-                        ShowWindow(hWnd, SW_MINIMIZE);
+                        ShowWindow(hWnd, SW_HIDE);
                     }
                 }
                 catch { }

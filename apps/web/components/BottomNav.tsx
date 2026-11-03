@@ -3,8 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { getCachedCurrentProfile, getCurrentProfile } from '@pixchats/core';
-import { ChatsIcon, FriendsIcon, SettingsIcon, ProfileIcon, AdminPanelIcon, AiAssistantIcon } from './Icons';
+import { ChatsIcon, FriendsIcon, SettingsIcon, ProfileIcon } from './Icons';
 import { useIsDesktop } from '../lib/useIsDesktop';
 import { detectRuntimePlatform } from '../lib/nativePlatform';
 import { openDownloadAppModal } from './DownloadAppModal';
@@ -13,55 +12,20 @@ export function BottomNav() {
   const pathname = usePathname();
   const isDesktop = useIsDesktop();
   const [isWebBrowser, setIsWebBrowser] = useState(false);
-  const [isStaff, setIsStaff] = useState(() => {
-    const cached = getCachedCurrentProfile();
-    return Boolean(
-      cached && (cached.role === 'admin' || cached.role === 'moderator' || cached.role === 'developer')
-    );
-  });
-  const [isDeveloper, setIsDeveloper] = useState(() => {
-    const cached = getCachedCurrentProfile();
-    return Boolean(cached && cached.role === 'developer');
-  });
 
   useEffect(() => {
     setIsWebBrowser(detectRuntimePlatform() === 'web');
-
-    const checkRole = (p: any) => {
-      if (!p) return;
-      setIsStaff(p.role === 'admin' || p.role === 'moderator' || p.role === 'developer');
-      setIsDeveloper(p.role === 'developer');
-    };
-
-    const cached = getCachedCurrentProfile();
-    if (cached) {
-      checkRole(cached);
-    } else {
-      void getCurrentProfile().then(checkRole).catch(() => {});
-    }
-
-    const onProfileUpdated = (e: Event) => {
-      const custom = e as CustomEvent;
-      if (custom.detail) checkRole(custom.detail);
-    };
-    window.addEventListener('pixchats:profile_updated', onProfileUpdated);
-    return () => window.removeEventListener('pixchats:profile_updated', onProfileUpdated);
   }, []);
 
   // На ПК уже есть верхняя горизонтальная панель навигации в DesktopShell
   if (isDesktop) return null;
 
+  // На телефонах Панель администратора и AI ассистент находятся внутри раздела «Настройки»
   const tabs = [
     { href: '/chats/', label: 'Чаты', icon: <ChatsIcon size={20} /> },
     { href: '/friends/', label: 'Друзья', icon: <FriendsIcon size={20} /> },
     { href: '/settings/', label: 'Настройки', icon: <SettingsIcon size={20} /> },
     { href: '/profile/', label: 'Профиль', icon: <ProfileIcon size={20} /> },
-    ...(isStaff
-      ? [{ href: '/admin/', label: 'Панель администратора', icon: <AdminPanelIcon size={20} /> }]
-      : []),
-    ...(isDeveloper
-      ? [{ href: '/ai-assistant/', label: 'AI ассистент', icon: <AiAssistantIcon size={20} /> }]
-      : []),
   ];
 
   return (
@@ -70,8 +34,8 @@ export function BottomNav() {
         const active =
           pathname === tab.href ||
           pathname === tab.href.replace(/\/$/, '') ||
-          (tab.href === '/admin/' && pathname?.startsWith('/admin')) ||
-          (tab.href === '/ai-assistant/' && pathname?.startsWith('/ai-assistant'));
+          (tab.href === '/settings/' &&
+            (pathname?.startsWith('/admin') || pathname?.startsWith('/ai-assistant')));
         return (
           <Link key={tab.href} href={tab.href} className={`bottom-nav-item ${active ? 'active' : ''}`}>
             <span className="bottom-nav-icon">{tab.icon}</span>
@@ -98,5 +62,3 @@ export function BottomNav() {
     </nav>
   );
 }
-
-

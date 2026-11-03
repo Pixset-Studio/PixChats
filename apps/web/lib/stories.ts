@@ -22,14 +22,15 @@ export interface StoryItem {
   drawingDataUrl?: string | null;
   bgGradient: string;
   text: string;
-  privacy: 'all' | 'friends';
+  privacy: 'all' | 'friends' | 'close_friends';
   createdAt: string;
   expiresAt: string;
   viewers: string[];
   reactions: Record<string, string[]>; // emoji -> array of userIds
 }
 
-export const MAX_REACTIONS_PER_STORY_USER = 3;
+export const MAX_REACTIONS_PER_STORY_PREMIUM = 3;
+export const MAX_REACTIONS_PER_STORY_FREE = 1;
 
 const STORIES_STORAGE_KEY = 'pixchats:stories:v2';
 const STORIES_VIEWED_KEY = 'pixchats:stories_viewed:v1';
@@ -95,7 +96,12 @@ function normalizeStoryItem(raw: any): StoryItem | null {
     drawingDataUrl: raw.drawingDataUrl || null,
     bgGradient: raw.bgGradient || STORY_GRADIENTS[0].css,
     text,
-    privacy: raw.privacy === 'friends' ? 'friends' : 'all',
+    privacy:
+      raw.privacy === 'close_friends'
+        ? 'close_friends'
+        : raw.privacy === 'friends'
+          ? 'friends'
+          : 'all',
     createdAt: raw.createdAt || new Date().toISOString(),
     expiresAt: raw.expiresAt,
     viewers: Array.from(new Set(viewers)),
@@ -272,7 +278,7 @@ export async function publishNewStory(params: {
   drawingDataUrl?: string | null;
   bgGradient: string;
   text: string;
-  privacy: 'all' | 'friends';
+  privacy: 'all' | 'friends' | 'close_friends';
 }): Promise<StoryItem> {
   const now = new Date();
   const expires = new Date(now.getTime() + STORY_LIFETIME_MS);
@@ -354,10 +360,11 @@ export async function toggleStoryReaction(
   storyId: string,
   emoji: string,
   userId: string,
-  options?: { isDeveloper?: boolean; onLimitReached?: () => void }
+  options?: { isDeveloper?: boolean; isPremium?: boolean; onLimitReached?: (maxAllowed: number) => void }
 ): Promise<StoryItem[]> {
   const current = getCachedStories();
   let limitReached = false;
+  const maxAllowed = options?.isPremium ? MAX_REACTIONS_PER_STORY_PREMIUM : MAX_REACTIONS_PER_STORY_FREE;
 
   const updated = current.map((s) => {
     if (s.id !== storyId) return s;
@@ -367,7 +374,7 @@ export async function toggleStoryReaction(
 
     if (!alreadyReacted && !options?.isDeveloper) {
       const myTotalReactions = countUserReactionsOnStory(s, userId);
-      if (myTotalReactions >= MAX_REACTIONS_PER_STORY_USER) {
+      if (myTotalReactions >= maxAllowed) {
         limitReached = true;
         return s;
       }
@@ -383,7 +390,7 @@ export async function toggleStoryReaction(
   });
 
   if (limitReached) {
-    options?.onLimitReached?.();
+    options?.onLimitReached?.(maxAllowed);
     return current;
   }
 

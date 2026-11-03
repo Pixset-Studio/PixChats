@@ -6,6 +6,9 @@ import {
   closeGlobalAudioPlayer,
   cycleGlobalAudioSpeed,
   getGlobalAudioState,
+  playGlobalAudioTrack,
+  playNextGlobalAudioTrack,
+  playPrevGlobalAudioTrack,
   seekGlobalAudio,
   toggleGlobalAudioPlayPause,
   type GlobalAudioState,
@@ -21,6 +24,7 @@ function formatSec(sec: number): string {
 export function MiniAudioPlayer() {
   const router = useRouter();
   const [state, setState] = useState<GlobalAudioState>(() => getGlobalAudioState());
+  const [showPlaylist, setShowPlaylist] = useState(false);
 
   useEffect(() => {
     const onUpdate = (e: Event) => {
@@ -34,6 +38,7 @@ export function MiniAudioPlayer() {
   if (!state.track) return null;
 
   const progress = state.duration > 0 ? Math.min(100, (state.currentTime / state.duration) * 100) : 0;
+  const hasMultipleTracks = state.playlist && state.playlist.length > 1;
 
   return (
     <div
@@ -42,7 +47,7 @@ export function MiniAudioPlayer() {
         bottom: 64,
         right: 16,
         left: 16,
-        maxWidth: 460,
+        maxWidth: 480,
         margin: '0 auto',
         zIndex: 9000,
         background: 'rgba(14, 14, 17, 0.96)',
@@ -56,7 +61,19 @@ export function MiniAudioPlayer() {
         gap: 6,
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+        {hasMultipleTracks && (
+          <button
+            type="button"
+            className="btn-ghost"
+            style={{ width: 'auto', padding: '3px 6px', fontSize: 12 }}
+            onClick={() => playPrevGlobalAudioTrack()}
+            title="Предыдущий трек в чате"
+          >
+            ⏮
+          </button>
+        )}
+
         <button
           type="button"
           onClick={() => toggleGlobalAudioPlayPause()}
@@ -65,7 +82,7 @@ export function MiniAudioPlayer() {
             height: 32,
             borderRadius: '50%',
             background: 'var(--accent)',
-            color: '#09090b',
+            color: '#000',
             border: 'none',
             fontWeight: 800,
             fontSize: 13,
@@ -79,6 +96,18 @@ export function MiniAudioPlayer() {
         >
           {state.playing ? '⏸' : '▶'}
         </button>
+
+        {hasMultipleTracks && (
+          <button
+            type="button"
+            className="btn-ghost"
+            style={{ width: 'auto', padding: '3px 6px', fontSize: 12 }}
+            onClick={() => playNextGlobalAudioTrack()}
+            title="Следующий трек в чате"
+          >
+            ⏭
+          </button>
+        )}
 
         <div
           style={{ flex: 1, minWidth: 0, cursor: 'pointer' }}
@@ -99,7 +128,7 @@ export function MiniAudioPlayer() {
               whiteSpace: 'nowrap',
             }}
           >
-            {state.track.title}
+            🎵 {state.track.title}
           </div>
           <div
             style={{
@@ -113,6 +142,26 @@ export function MiniAudioPlayer() {
             {state.track.senderName} • {state.track.chatTitle} • {formatSec(state.currentTime)} / {formatSec(state.duration)}
           </div>
         </div>
+
+        {state.playlist && state.playlist.length > 0 && (
+          <button
+            type="button"
+            className="btn"
+            style={{
+              width: 'auto',
+              padding: '3px 8px',
+              fontSize: 11,
+              fontWeight: 700,
+              borderRadius: 6,
+              borderColor: showPlaylist ? 'var(--accent)' : undefined,
+              color: showPlaylist ? 'var(--accent)' : undefined,
+            }}
+            onClick={() => setShowPlaylist((v) => !v)}
+            title="Плейлист аудиозаписей чата"
+          >
+            🎶 {state.playlist.length}
+          </button>
+        )}
 
         <button
           type="button"
@@ -161,6 +210,56 @@ export function MiniAudioPlayer() {
           }}
         />
       </div>
+
+      {/* Раскрывающийся плейлист чата */}
+      {showPlaylist && state.playlist.length > 0 && (
+        <div
+          style={{
+            maxHeight: 160,
+            overflowY: 'auto',
+            borderTop: '1px solid var(--border)',
+            paddingTop: 6,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 4,
+          }}
+        >
+          <div style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase' }}>
+            Плейлист чата ({state.playlist.length})
+          </div>
+          {state.playlist.map((item, idx) => {
+            const isCurrent = item.id === state.track?.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => playGlobalAudioTrack(item, state.playlist)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 8,
+                  padding: '5px 8px',
+                  borderRadius: 7,
+                  border: isCurrent ? '1px solid var(--accent)' : '1px solid transparent',
+                  background: isCurrent ? 'rgba(255, 212, 0, 0.14)' : 'rgba(255, 255, 255, 0.03)',
+                  color: 'var(--text)',
+                  fontSize: 12,
+                  textAlign: 'left',
+                  cursor: 'pointer',
+                }}
+              >
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: isCurrent ? 700 : 500 }}>
+                  {idx + 1}. {item.title}
+                </span>
+                <span style={{ fontSize: 10.5, color: isCurrent ? 'var(--accent)' : 'var(--text-muted)', flexShrink: 0 }}>
+                  {item.senderName}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

@@ -17,6 +17,7 @@ import {
   decryptMessageE2EE,
   getOrCreateSavedMessagesChat,
   isSavedMessagesChat,
+  getFriends,
 } from '@pixchats/core';
 import type { Chat, Profile, Message, SearchResult, MuteState } from '@pixchats/core';
 import { NameWithBadges } from './NameBadges';
@@ -47,6 +48,11 @@ import { isStickerTagText } from '../lib/stickers';
 import { extractTopicFromText } from '../lib/channelConfig';
 import { StoriesBar } from './StoriesBar';
 import { useIsDesktop } from '../lib/useIsDesktop';
+import {
+  getAllChatDrafts,
+  getUnreadFirstSortEnabled,
+  getStrangerRequestsFilterEnabled,
+} from '../lib/premiumAndFeatures';
 
 const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || '0.2.0';
 
@@ -56,7 +62,7 @@ const TYPE_LABEL: Record<Chat['type'], string> = {
   channel: 'Канал',
 };
 
-type FolderFilter = 'all' | 'direct' | 'group' | 'channel' | 'archive' | string;
+type FolderFilter = 'all' | 'direct' | 'group' | 'channel' | 'archive' | 'requests' | string;
 
 function formatTime(iso: string): string {
   const date = new Date(iso);
@@ -77,7 +83,13 @@ function formatPreviewText(message: Message): string {
     return '';
   }
   if (message.caption?.startsWith('__VIDEONOTE__') || message.text?.startsWith('__VIDEONOTE__')) {
-    return '🎥 Видеосообщение (кружочек)';
+    return '🔵 Видеосообщение (кружочек)';
+  }
+  if (message.text?.startsWith('__ALBUM__:')) {
+    return '🖼️ Альбом фотографий';
+  }
+  if (message.text?.startsWith('__TABLE__:')) {
+    return '📊 Таблица данных';
   }
   switch (message.message_type) {
     case 'image':
@@ -91,10 +103,17 @@ function formatPreviewText(message: Message): string {
     case 'file':
       return `📎 ${message.text}`;
     default: {
-      const { expiresAt, cleanText } = extractSelfDestructInfo(message.text || '');
+      const rawText = (message.text || '').replace(/^__SILENT__:/, '');
+      const { expiresAt, cleanText } = extractSelfDestructInfo(rawText);
       const { cleanText: topicCleaned } = extractTopicFromText(cleanText);
       if (isStickerTagText(topicCleaned)) {
         return '👾 Стикер';
+      }
+      if (topicCleaned.startsWith('__ALBUM__:')) {
+        return '🖼️ Альбом фотографий';
+      }
+      if (topicCleaned.startsWith('__TABLE__:')) {
+        return '📊 Таблица данных';
       }
       const poll = parsePollMessage(topicCleaned);
       if (poll) {
@@ -142,6 +161,24 @@ export function ChatListPanel() {
   const [newFolderName, setNewFolderName] = useState('');
   const [selectedForNewFolder, setSelectedForNewFolder] = useState<string[]>([]);
   const [liveActivities, setLiveActivities] = useState<Record<string, string>>({});
+  const [draftsMap, setDraftsMap] = useState<Record<string, string>>(() => getAllChatDrafts());
+  const [unreadFirst, setUnreadFirst] = useState<boolean>(() => getUnreadFirstSortEnabled());
+  const [strangerFilter, setStrangerFilter] = useState<boolean>(() => getStrangerRequestsFilterEnabled());
+  const [friendIdsSet, setFriendIdsSet] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    const onDraftChanged = () => setDraftsMap(getAllChatDrafts());
+    const onSortChanged = () => setUnreadFirst(getUnreadFirstSortEnabled());
+    const onReqChanged = () => setStrangerFilter(getStrangerRequestsFilterEnabled());
+    window.addEventListener('pixchats:draft_changed', onDraftChanged);
+    window.addEventListener('pixchats:sort_changed', onSortChanged);
+    window.addEventListener('pixchats:requests_filter_changed', onReqChanged);
+    return () => {
+      window.removeEventListener('pixchats:draft_changed', onDraftChanged);
+      window.removeEventListener('pixchats:sort_changed', onSortChanged);
+      window.removeEventListener('pixchats:requests_filter_changed', onReqChanged);
+    };
+  }, []);
 
   useEffect(() => {
     const syncActiveChat = () => {
@@ -581,6 +618,14 @@ export function ChatListPanel() {
   if (loading || !profile) return <ChatListSkeleton />;
 
   const archivedCount = chats.filter((c) => archivedChatIds.includes(c.id) && !hiddenChatIds.includes(c.id)).length;
+  const strangerRequestsCount = strangerFilter
+    ? chats.filter((c) => {
+        if (hiddenChatIds.includes(c.id) || archivedChatIds.includes(c.id)) return false;
+        if (c.type !== 'direct' || isSavedMessagesChat(c, profile.id)) return false;
+        const p = partners[c.id];
+        return Boolean(p && !friendIdsSet.has(p.id));
+      }).length
+    : 0;
 
   const filtered = chats.filter((c) => {
     // Скрытые под PIN-кодом чаты не видны в обычном списке
@@ -588,13 +633,25 @@ export function ChatListPanel() {
 
     const isArch = archivedChatIds.includes(c.id);
     if (folder === 'archive') return isArch;
+
+    const isSaved = isSavedMessagesChat(c, profile.id);
+    const partner = c.type === 'direct' && !isSaved ? partners[c.id] : null;
+    const isStrangerRequest = Boolean(
+      strangerFilter && c.type === 'direct' && !isSaved && partner && !friendIdsSet.has(partner.id)
+    );
+
+    if (folder === 'requests') {
+      return !isArch && isStrangerRequest;
+    }
+
     // Кастомная папка
     const custom = customFolders.find((cf) => cf.id === folder);
     if (custom) {
       return custom.chatIds.includes(c.id);
     }
-    // Стандартные папки скрывают заархивированные чаты
+    // Стандартные папки скрывают заархивированные чаты и (при включённом фильтре) запросы от незнакомцев
     if (isArch) return false;
+    if (isStrangerRequest && (folder === 'all' || folder === 'direct')) return false;
     if (folder === 'all') return true;
     return c.type === folder;
   });
@@ -606,6 +663,12 @@ export function ChatListPanel() {
     const bPin = pinnedChatIds.includes(b.id) || bSaved;
     if (aPin && !bPin) return -1;
     if (!aPin && bPin) return 1;
+    if (unreadFirst) {
+      const aUnread = (unreadCounts[a.id] ?? 0) > 0;
+      const bUnread = (unreadCounts[b.id] ?? 0) > 0;
+      if (aUnread && !bUnread) return -1;
+      if (!aUnread && bUnread) return 1;
+    }
     const ta = previews[a.id]?.sent_at ?? a.created_at;
     const tb = previews[b.id]?.sent_at ?? b.created_at;
     return new Date(tb).getTime() - new Date(ta).getTime();
@@ -690,6 +753,16 @@ export function ChatListPanel() {
           <button className={`folder-tab ${folder === 'channel' ? 'active' : ''}`} onClick={() => setFolder('channel')}>
             Каналы
           </button>
+
+          {strangerFilter && (
+            <button
+              type="button"
+              className={`folder-tab ${folder === 'requests' ? 'active' : ''}`}
+              onClick={() => setFolder('requests')}
+            >
+              📩 Запросы {strangerRequestsCount > 0 ? `(${strangerRequestsCount})` : ''}
+            </button>
+          )}
 
           {customFolders.map((cf) => (
             <span key={cf.id} style={{ display: 'inline-flex', alignItems: 'center' }}>
@@ -993,6 +1066,7 @@ export function ChatListPanel() {
             const isVerified = isSaved ? false : partner ? partner.is_verified : chat.is_verified;
 
             const isPinned = pinnedChatIds.includes(chat.id) || isSaved;
+            const draftText = draftsMap[chat.id];
 
             return (
               <Link
@@ -1045,13 +1119,20 @@ export function ChatListPanel() {
                         fontWeight: liveActivities[chat.id] ? 600 : undefined,
                       }}
                     >
-                      {liveActivities[chat.id]
-                        ? liveActivities[chat.id]
-                        : preview
-                          ? formatPreviewText(preview)
-                          : isSaved
-                            ? 'Личное облако заметок и файлов'
-                            : `${TYPE_LABEL[chat.type]}${chat.visibility ? ` · ${chat.visibility === 'public' ? 'публичный' : 'приватный'}` : ''}`}
+                      {liveActivities[chat.id] ? (
+                        liveActivities[chat.id]
+                      ) : draftText ? (
+                        <>
+                          <span style={{ color: '#ef4444', fontWeight: 700 }}>Черновик: </span>
+                          <span>{draftText}</span>
+                        </>
+                      ) : preview ? (
+                        formatPreviewText(preview)
+                      ) : isSaved ? (
+                        'Личное облако заметок и файлов'
+                      ) : (
+                        `${TYPE_LABEL[chat.type]}${chat.visibility ? ` · ${chat.visibility === 'public' ? 'публичный' : 'приватный'}` : ''}`
+                      )}
                     </span>
                     <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6, flexShrink: 0 }}>
                       {preview && preview.sender_id === profile.id && (

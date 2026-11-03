@@ -16,6 +16,7 @@ import {
   getMuteStates,
   muteChat,
   unmuteChat,
+  sendMessage,
   getLinkedPixsetNickname,
   getPixsetPublicProfileUrl,
 } from '@pixchats/core';
@@ -38,8 +39,18 @@ import {
   type CustomChatFolder,
 } from '../../lib/chatFolders';
 import { isChatHidden, toggleHiddenChat } from '../../lib/appLock';
-
 import { loadActiveStories, type StoryItem, STORY_GRADIENTS } from '../../lib/stories';
+import {
+  getUserExtendedProfileSync,
+  syncExtendedProfilesFromCloud,
+  isBirthdayToday,
+  formatBirthdayHuman,
+  isUserInCloseFriends,
+  toggleCloseFriend,
+  getUserPremiumStatus,
+  syncPremiumManifestFromCloud,
+  type UserExtendedProfileMeta,
+} from '../../lib/premiumAndFeatures';
 
 function UserProfileInner() {
   const searchParams = useSearchParams();
@@ -63,6 +74,9 @@ function UserProfileInner() {
   const [isHidden, setIsHidden] = useState(false);
   const [customFolders, setCustomFolders] = useState<CustomChatFolder[]>([]);
   const [showQrModal, setShowQrModal] = useState(false);
+  const [userExtMeta, setUserExtMeta] = useState<UserExtendedProfileMeta>({});
+  const [isCloseFriend, setIsCloseFriend] = useState(false);
+  const [userIsPremium, setUserIsPremium] = useState(false);
 
   useEffect(() => {
     setCustomFolders(getCustomFolders());
@@ -174,6 +188,18 @@ function UserProfileInner() {
           const mutes = await getMuteStates([chatId], profile.id);
           setMuteState(mutes[chatId] ?? { muted: false, mutedForever: false, mutedUntil: null });
         }
+
+        setUserExtMeta(getUserExtendedProfileSync(userRow.id));
+        setIsCloseFriend(isUserInCloseFriends(profile.id, userRow.id));
+        setUserIsPremium(getUserPremiumStatus(userRow.id, userRow.username).active);
+
+        void syncExtendedProfilesFromCloud(false).then((all) => {
+          setUserExtMeta(all[userRow.id] || {});
+          setIsCloseFriend(isUserInCloseFriends(profile.id, userRow.id));
+        });
+        void syncPremiumManifestFromCloud(false).then(() => {
+          setUserIsPremium(getUserPremiumStatus(userRow.id, userRow.username).active);
+        });
       }
     })();
   }, [userId, router]);
@@ -256,8 +282,24 @@ function UserProfileInner() {
         ← Назад
       </Link>
 
-      <div className="profile-hero">
-        <div style={{ position: 'relative', display: 'inline-block' }}>
+      <div className="profile-hero" style={{ position: 'relative', overflow: 'hidden', paddingTop: 0 }}>
+        {userExtMeta.bannerUrl && (
+          <div
+            style={{
+              height: 112,
+              margin: '0 -20px -42px -20px',
+              borderBottom: '1px solid var(--border)',
+              ...(userExtMeta.bannerUrl.startsWith('linear-gradient')
+                ? { background: userExtMeta.bannerUrl }
+                : {
+                    backgroundImage: `url(${userExtMeta.bannerUrl})`,
+                    backgroundSize: 'cover',
+                    backgroundPosition: 'center',
+                  }),
+            }}
+          />
+        )}
+        <div style={{ position: 'relative', display: 'inline-block', marginTop: userExtMeta.bannerUrl ? 0 : 14 }}>
           <div
             className={`avatar ${!user.avatar_url ? 'avatar-fallback' : ''}`}
             style={{
@@ -265,7 +307,7 @@ function UserProfileInner() {
               backgroundSize: 'cover',
               backgroundPosition: 'center',
               cursor: userStories.length > 0 ? 'pointer' : 'default',
-              border: userStories.length > 0 ? '3.5px solid var(--accent)' : undefined,
+              border: userStories.length > 0 ? '3.5px solid var(--accent)' : '3px solid var(--surface)',
               boxShadow: userStories.length > 0 ? '0 0 16px rgba(255, 212, 0, 0.45)' : undefined,
             }}
             onClick={() => {
@@ -294,7 +336,7 @@ function UserProfileInner() {
             </button>
           </div>
         )}
-        <h2>
+        <h2 style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, flexWrap: 'wrap' }}>
           <NameWithBadges
             name={user.display_name}
             userId={user.id}
@@ -304,6 +346,11 @@ function UserProfileInner() {
             isPixsetEmployee={user.is_pixset_employee}
             isFrozen={user.frozen}
           />
+          {userIsPremium && (
+            <span className="premium-shimmer-badge" title="У пользователя активен PixChats Premium">
+              ★ Premium
+            </span>
+          )}
         </h2>
         <div className="username">
           @{user.username} · {lastSeenLabel}
@@ -311,6 +358,51 @@ function UserProfileInner() {
         <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
           В PixChats с {new Date(user.created_at).toLocaleDateString('ru-RU', { day: '2-digit', month: 'long', year: 'numeric' })}
         </div>
+        {userExtMeta.birthDate && (
+          <div style={{ fontSize: 12.5, color: 'var(--accent)', fontWeight: 600, marginTop: 4 }}>
+            🎂 День рождения: {formatBirthdayHuman(userExtMeta.birthDate)}
+          </div>
+        )}
+        {!isSelf && isBirthdayToday(userExtMeta.birthDate) && (
+          <div style={{ marginTop: 10 }}>
+            <button
+              type="button"
+              className="btn btn-primary btn-compact"
+              onClick={async () => {
+                try {
+                  const cid = await ensureDirectChatId();
+                  if (!cid) return;
+                  await sendMessage(
+                    cid,
+                    `🎂🎉 С Днём Рождения, ${user.display_name}! Желаю счастья, вдохновения и ярких побед!`
+                  );
+                  router.push(`/chat/?id=${cid}`);
+                } catch {}
+              }}
+            >
+              🎉 Сегодня День Рождения! Отправить поздравление
+            </button>
+          </div>
+        )}
+        {userExtMeta.musicStatus && (
+          <div
+            style={{
+              marginTop: 10,
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 8,
+              padding: '6px 14px',
+              borderRadius: 999,
+              background: 'rgba(255, 212, 0, 0.12)',
+              border: '1px solid rgba(255, 212, 0, 0.35)',
+              fontSize: 12.5,
+            }}
+          >
+            <span>🎵</span>
+            <span style={{ fontWeight: 700, color: 'var(--accent)' }}>{userExtMeta.musicStatus.title}</span>
+            <span style={{ color: 'var(--text-muted)' }}>— {userExtMeta.musicStatus.artist}</span>
+          </div>
+        )}
         {user.bio && (
           <p style={{ maxWidth: 420, margin: '12px auto 0', color: 'var(--text-muted)', fontSize: 14 }}>{user.bio}</p>
         )}
@@ -396,6 +488,23 @@ function UserProfileInner() {
             </button>
             <button className="btn btn-compact" onClick={handleToggleHidden}>
               {isHidden ? '🔓 Показать' : '🔐 Скрыть'}
+            </button>
+            <button
+              type="button"
+              className="btn btn-compact"
+              style={{
+                borderColor: isCloseFriend ? '#22c55e' : undefined,
+                color: isCloseFriend ? '#22c55e' : undefined,
+              }}
+              onClick={async () => {
+                const nextList = await toggleCloseFriend(me.id, user.id);
+                const nowClose = nextList.includes(user.id);
+                setIsCloseFriend(nowClose);
+                setNotice(nowClose ? '💚 Добавлен(а) в «Близкие друзья» для Историй' : 'Удалён(а) из «Близких друзей»');
+                setTimeout(() => setNotice(null), 1800);
+              }}
+            >
+              {isCloseFriend ? '💚 Близкий друг ✓' : '💚 В Близкие друзья'}
             </button>
             {existingChatId && <MuteControl muteState={muteState} onMute={handleMute} onUnmute={handleUnmute} />}
           </div>

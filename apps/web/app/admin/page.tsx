@@ -71,6 +71,14 @@ import {
   setUserEmojiStatus,
   PRESET_EMOJI_STATUSES,
 } from '../../lib/emojiStatus';
+import {
+  getUserPremiumStatus,
+  syncPremiumRegistryFromCloud,
+  formatPremiumRemaining,
+  grantUserPremium,
+  revokeUserPremium,
+  type PremiumDurationUnit,
+} from '../../lib/premiumAndFeatures';
 
 type AdminTab = 'users' | 'chats' | 'stories' | 'moderation' | 'appeals' | 'banned_ips' | 'content' | 'overview';
 
@@ -103,6 +111,15 @@ export default function AdminPage() {
   const [loadingUsers, setLoadingUsers] = useState(false);
   const [editingEmojiUserId, setEditingEmojiUserId] = useState<string | null>(null);
   const [customAdminEmoji, setCustomAdminEmoji] = useState('');
+
+  // PixChats Premium управление
+  const [premTick, setPremTick] = useState(0);
+  const [editingPremiumUserId, setEditingPremiumUserId] = useState<string | null>(null);
+  const [premMode, setPremMode] = useState<'duration' | 'until' | 'forever'>('duration');
+  const [premValue, setPremValue] = useState(30);
+  const [premUnit, setPremUnit] = useState<PremiumDurationUnit>('days');
+  const [premUntilDate, setPremUntilDate] = useState('');
+  const [premNote, setPremNote] = useState('');
 
   // Группы и каналы
   const [chatQuery, setChatQuery] = useState('');
@@ -258,6 +275,7 @@ export default function AdminPage() {
       refreshAppeals();
       refreshBannedIps();
       refreshCustomRoles();
+      void syncPremiumRegistryFromCloud(true).then(() => setPremTick((t) => t + 1));
 
       try {
         await cleanupExpiredFrozenAccounts();
@@ -878,13 +896,14 @@ export default function AdminPage() {
               <ul className="list-plain">
                 {results.map((user) => {
                   const currentEmoji = getUserEmojiStatus(user.id, user.username);
+                  const userPrem = getUserPremiumStatus(user.id, user.username);
                   const isBannedNow =
                     user.banned_permanently ||
                     Boolean(user.banned_until && new Date(user.banned_until) > new Date());
 
                   return (
                     <li
-                      key={user.id}
+                      key={`${user.id}-${premTick}`}
                       className="list-row"
                       style={{
                         display: 'flex',
@@ -928,7 +947,7 @@ export default function AdminPage() {
                             )}
                           </div>
                           <div>
-                            <div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                               <NameWithBadges
                                 name={user.display_name}
                                 userId={user.id}
@@ -941,6 +960,14 @@ export default function AdminPage() {
                               <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>
                                 (@{user.username})
                               </span>
+                              {userPrem.active && (
+                                <span
+                                  className="premium-shimmer-badge"
+                                  title={`Подписка PixChats Premium (${formatPremiumRemaining(userPrem.expiresAt)})`}
+                                >
+                                  ★ Premium ({formatPremiumRemaining(userPrem.expiresAt)})
+                                </span>
+                              )}
                             </div>
                             <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
                               ID: {user.id.slice(0, 8)}… · Регистрация:{' '}
@@ -963,7 +990,7 @@ export default function AdminPage() {
                         </Link>
                       </div>
 
-                      {/* Управление верификацией, сотрудником, ролью и эмодзи-статусом */}
+                      {/* Управление верификацией, сотрудником, Premium, ролью и эмодзи-статусом */}
                       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                         <button
                           className="btn"
@@ -978,6 +1005,24 @@ export default function AdminPage() {
                           onClick={() => handleTogglePixsetEmployee(user.id, !user.is_pixset_employee)}
                         >
                           {user.is_pixset_employee ? '💠 Снять "Сотрудник"' : '+ Выдать "Сотрудник"'}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn"
+                          style={{
+                            width: 'auto',
+                            padding: '6px 12px',
+                            fontSize: 12,
+                            background: userPrem.active ? 'linear-gradient(135deg, #ffd400, #f59e0b)' : 'var(--bg-elevated)',
+                            color: userPrem.active ? '#000' : 'var(--text)',
+                            fontWeight: 700,
+                            borderColor: 'var(--accent)',
+                          }}
+                          onClick={() =>
+                            setEditingPremiumUserId(editingPremiumUserId === user.id ? null : user.id)
+                          }
+                        >
+                          {userPrem.active ? '⭐ Настроить / Снять Premium' : '⭐ Выдать PixChats Premium'}
                         </button>
                         <button
                           type="button"
@@ -1007,6 +1052,131 @@ export default function AdminPage() {
                           </select>
                         )}
                       </div>
+
+                      {/* Панель выдачи и настройки PixChats Premium на любой срок */}
+                      {editingPremiumUserId === user.id && (
+                        <div
+                          style={{
+                            padding: 12,
+                            borderRadius: 12,
+                            background: 'linear-gradient(135deg, rgba(255, 212, 0, 0.12), var(--bg))',
+                            border: '1px solid var(--accent)',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: 10,
+                          }}
+                        >
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                            <div style={{ fontWeight: 800, fontSize: 13.5 }}>
+                              ⭐ Выдача / настройка PixChats Premium для @{user.username}
+                            </div>
+                            {userPrem.active && (
+                              <button
+                                type="button"
+                                className="btn btn-compact"
+                                style={{ borderColor: 'var(--danger)', color: 'var(--danger)', fontWeight: 700 }}
+                                onClick={async () => {
+                                  await revokeUserPremium(user.id, user.username);
+                                  setPremTick((t) => t + 1);
+                                  setEditingPremiumUserId(null);
+                                  setNotice(`Подписка PixChats Premium снята у @${user.username}`);
+                                }}
+                              >
+                                ✕ Забрать Premium
+                              </button>
+                            )}
+                          </div>
+
+                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                            {(
+                              [
+                                { id: 'duration', label: '⏱️ На срок (сек/мин/ч/дн/мес/лет)' },
+                                { id: 'until', label: '📅 До конкретной даты и времени' },
+                                { id: 'forever', label: '♾️ Навсегда (Бессрочно)' },
+                              ] as const
+                            ).map((m) => (
+                              <button
+                                key={m.id}
+                                type="button"
+                                className={`btn btn-compact ${premMode === m.id ? 'btn-primary' : ''}`}
+                                onClick={() => setPremMode(m.id)}
+                              >
+                                {m.label}
+                              </button>
+                            ))}
+                          </div>
+
+                          {premMode === 'duration' && (
+                            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                              <input
+                                type="number"
+                                min={1}
+                                className="input"
+                                style={{ width: 110 }}
+                                value={premValue}
+                                onChange={(e) => setPremValue(Math.max(1, Number(e.target.value)))}
+                              />
+                              <select
+                                className="input"
+                                style={{ width: 160 }}
+                                value={premUnit}
+                                onChange={(e) => setPremUnit(e.target.value as PremiumDurationUnit)}
+                              >
+                                <option value="seconds">Секунд</option>
+                                <option value="minutes">Минут</option>
+                                <option value="hours">Часов</option>
+                                <option value="days">Дней</option>
+                                <option value="months">Месяцев</option>
+                                <option value="years">Лет</option>
+                              </select>
+                            </div>
+                          )}
+
+                          {premMode === 'until' && (
+                            <div>
+                              <input
+                                type="datetime-local"
+                                className="input"
+                                style={{ maxWidth: 260 }}
+                                value={premUntilDate}
+                                onChange={(e) => setPremUntilDate(e.target.value)}
+                              />
+                            </div>
+                          )}
+
+                          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                            <input
+                              className="input"
+                              style={{ flex: 1, minWidth: 180 }}
+                              placeholder="Комментарий (напр. За активность / Подарок от администрации)…"
+                              value={premNote}
+                              onChange={(e) => setPremNote(e.target.value)}
+                            />
+                            <button
+                              type="button"
+                              className="btn btn-primary btn-compact"
+                              style={{ fontWeight: 800 }}
+                              onClick={async () => {
+                                await grantUserPremium({
+                                  userId: user.id,
+                                  username: user.username,
+                                  grantedBy: me.username,
+                                  note: premNote.trim() || undefined,
+                                  permanent: premMode === 'forever',
+                                  durationValue: premMode === 'duration' ? premValue : undefined,
+                                  durationUnit: premMode === 'duration' ? premUnit : undefined,
+                                  untilDate: premMode === 'until' ? premUntilDate : undefined,
+                                });
+                                setPremTick((t) => t + 1);
+                                setEditingPremiumUserId(null);
+                                setNotice(`⭐ PixChats Premium успешно выдан пользователю @${user.username}!`);
+                              }}
+                            >
+                              ⭐ Выдать PixChats Premium
+                            </button>
+                          </div>
+                        </div>
+                      )}
 
                       {/* Назначение кастомных ролей пользователю */}
                       {customRoles.length > 0 && (me.role === 'admin' || me.role === 'developer') && (

@@ -365,3 +365,14 @@ export async function completeOAuthProfile({ username, displayName }: CompleteOA
     .eq('id', userId);
   if (keysError) throw keysError;
 }
+
+export function isStaff(profile?: Profile | null): boolean {
+  if (!profile) return false;
+  return profile.role === 'admin' || profile.role === 'moderator' || profile.role === 'developer';
+}
+
+export function isDeveloperProfile(profile?: Profile | null): boolean {
+  if (!profile) return false;
+  return profile.role === 'developer';
+}
+

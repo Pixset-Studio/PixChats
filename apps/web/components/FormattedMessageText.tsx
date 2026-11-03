@@ -2,15 +2,26 @@
 
 import React, { useState, useEffect } from 'react';
 import { parseChecklistMessage, parseLocationMessage } from './ChatInteractiveTools';
+import {
+  parseTableMessage,
+  parseAlbumMessage,
+  parseTimecodeSeconds,
+} from '../lib/premiumAndFeatures';
+import { seekGlobalAudio } from '../lib/audioPlayerStore';
 
 export interface PollPayload {
   question: string;
   options: string[];
   multi?: boolean;
+  isQuiz?: boolean;
+  correctIndex?: number;
+  explanation?: string;
+  closesAt?: number | null;
 }
 
 const POLL_PREFIX = '__PIXPOLL__:';
 const TTL_REGEX = /^\[🔥TTL:(\d+)\]\n?/;
+const SILENT_PREFIX = '__SILENT__:';
 
 export function encodePollMessage(payload: PollPayload): string {
   return `${POLL_PREFIX}${JSON.stringify(payload)}`;
@@ -46,15 +57,33 @@ export function encodeSelfDestructPrefix(ttlSeconds: number, text: string): stri
 
 export function extractSelfDestructInfo(text: string): {
   expiresAt: number | null;
+  isSilent: boolean;
   cleanText: string;
 } {
-  if (!text) return { expiresAt: null, cleanText: '' };
-  const match = text.match(TTL_REGEX);
-  if (!match) return { expiresAt: null, cleanText: text };
+  if (!text) return { expiresAt: null, isSilent: false, cleanText: '' };
+  let working = text;
+  let isSilent = false;
+  if (working.startsWith(SILENT_PREFIX)) {
+    isSilent = true;
+    working = working.slice(SILENT_PREFIX.length);
+  }
+  const match = working.match(TTL_REGEX);
+  if (!match) {
+    if (working.startsWith(SILENT_PREFIX)) {
+      isSilent = true;
+      working = working.slice(SILENT_PREFIX.length);
+    }
+    return { expiresAt: null, isSilent, cleanText: working };
+  }
   const expiresAt = parseInt(match[1], 10);
-  const cleanText = text.replace(TTL_REGEX, '');
+  let cleanText = working.replace(TTL_REGEX, '');
+  if (cleanText.startsWith(SILENT_PREFIX)) {
+    isSilent = true;
+    cleanText = cleanText.slice(SILENT_PREFIX.length);
+  }
   return {
     expiresAt: Number.isFinite(expiresAt) ? expiresAt : null,
+    isSilent,
     cleanText,
   };
 }
@@ -141,6 +170,7 @@ function SpoilerSpan({ content }: { content: string }) {
   const [revealed, setRevealed] = useState(false);
   return (
     <span
+      className={`spoiler-text ${revealed ? 'revealed' : ''}`}
       onClick={(e) => {
         e.stopPropagation();
         setRevealed((v) => !v);
@@ -170,12 +200,14 @@ function SpoilerSpan({ content }: { content: string }) {
  * - **жирный**
  * - *курсив*
  * - ~~зачёркнутый~~
+ * - 01:25 таймкоды с перемоткой
  * - https://... ссылки
  * - @username упоминания
+ * - #хэштеги
  */
-function renderInlineTokens(text: string): React.ReactNode[] {
+function renderInlineTokens(text: string, messageId?: string): React.ReactNode[] {
   const tokenRegex =
-    /(`[^`\n]+`|\|\|[^|\n]+\|\||\*\*[^*\n]+\*\*|~~[^~\n]+~~|\*[^*\n]+\*|https?:\/\/[^\s<>"')]+|@[a-zA-Z0-9_]{2,32}|#[a-zA-Z0-9_а-яА-ЯёЁ]{2,32})/g;
+    /(`[^`\n]+`|\|\|[^|\n]+\|\||\*\*[^*\n]+\*\*|~~[^~\n]+~~|\*[^*\n]+\*|https?:\/\/[^\s<>"')]+|@[a-zA-Z0-9_]{2,32}|#[a-zA-Z0-9_а-яА-ЯёЁ]{2,32}|\b\d{1,2}:\d{2}(?::\d{2})?\b)/g;
 
   const parts = text.split(tokenRegex);
   return parts.map((part, idx) => {
@@ -214,6 +246,46 @@ function renderInlineTokens(text: string): React.ReactNode[] {
 
     if (part.startsWith('*') && part.endsWith('*') && part.length > 2) {
       return <em key={idx}>{part.slice(1, -1)}</em>;
+    }
+
+    if (/^\d{1,2}:\d{2}(?::\d{2})?$/.test(part)) {
+      const sec = parseTimecodeSeconds(part);
+      if (sec !== null) {
+        return (
+          <button
+            key={idx}
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              seekGlobalAudio(sec);
+              if (typeof window !== 'undefined') {
+                window.dispatchEvent(
+                  new CustomEvent('pixchats:seek_media_timecode', {
+                    detail: { seconds: sec, messageId },
+                  })
+                );
+              }
+            }}
+            title={`Перемотать аудио/видео на ${part}`}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 3,
+              padding: '0 5px',
+              borderRadius: 4,
+              border: '1px solid rgba(255, 212, 0, 0.35)',
+              background: 'rgba(255, 212, 0, 0.14)',
+              color: 'var(--accent)',
+              fontSize: '0.9em',
+              fontWeight: 700,
+              cursor: 'pointer',
+              fontFamily: 'monospace',
+            }}
+          >
+            ⏱ {part}
+          </button>
+        );
+      }
     }
 
     if (/^https?:\/\//i.test(part)) {
@@ -303,12 +375,14 @@ export function FormattedMessageText({
   onToggleChecklistItem,
   onSelfDestructExpired,
 }: FormattedMessageTextProps) {
-  const { expiresAt, cleanText } = extractSelfDestructInfo(rawText);
+  const { expiresAt, isSilent, cleanText } = extractSelfDestructInfo(rawText);
   const [secondsRemaining, setSecondsRemaining] = useState<number | null>(() => {
     if (!expiresAt) return null;
     return Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000));
   });
   const [copiedCoords, setCopiedCoords] = useState(false);
+  const [albumRevealed, setAlbumRevealed] = useState(false);
+  const [albumLightboxIndex, setAlbumLightboxIndex] = useState<number | null>(null);
 
   useEffect(() => {
     if (!expiresAt || isDeleted) return;
@@ -324,15 +398,20 @@ export function FormattedMessageText({
     return () => clearInterval(timer);
   }, [expiresAt, isDeleted, messageId, onSelfDestructExpired]);
 
-  // 1. Проверяем, не является ли сообщение интерактивным опросом
+  // 1. Проверяем, не является ли сообщение интерактивным опросом или викториной
   const poll = parsePollMessage(cleanText);
   if (poll && !isDeleted) {
-    // Голоса хранятся в реакциях с ключами "📊1", "📊2", ...
     const optionVotes = poll.options.map((_, idx) => {
       const key = `📊${idx + 1}`;
       return reactions[key] || [];
     });
     const totalVotes = optionVotes.reduce((acc, list) => acc + list.length, 0);
+    const hasVotedAny = Boolean(myUserId && optionVotes.some((voters) => voters.includes(myUserId)));
+    const isClosedByTimer = Boolean(poll.closesAt && poll.closesAt <= Date.now());
+    const closeRemSec =
+      poll.closesAt && poll.closesAt > Date.now()
+        ? Math.max(0, Math.ceil((poll.closesAt - Date.now()) / 1000))
+        : null;
 
     return (
       <div
@@ -342,8 +421,8 @@ export function FormattedMessageText({
           display: 'flex',
           flexDirection: 'column',
           gap: 10,
-          minWidth: 250,
-          maxWidth: 360,
+          minWidth: 255,
+          maxWidth: 370,
           padding: '12px 14px',
         }}
       >
@@ -357,13 +436,27 @@ export function FormattedMessageText({
               color: 'var(--accent)',
             }}
           >
-            📊 Опрос {poll.multi ? '· Несколько ответов' : '· Голосование'}
+            {poll.isQuiz
+              ? '🧠 Викторина · Выберите правильный ответ'
+              : `📊 Опрос ${poll.multi ? '· Несколько ответов' : '· Голосование'}`}
           </span>
-          {secondsRemaining !== null && (
-            <span style={{ fontSize: 11, color: '#f59e0b', fontWeight: 700 }}>
-              🔥 {secondsRemaining}с
-            </span>
-          )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            {closeRemSec !== null && (
+              <span style={{ fontSize: 10.5, color: '#38bdf8', fontWeight: 700 }}>
+                ⏱ {closeRemSec >= 60 ? `${Math.ceil(closeRemSec / 60)}м` : `${closeRemSec}с`}
+              </span>
+            )}
+            {isClosedByTimer && (
+              <span style={{ fontSize: 10.5, color: '#ef4444', fontWeight: 700 }}>
+                🔒 Завершён
+              </span>
+            )}
+            {secondsRemaining !== null && (
+              <span style={{ fontSize: 11, color: '#f59e0b', fontWeight: 700 }}>
+                🔥 {secondsRemaining}с
+              </span>
+            )}
+          </div>
         </div>
 
         <div style={{ fontWeight: 700, fontSize: 14.5, lineHeight: 1.35, color: 'var(--text)' }}>
@@ -376,12 +469,30 @@ export function FormattedMessageText({
             const count = voters.length;
             const pct = totalVotes > 0 ? Math.round((count / totalVotes) * 100) : 0;
             const votedByMe = Boolean(myUserId && voters.includes(myUserId));
+            const isCorrectQuizOption = poll.isQuiz && typeof poll.correctIndex === 'number' && poll.correctIndex === idx;
+            const showQuizResult = Boolean(poll.isQuiz && (hasVotedAny || isClosedByTimer));
+
+            let borderCol = votedByMe ? 'var(--accent)' : 'var(--border)';
+            let barBg = votedByMe ? 'rgba(255, 212, 0, 0.22)' : 'rgba(255, 255, 255, 0.07)';
+            if (showQuizResult) {
+              if (isCorrectQuizOption) {
+                borderCol = '#22c55e';
+                barBg = 'rgba(34, 197, 94, 0.25)';
+              } else if (votedByMe) {
+                borderCol = '#ef4444';
+                barBg = 'rgba(239, 68, 68, 0.22)';
+              }
+            }
 
             return (
               <button
                 key={idx}
                 type="button"
-                onClick={() => onVotePollOption?.(idx)}
+                disabled={isClosedByTimer}
+                onClick={() => {
+                  if (isClosedByTimer) return;
+                  onVotePollOption?.(idx);
+                }}
                 style={{
                   position: 'relative',
                   overflow: 'hidden',
@@ -393,9 +504,9 @@ export function FormattedMessageText({
                   padding: '8px 10px',
                   borderRadius: 8,
                   background: 'rgba(0, 0, 0, 0.28)',
-                  border: `1px solid ${votedByMe ? 'var(--accent)' : 'var(--border)'}`,
+                  border: `1px solid ${borderCol}`,
                   color: 'var(--text)',
-                  cursor: 'pointer',
+                  cursor: isClosedByTimer ? 'default' : 'pointer',
                   textAlign: 'left',
                   fontSize: 13,
                 }}
@@ -407,15 +518,21 @@ export function FormattedMessageText({
                     top: 0,
                     bottom: 0,
                     width: `${pct}%`,
-                    background: votedByMe
-                      ? 'rgba(255, 212, 0, 0.22)'
-                      : 'rgba(255, 255, 255, 0.07)',
+                    background: barBg,
                     transition: 'width 0.25s ease',
                     pointerEvents: 'none',
                   }}
                 />
                 <span style={{ position: 'relative', zIndex: 1, fontWeight: votedByMe ? 700 : 500 }}>
-                  {votedByMe ? '✓ ' : ''}
+                  {showQuizResult
+                    ? isCorrectQuizOption
+                      ? '✅ '
+                      : votedByMe
+                      ? '❌ '
+                      : ''
+                    : votedByMe
+                    ? '✓ '
+                    : ''}
                   {opt}
                 </span>
                 <span
@@ -435,14 +552,260 @@ export function FormattedMessageText({
           })}
         </div>
 
+        {poll.isQuiz && (hasVotedAny || isClosedByTimer) && poll.explanation && (
+          <div
+            style={{
+              padding: '8px 10px',
+              borderRadius: 8,
+              background: 'rgba(255, 212, 0, 0.1)',
+              border: '1px solid rgba(255, 212, 0, 0.35)',
+              fontSize: 12,
+              color: 'var(--text)',
+              lineHeight: 1.4,
+            }}
+          >
+            💡 <strong>Объяснение:</strong> {poll.explanation}
+          </div>
+        )}
+
         <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-          Всего голосов: {totalVotes} · Нажмите на вариант, чтобы проголосовать
+          Всего голосов: {totalVotes} · {isClosedByTimer ? 'Опрос закрыт по таймеру' : 'Нажмите на вариант, чтобы проголосовать'}
         </div>
       </div>
     );
   }
 
-  // 1b. Идея 2: Интерактивный совместный чек-лист (Задачи в чате)
+  // 1b. Встроенная таблица (__TABLE__:...)
+  const tableData = parseTableMessage(cleanText);
+  if (tableData && !isDeleted) {
+    return (
+      <div
+        className="bubble poll-bubble-card"
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 8,
+          maxWidth: '100%',
+          overflowX: 'auto',
+          padding: '10px 12px',
+        }}
+      >
+        <div style={{ fontSize: 10.5, fontWeight: 800, color: 'var(--accent)', textTransform: 'uppercase' }}>
+          📊 Таблица
+        </div>
+        <table
+          style={{
+            borderCollapse: 'collapse',
+            width: '100%',
+            minWidth: 220,
+            fontSize: 12.5,
+          }}
+        >
+          <thead>
+            <tr>
+              {tableData.headers.map((h, i) => (
+                <th
+                  key={i}
+                  style={{
+                    border: '1px solid var(--border)',
+                    padding: '6px 10px',
+                    background: 'rgba(255, 212, 0, 0.15)',
+                    color: 'var(--accent)',
+                    fontWeight: 800,
+                    textAlign: 'left',
+                  }}
+                >
+                  {h}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {tableData.rows.map((row, rIdx) => (
+              <tr key={rIdx}>
+                {row.map((cell, cIdx) => (
+                  <td
+                    key={cIdx}
+                    style={{
+                      border: '1px solid var(--border)',
+                      padding: '6px 10px',
+                      background: rIdx % 2 === 0 ? 'rgba(255,255,255,0.02)' : 'rgba(0,0,0,0.2)',
+                      color: 'var(--text)',
+                    }}
+                  >
+                    {cell}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
+  // 1c. Сетка фотоальбома / карусель (__ALBUM__:...)
+  const albumData = parseAlbumMessage(cleanText);
+  if (albumData && !isDeleted) {
+    const isSpoilerHidden = Boolean(albumData.spoiler && !albumRevealed);
+    const cols = albumData.images.length === 1 ? 1 : albumData.images.length <= 4 ? 2 : 3;
+
+    return (
+      <div
+        className="bubble poll-bubble-card"
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 8,
+          maxWidth: 360,
+          padding: 8,
+        }}
+      >
+        <div
+          style={{
+            position: 'relative',
+            display: 'grid',
+            gridTemplateColumns: `repeat(${cols}, 1fr)`,
+            gap: 4,
+            borderRadius: 10,
+            overflow: 'hidden',
+          }}
+        >
+          {albumData.images.map((src, idx) => (
+            <div
+              key={idx}
+              onClick={() => {
+                if (isSpoilerHidden) {
+                  setAlbumRevealed(true);
+                } else {
+                  setAlbumLightboxIndex(idx);
+                }
+              }}
+              style={{
+                position: 'relative',
+                aspectRatio: '1 / 1',
+                overflow: 'hidden',
+                cursor: 'pointer',
+                background: '#111',
+              }}
+            >
+              <img
+                src={src}
+                alt={`Фото ${idx + 1}`}
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  objectFit: 'cover',
+                  filter: isSpoilerHidden ? 'blur(18px) brightness(0.7)' : 'none',
+                  transition: 'filter 0.25s ease',
+                }}
+              />
+            </div>
+          ))}
+          {isSpoilerHidden && (
+            <button
+              type="button"
+              onClick={() => setAlbumRevealed(true)}
+              style={{
+                position: 'absolute',
+                inset: 0,
+                background: 'rgba(0,0,0,0.35)',
+                color: '#fff',
+                border: 'none',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 4,
+                cursor: 'pointer',
+                fontWeight: 800,
+                fontSize: 13,
+              }}
+            >
+              <span>✨ СПОЙЛЕР ({albumData.images.length} фото)</span>
+              <span style={{ fontSize: 11, opacity: 0.85 }}>Нажмите, чтобы открыть</span>
+            </button>
+          )}
+        </div>
+
+        {albumData.caption && (
+          <div style={{ fontSize: 13, color: 'var(--text)', padding: '2px 4px' }}>
+            {renderInlineTokens(albumData.caption, messageId)}
+          </div>
+        )}
+
+        {albumLightboxIndex !== null && (
+          <div
+            className="modal-overlay"
+            onClick={() => setAlbumLightboxIndex(null)}
+            style={{ zIndex: 9999 }}
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: 12,
+                maxWidth: '92vw',
+              }}
+            >
+              <img
+                src={albumData.images[albumLightboxIndex]}
+                alt="Просмотр альбома"
+                style={{
+                  maxWidth: '88vw',
+                  maxHeight: '78vh',
+                  borderRadius: 12,
+                  objectFit: 'contain',
+                  border: '1px solid var(--border)',
+                }}
+              />
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ width: 'auto' }}
+                  onClick={() =>
+                    setAlbumLightboxIndex(
+                      (albumLightboxIndex - 1 + albumData.images.length) % albumData.images.length
+                    )
+                  }
+                >
+                  ◀ Пред.
+                </button>
+                <span style={{ color: '#fff', fontWeight: 700, fontSize: 13 }}>
+                  {albumLightboxIndex + 1} / {albumData.images.length}
+                </span>
+                <button
+                  type="button"
+                  className="btn"
+                  style={{ width: 'auto' }}
+                  onClick={() =>
+                    setAlbumLightboxIndex((albumLightboxIndex + 1) % albumData.images.length)
+                  }
+                >
+                  След. ▶
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  style={{ width: 'auto' }}
+                  onClick={() => setAlbumLightboxIndex(null)}
+                >
+                  Закрыть ✕
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // 1d. Совместный чек-лист
   const checklist = parseChecklistMessage(cleanText);
   if (checklist && !isDeleted) {
     const itemChecks = checklist.items.map((_, idx) => {
@@ -489,7 +852,6 @@ export function FormattedMessageText({
           {checklist.title}
         </div>
 
-        {/* Полоса прогресса выполнения задач */}
         <div
           style={{
             height: 6,
@@ -581,7 +943,7 @@ export function FormattedMessageText({
     );
   }
 
-  // 1c. Идея 7: Интерактивная карточка геопозиции (Точка на карте)
+  // 1e. Карточка геопозиции
   const loc = parseLocationMessage(cleanText);
   if (loc && !isDeleted) {
     const bbox = `${(loc.lon - 0.008).toFixed(5)}%2C${(loc.lat - 0.005).toFixed(5)}%2C${(loc.lon + 0.008).toFixed(5)}%2C${(loc.lat + 0.005).toFixed(5)}`;
@@ -670,6 +1032,20 @@ export function FormattedMessageText({
   return (
     <div style={{ display: 'inline-flex', flexDirection: 'column', gap: 6, maxWidth: '100%' }}>
       <span className="bubble message-text" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+        {isSilent && !isDeleted && (
+          <span
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              fontSize: 10,
+              opacity: 0.75,
+              marginRight: 5,
+            }}
+            title="Тихое сообщение (отправлено без звука уведомления)"
+          >
+            🔇
+          </span>
+        )}
         {secondsRemaining !== null && !isDeleted && (
           <span
             style={{
@@ -690,7 +1066,7 @@ export function FormattedMessageText({
             🔥 {secondsRemaining >= 60 ? `${Math.ceil(secondsRemaining / 60)}м` : `${secondsRemaining}с`}
           </span>
         )}
-        {isDeleted ? cleanText : renderInlineTokens(cleanText)}
+        {isDeleted ? cleanText : renderInlineTokens(cleanText, messageId)}
         {editedAt && !isDeleted && <span className="edited-label"> (изменено)</span>}
       </span>
 

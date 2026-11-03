@@ -1,6 +1,15 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
+import {
+  applyChannelWatermarkToDataUrl,
+  encodeTableMessage,
+  encodeAlbumMessage,
+  getScheduledMessages,
+  addScheduledMessage,
+  removeScheduledMessage,
+  type ScheduledMessageItem,
+} from '../lib/premiumAndFeatures';
 
 // ============================================================================
 // ИДЕЯ 1: Расшифровка голосовых сообщений и видеокружков в текст (кнопка [Аа])
@@ -87,7 +96,6 @@ export async function transcribeMediaMessage(params: {
   embeddedCaption?: string | null;
   messageText?: string | null;
 }): Promise<string> {
-  // 1. Проверяем встроенную расшифровку в подписи (__TRANSCRIPT__:...) или локальный кэш
   if (params.embeddedCaption && params.embeddedCaption.includes('__TRANSCRIPT__:')) {
     const parts = params.embeddedCaption.split('__TRANSCRIPT__:');
     const extracted = parts[1]?.trim();
@@ -103,7 +111,6 @@ export async function transcribeMediaMessage(params: {
   const cachedByUrl = getSavedVoiceTranscript(params.mediaUrl);
   if (cachedByUrl) return cachedByUrl;
 
-  // 2. Декодируем аудио через Web Audio API для вычисления длительности, темпа речи и активности голоса
   try {
     const res = await fetch(params.mediaUrl);
     const arrayBuf = await res.arrayBuffer();
@@ -114,7 +121,6 @@ export async function transcribeMediaMessage(params: {
       const data = decoded.getChannelData(0);
       const durationSec = Math.max(1, Math.round(decoded.duration));
 
-      // Подсчитываем голосовые сегменты (слоги/слова по огибающей энергии)
       let activeFrames = 0;
       let syllables = 0;
       let prevActive = false;
@@ -561,7 +567,6 @@ export function SketchPadModal({
           </button>
         </div>
 
-        {/* Инструменты */}
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
           {(
             [
@@ -607,7 +612,6 @@ export function SketchPadModal({
           </button>
         </div>
 
-        {/* Палитра и размер */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
           {SKETCH_COLORS.map((c) => (
             <button
@@ -652,7 +656,6 @@ export function SketchPadModal({
           </button>
         </div>
 
-        {/* Холст */}
         <div
           style={{
             borderRadius: 12,
@@ -840,7 +843,6 @@ export function LocationPickerModal({
           <div style={{ fontSize: 12, color: 'var(--danger)', marginBottom: 8 }}>{errorMsg}</div>
         )}
 
-        {/* Интерактивное превью карты OpenStreetMap */}
         <div
           style={{
             width: '100%',
@@ -893,6 +895,736 @@ export function LocationPickerModal({
           >
             Отправить точку 📍
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// Сообщения #18: Встроенный редактор таблиц (TableCreatorModal)
+// ============================================================================
+
+export function TableCreatorModal({
+  onClose,
+  onSendTableMessage,
+}: {
+  onClose: () => void;
+  onSendTableMessage: (encodedTable: string) => Promise<void>;
+}) {
+  const [headers, setHeaders] = useState<string[]>(['Колонка 1', 'Колонка 2', 'Колонка 3']);
+  const [rows, setRows] = useState<string[][]>([
+    ['Значение 1', 'Значение 2', 'Значение 3'],
+    ['Значение 4', 'Значение 5', 'Значение 6'],
+  ]);
+  const [sending, setSending] = useState(false);
+
+  function addColumn() {
+    if (headers.length >= 6) return;
+    setHeaders((prev) => [...prev, `Колонка ${prev.length + 1}`]);
+    setRows((prev) => prev.map((r) => [...r, '']));
+  }
+
+  function removeColumn(colIdx: number) {
+    if (headers.length <= 2) return;
+    setHeaders((prev) => prev.filter((_, idx) => idx !== colIdx));
+    setRows((prev) => prev.map((r) => r.filter((_, idx) => idx !== colIdx)));
+  }
+
+  function addRow() {
+    if (rows.length >= 12) return;
+    setRows((prev) => [...prev, headers.map(() => '')]);
+  }
+
+  function removeRow(rowIdx: number) {
+    if (rows.length <= 1) return;
+    setRows((prev) => prev.filter((_, idx) => idx !== rowIdx));
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setSending(true);
+    try {
+      const encoded = encodeTableMessage(
+        headers.map((h, idx) => h.trim() || `Кол. ${idx + 1}`),
+        rows
+      );
+      await onSendTableMessage(encoded);
+      onClose();
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div
+        className="modal-card"
+        style={{ maxWidth: 560, width: '95%' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+          <h3 style={{ margin: 0, fontSize: 17 }}>📊 Создать таблицу в сообщении</h3>
+          <button type="button" className="btn-ghost" style={{ width: 'auto', padding: '4px 8px' }} onClick={onClose}>
+            ✕
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit}>
+          <div style={{ overflowX: 'auto', marginBottom: 12 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr>
+                  {headers.map((h, colIdx) => (
+                    <th key={colIdx} style={{ padding: 4 }}>
+                      <div style={{ display: 'flex', gap: 4 }}>
+                        <input
+                          className="input"
+                          style={{ padding: '6px 8px', fontSize: 12, fontWeight: 700 }}
+                          value={h}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setHeaders((prev) => prev.map((item, i) => (i === colIdx ? v : item)));
+                          }}
+                          placeholder={`Заголовок ${colIdx + 1}`}
+                        />
+                        {headers.length > 2 && (
+                          <button
+                            type="button"
+                            className="btn-ghost"
+                            style={{ width: 'auto', padding: '0 6px', fontSize: 11 }}
+                            onClick={() => removeColumn(colIdx)}
+                            title="Удалить колонку"
+                          >
+                            ✕
+                          </button>
+                        )}
+                      </div>
+                    </th>
+                  ))}
+                  <th style={{ width: 32 }} />
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row, rowIdx) => (
+                  <tr key={rowIdx}>
+                    {row.map((cell, colIdx) => (
+                      <td key={colIdx} style={{ padding: 4 }}>
+                        <input
+                          className="input"
+                          style={{ padding: '6px 8px', fontSize: 12 }}
+                          value={cell}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setRows((prev) =>
+                              prev.map((r, rI) =>
+                                rI === rowIdx ? r.map((c, cI) => (cI === colIdx ? v : c)) : r
+                              )
+                            );
+                          }}
+                          placeholder="—"
+                        />
+                      </td>
+                    ))}
+                    <td style={{ padding: 4 }}>
+                      {rows.length > 1 && (
+                        <button
+                          type="button"
+                          className="btn-ghost"
+                          style={{ width: 'auto', padding: '4px 6px', fontSize: 11 }}
+                          onClick={() => removeRow(rowIdx)}
+                          title="Удалить строку"
+                        >
+                          🗑️
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
+            <button type="button" className="btn" style={{ width: 'auto', fontSize: 12 }} onClick={addRow}>
+              + Строка
+            </button>
+            <button type="button" className="btn" style={{ width: 'auto', fontSize: 12 }} onClick={addColumn}>
+              + Колонка
+            </button>
+          </div>
+
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button type="button" className="btn" style={{ width: 'auto' }} onClick={onClose}>
+              Отмена
+            </button>
+            <button type="submit" className="btn btn-primary" style={{ width: 'auto' }} disabled={sending}>
+              {sending ? 'Отправка…' : 'Отправить таблицу 📊'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// Медиа #15: Сетка фотоальбома 2–10 фото со спойлером (AlbumCreatorModal)
+// ============================================================================
+
+export function AlbumCreatorModal({
+  onClose,
+  channelWatermarkText,
+  onSendAlbumMessage,
+}: {
+  onClose: () => void;
+  channelWatermarkText?: string | null;
+  onSendAlbumMessage: (encodedAlbum: string) => Promise<void>;
+}) {
+  const [images, setImages] = useState<string[]>([]);
+  const [caption, setCaption] = useState('');
+  const [spoiler, setSpoiler] = useState(false);
+  const [sending, setSending] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  function handleSelectFiles(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files || []).slice(0, 10 - images.length);
+    files.forEach((file) => {
+      if (!file.type.startsWith('image/')) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const img = new Image();
+        img.onload = async () => {
+          const canvas = document.createElement('canvas');
+          const maxDim = 960;
+          const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+          canvas.width = Math.round(img.width * scale);
+          canvas.height = Math.round(img.height * scale);
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            let outUrl = canvas.toDataURL('image/jpeg', 0.82);
+            if (channelWatermarkText) {
+              outUrl = await applyChannelWatermarkToDataUrl(outUrl, channelWatermarkText);
+            }
+            setImages((prev) => [...prev.slice(0, 9), outUrl]);
+          }
+        };
+        img.src = String(reader.result);
+      };
+      reader.readAsDataURL(file);
+    });
+    e.target.value = '';
+  }
+
+  async function handleSend() {
+    if (images.length === 0 || sending) return;
+    setSending(true);
+    try {
+      const encoded = encodeAlbumMessage({
+        images,
+        caption: caption.trim() || undefined,
+        spoiler,
+      });
+      await onSendAlbumMessage(encoded);
+      onClose();
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div
+        className="modal-card"
+        style={{ maxWidth: 480, width: '95%' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+          <h3 style={{ margin: 0, fontSize: 17 }}>🖼️ Фотоальбом (до 10 фото)</h3>
+          <button type="button" className="btn-ghost" style={{ width: 'auto', padding: '4px 8px' }} onClick={onClose}>
+            ✕
+          </button>
+        </div>
+
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          multiple
+          style={{ display: 'none' }}
+          onChange={handleSelectFiles}
+        />
+
+        {images.length < 10 && (
+          <button
+            type="button"
+            className="btn"
+            style={{ marginBottom: 10 }}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            ➕ Выбрать фотографии ({images.length}/10)
+          </button>
+        )}
+
+        {images.length > 0 && (
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(3, 1fr)',
+              gap: 6,
+              marginBottom: 10,
+              maxHeight: 240,
+              overflowY: 'auto',
+            }}
+          >
+            {images.map((src, idx) => (
+              <div
+                key={idx}
+                style={{
+                  position: 'relative',
+                  aspectRatio: '1 / 1',
+                  borderRadius: 8,
+                  overflow: 'hidden',
+                  border: '1px solid var(--border)',
+                }}
+              >
+                <img
+                  src={src}
+                  alt=""
+                  style={{
+                    width: '100%',
+                    height: '100%',
+                    objectFit: 'cover',
+                    filter: spoiler ? 'blur(10px)' : 'none',
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => setImages((prev) => prev.filter((_, i) => i !== idx))}
+                  style={{
+                    position: 'absolute',
+                    top: 4,
+                    right: 4,
+                    width: 22,
+                    height: 22,
+                    borderRadius: '50%',
+                    background: 'rgba(0,0,0,0.75)',
+                    color: '#fff',
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontSize: 11,
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <label
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            fontSize: 13,
+            marginBottom: 10,
+            cursor: 'pointer',
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={spoiler}
+            onChange={(e) => setSpoiler(e.target.checked)}
+          />
+          <span>✨ Скрыть фото под спойлером (размытие до клика)</span>
+        </label>
+
+        <div className="field" style={{ marginBottom: 12 }}>
+          <input
+            className="input"
+            placeholder="Подпись к альбому…"
+            value={caption}
+            onChange={(e) => setCaption(e.target.value)}
+          />
+        </div>
+
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button type="button" className="btn" style={{ width: 'auto' }} onClick={onClose}>
+            Отмена
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            style={{ width: 'auto' }}
+            disabled={images.length === 0 || sending}
+            onClick={() => void handleSend()}
+          >
+            {sending ? 'Отправка…' : `Отправить альбом (${images.length}) 🖼️`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// Медиа #1: Встроенный фоторедактор перед отправкой (поворот, фильтры, текст, спойлер)
+// ============================================================================
+
+export function PhotoEditorModal({
+  initialDataUrl,
+  channelWatermarkText,
+  onClose,
+  onSendEditedPhoto,
+}: {
+  initialDataUrl: string;
+  channelWatermarkText?: string | null;
+  onClose: () => void;
+  onSendEditedPhoto: (dataUrl: string, caption?: string) => Promise<void>;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [rotation, setRotation] = useState(0);
+  const [filter, setFilter] = useState<'none' | 'grayscale' | 'sepia' | 'contrast' | 'cyber'>('none');
+  const [overlayText, setOverlayText] = useState('');
+  const [caption, setCaption] = useState('');
+  const [spoilerBlur, setSpoilerBlur] = useState(false);
+  const [applyWatermark, setApplyWatermark] = useState(Boolean(channelWatermarkText));
+  const [sending, setSending] = useState(false);
+
+  useEffect(() => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      const rad = (rotation * Math.PI) / 180;
+      const isPerp = rotation % 180 !== 0;
+      const baseW = Math.min(800, img.width);
+      const scale = baseW / img.width;
+      const drawW = Math.round(img.width * scale);
+      const drawH = Math.round(img.height * scale);
+
+      canvas.width = isPerp ? drawH : drawW;
+      canvas.height = isPerp ? drawW : drawH;
+
+      ctx.save();
+      if (filter === 'grayscale') ctx.filter = 'grayscale(100%)';
+      else if (filter === 'sepia') ctx.filter = 'sepia(85%)';
+      else if (filter === 'contrast') ctx.filter = 'contrast(135%) saturate(130%)';
+      else if (filter === 'cyber') ctx.filter = 'hue-rotate(25deg) saturate(160%) contrast(115%)';
+      if (spoilerBlur) {
+        ctx.filter = `${ctx.filter === 'none' ? '' : ctx.filter} blur(16px)`;
+      }
+
+      ctx.translate(canvas.width / 2, canvas.height / 2);
+      ctx.rotate(rad);
+      ctx.drawImage(img, -drawW / 2, -drawH / 2, drawW, drawH);
+      ctx.restore();
+
+      if (overlayText.trim()) {
+        ctx.save();
+        const fontSize = Math.max(18, Math.round(canvas.width * 0.05));
+        ctx.font = `900 ${fontSize}px system-ui, sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.fillStyle = 'rgba(0,0,0,0.65)';
+        ctx.fillRect(0, canvas.height - fontSize * 2.1, canvas.width, fontSize * 1.8);
+        ctx.fillStyle = '#ffd400';
+        ctx.fillText(overlayText.trim(), canvas.width / 2, canvas.height - fontSize * 0.85);
+        ctx.restore();
+      }
+    };
+    img.src = initialDataUrl;
+  }, [initialDataUrl, rotation, filter, overlayText, spoilerBlur]);
+
+  async function handleConfirmSend() {
+    const canvas = canvasRef.current;
+    if (!canvas || sending) return;
+    setSending(true);
+    try {
+      let outUrl = canvas.toDataURL('image/jpeg', 0.88);
+      if (applyWatermark && channelWatermarkText) {
+        outUrl = await applyChannelWatermarkToDataUrl(outUrl, channelWatermarkText);
+      }
+      await onSendEditedPhoto(outUrl, caption.trim() || undefined);
+      onClose();
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div
+        className="modal-card"
+        style={{ maxWidth: 500, width: '95%' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+          <h3 style={{ margin: 0, fontSize: 17 }}>🪄 Фоторедактор перед отправкой</h3>
+          <button type="button" className="btn-ghost" style={{ width: 'auto', padding: '4px 8px' }} onClick={onClose}>
+            ✕
+          </button>
+        </div>
+
+        <div
+          style={{
+            borderRadius: 12,
+            overflow: 'hidden',
+            border: '1px solid var(--border)',
+            background: '#09090b',
+            marginBottom: 10,
+            maxHeight: 300,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <canvas
+            ref={canvasRef}
+            style={{ maxWidth: '100%', maxHeight: 290, objectFit: 'contain' }}
+          />
+        </div>
+
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+          <button
+            type="button"
+            className="btn"
+            style={{ width: 'auto', fontSize: 12, padding: '5px 10px' }}
+            onClick={() => setRotation((r) => (r + 90) % 360)}
+          >
+            🔄 Повернуть 90°
+          </button>
+          {(
+            [
+              { id: 'none', label: 'Оригинал' },
+              { id: 'grayscale', label: 'Ч/Б' },
+              { id: 'sepia', label: 'Сепия' },
+              { id: 'contrast', label: 'Яркий' },
+              { id: 'cyber', label: 'Кибер' },
+            ] as const
+          ).map((f) => (
+            <button
+              key={f.id}
+              type="button"
+              className="btn"
+              style={{
+                width: 'auto',
+                fontSize: 12,
+                padding: '5px 10px',
+                borderColor: filter === f.id ? 'var(--accent)' : undefined,
+                color: filter === f.id ? 'var(--accent)' : undefined,
+              }}
+              onClick={() => setFilter(f.id)}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="field" style={{ marginBottom: 8 }}>
+          <input
+            className="input"
+            placeholder="Надпись поверх фото (мем / пометка)…"
+            value={overlayText}
+            onChange={(e) => setOverlayText(e.target.value)}
+          />
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 10 }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={spoilerBlur}
+              onChange={(e) => setSpoilerBlur(e.target.checked)}
+            />
+            <span>✨ Замылить фото (эффект спойлера)</span>
+          </label>
+          {channelWatermarkText && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={applyWatermark}
+                onChange={(e) => setApplyWatermark(e.target.checked)}
+              />
+              <span>🏷️ Добавить водяной знак «{channelWatermarkText}»</span>
+            </label>
+          )}
+        </div>
+
+        <div className="field" style={{ marginBottom: 12 }}>
+          <input
+            className="input"
+            placeholder="Подпись к фото…"
+            value={caption}
+            onChange={(e) => setCaption(e.target.value)}
+          />
+        </div>
+
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button type="button" className="btn" style={{ width: 'auto' }} onClick={onClose}>
+            Отмена
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            style={{ width: 'auto' }}
+            disabled={sending}
+            onClick={() => void handleConfirmSend()}
+          >
+            {sending ? 'Отправка…' : 'Отправить фото 📸'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// Сообщения #1: Модальное окно очереди отложенных сообщений (ScheduledMessagesModal)
+// ============================================================================
+
+export function ScheduledMessagesModal({
+  chatId,
+  initialText,
+  onClose,
+  onScheduledAdded,
+}: {
+  chatId: string;
+  initialText: string;
+  onClose: () => void;
+  onScheduledAdded: () => void;
+}) {
+  const [text, setText] = useState(initialText);
+  const [dateTimeLocal, setDateTimeLocal] = useState(() => {
+    const d = new Date(Date.now() + 10 * 60 * 1000);
+    return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  });
+  const [silent, setSilent] = useState(false);
+  const [queue, setQueue] = useState<ScheduledMessageItem[]>(() => getScheduledMessages(chatId));
+
+  function refreshQueue() {
+    setQueue(getScheduledMessages(chatId));
+  }
+
+  function handleSchedule(e: React.FormEvent) {
+    e.preventDefault();
+    if (!text.trim()) return;
+    const ts = new Date(dateTimeLocal).getTime();
+    const sendAt = Number.isFinite(ts) && ts > Date.now() ? ts : Date.now() + 60_000;
+    addScheduledMessage({
+      chatId,
+      text: text.trim(),
+      sendAt,
+      silent,
+    });
+    setText('');
+    refreshQueue();
+    onScheduledAdded();
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div
+        className="modal-card"
+        style={{ maxWidth: 460, width: '95%' }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+          <h3 style={{ margin: 0, fontSize: 17 }}>📅 Отложенные сообщения</h3>
+          <button type="button" className="btn-ghost" style={{ width: 'auto', padding: '4px 8px' }} onClick={onClose}>
+            ✕
+          </button>
+        </div>
+
+        <form onSubmit={handleSchedule} style={{ marginBottom: 14 }}>
+          <div className="field">
+            <label>Текст сообщения</label>
+            <textarea
+              className="textarea"
+              rows={2}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              placeholder="Напишите сообщение, которое отправится автоматически по таймеру…"
+              required
+            />
+          </div>
+
+          <div className="field">
+            <label>Дата и время отправки</label>
+            <input
+              type="datetime-local"
+              className="input"
+              value={dateTimeLocal}
+              onChange={(e) => setDateTimeLocal(e.target.value)}
+              required
+            />
+          </div>
+
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, marginBottom: 10, cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={silent}
+              onChange={(e) => setSilent(e.target.checked)}
+            />
+            <span>🔇 Отправить без звука (тихое сообщение)</span>
+          </label>
+
+          <button type="submit" className="btn btn-primary">
+            📅 Запланировать отправку
+          </button>
+        </form>
+
+        <div style={{ borderTop: '1px solid var(--border)', paddingTop: 10 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-muted)', marginBottom: 8 }}>
+            Очередь в этом чате ({queue.length})
+          </div>
+          {queue.length === 0 ? (
+            <div style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+              Нет запланированных сообщений.
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 180, overflowY: 'auto' }}>
+              {queue.map((item) => (
+                <div
+                  key={item.id}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 8,
+                    padding: '8px 10px',
+                    borderRadius: 8,
+                    background: 'var(--surface-raised)',
+                    border: '1px solid var(--border)',
+                  }}
+                >
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {item.silent ? '🔇 ' : ''}{item.text}
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--accent)' }}>
+                      ⏰ {new Date(item.sendAt).toLocaleString('ru-RU')}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn-ghost"
+                    style={{ width: 'auto', padding: '4px 8px', color: 'var(--danger)' }}
+                    onClick={() => {
+                      removeScheduledMessage(item.id);
+                      refreshQueue();
+                    }}
+                  >
+                    Удалить
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>
