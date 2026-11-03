@@ -9,11 +9,16 @@ let client: SupabaseClient | null = null;
 export function getSupabaseClient(): SupabaseClient {
   if (client) return client;
 
+  const envUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const url =
-    process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://kibhezfpafhitcvpkquu.supabase.co';
+    envUrl && !envUrl.includes('your-project-ref')
+      ? envUrl
+      : 'https://kibhezfpafhitcvpkquu.supabase.co';
+  const envKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   const anonKey =
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-    'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtpYmhlemZwYWZoaXRjdnBrcXV1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQxOTI4NjUsImV4cCI6MjA5OTc2ODg2NX0.HO1uskn4k7AWmFNFpFXd2vdgO8BKYz_bb8lpj2znSoI';
+    envKey && !envKey.includes('your-anon-key')
+      ? envKey
+      : 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtpYmhlemZwYWZoaXRjdnBrcXV1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQxOTI4NjUsImV4cCI6MjA5OTc2ODg2NX0.HO1uskn4k7AWmFNFpFXd2vdgO8BKYz_bb8lpj2znSoI';
 
   client = createClient(url, anonKey, {
     auth: {

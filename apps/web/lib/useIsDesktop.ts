@@ -4,15 +4,7 @@ let cachedIsDesktopValue: boolean | null = null;
 
 /** true на широких экранах (ПК) — используется, чтобы не тянуть двойные данные на мобильном и не пересоздавать DOM при навигации. */
 export function useIsDesktop(breakpoint = 768): boolean {
-  const [isDesktop, setIsDesktop] = useState<boolean>(() => {
-    if (cachedIsDesktopValue !== null) return cachedIsDesktopValue;
-    if (typeof window !== 'undefined') {
-      const matches = window.matchMedia(`(min-width: ${breakpoint}px)`).matches;
-      cachedIsDesktopValue = matches;
-      return matches;
-    }
-    return false;
-  });
+  const [isDesktop, setIsDesktop] = useState<boolean>(() => cachedIsDesktopValue ?? false);
 
   useEffect(() => {
     const mql = window.matchMedia(`(min-width: ${breakpoint}px)`);

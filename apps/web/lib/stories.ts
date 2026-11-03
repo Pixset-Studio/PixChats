@@ -195,8 +195,8 @@ export function markStoryViewedLocal(storyId: string): void {
 export async function loadActiveStories(force = false): Promise<StoryItem[]> {
   const local = getCachedStories();
   const now = Date.now();
-  // Throttle cloud fetch to once every 15 minutes unless forced (Realtime broadcast handles instant updates)
-  if (!force && now - lastStoriesCloudFetchAt < 15 * 60 * 1000) {
+  // Throttle cloud fetch to once every 3 minutes unless forced (Realtime broadcast handles instant updates)
+  if (!force && now - lastStoriesCloudFetchAt < 3 * 60 * 1000) {
     return local;
   }
   if (storiesFetchInProgress) return storiesFetchInProgress;
@@ -204,13 +204,20 @@ export async function loadActiveStories(force = false): Promise<StoryItem[]> {
   storiesFetchInProgress = (async () => {
     lastStoriesCloudFetchAt = Date.now();
     try {
+      const { parseProfileUserEnvelope } = await import('@pixchats/core');
       const supabase = getSupabaseClient();
-      const { data } = supabase.storage.from(STORIES_BUCKET).getPublicUrl(STORIES_GLOBAL_MANIFEST_PATH);
-      if (!data?.publicUrl) return local;
-      const res = await fetch(data.publicUrl);
-      if (!res.ok) return local;
-      const json = await res.json();
-      const remoteList = Array.isArray(json) ? json : [];
+      const { data: rows } = await supabase
+        .from('profiles')
+        .select('id, signed_prekey_signature')
+        .like('signed_prekey_signature', 'pxext:v1:%')
+        .limit(150);
+      const remoteList: any[] = [];
+      for (const r of (rows || []) as any[]) {
+        const env = parseProfileUserEnvelope(r.signed_prekey_signature);
+        if (Array.isArray(env.stories)) {
+          remoteList.push(...env.stories);
+        }
+      }
       const merged = filterActive([...local, ...remoteList]);
       return saveCachedStories(merged);
     } catch {
@@ -228,12 +235,17 @@ async function persistStoriesToCloud(stories: StoryItem[], uploadManifest = true
   try {
     const supabase = getSupabaseClient();
     if (uploadManifest) {
-      const blob = new Blob([JSON.stringify(active)], { type: 'application/json' });
-      await supabase.storage.from(STORIES_BUCKET).upload(STORIES_GLOBAL_MANIFEST_PATH, blob, {
-        upsert: true,
-        contentType: 'application/json',
-        cacheControl: '120',
-      });
+      const { getCachedCurrentProfile, updateProfileUserEnvelope } = await import('@pixchats/core');
+      const me = getCachedCurrentProfile();
+      if (me?.id) {
+        const myStories = active.filter(
+          (s) => s.authorUserId === me.id || s.userId === me.id
+        );
+        await updateProfileUserEnvelope(me.id, (prev) => ({
+          ...prev,
+          stories: myStories.slice(0, 15),
+        }));
+      }
     }
 
     const channel = supabase.channel('pixchats-stories-global');

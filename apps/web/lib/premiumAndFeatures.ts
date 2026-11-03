@@ -1,9 +1,17 @@
-import { getSupabaseClient, getCachedCurrentProfile, computePenaltyExpirationIso, type PenaltyDurationUnit } from '@pixchats/core';
+import {
+  getSupabaseClient,
+  getCachedCurrentProfile,
+  computePenaltyExpirationIso,
+  parseProfileAdminEnvelope,
+  updateProfileAdminEnvelope,
+  parseProfileUserEnvelope,
+  updateProfileUserEnvelope,
+  type PenaltyDurationUnit,
+  type Profile,
+} from '@pixchats/core';
+import { uploadToFreeExternalHost } from './fileStorage';
 
 const CLOUD_BUCKET = 'avatars';
-const PREMIUM_CLOUD_PATH = 'moderation/premium_users_v1.json';
-const EXTENDED_PROFILE_CLOUD_PATH = 'profiles/extended_meta_v1.json';
-const GROUP_EXTRA_CLOUD_PATH = 'chats/group_extra_v1.json';
 
 const PREMIUM_LOCAL_KEY = 'pixchats:premium_manifest_v1';
 const EXTENDED_PROFILE_LOCAL_KEY = 'pixchats:extended_profile_meta_v1';
@@ -26,6 +34,7 @@ export interface PremiumRecord {
   grantedBy?: string;
   reason?: string;
   grantedAt: string;
+  revoked?: boolean;
 }
 
 export interface PremiumManifest {
@@ -37,6 +46,8 @@ export interface MusicStatusInfo {
   title: string;
   artist: string;
   audioUrl?: string | null;
+  fileName?: string | null;
+  updatedAt?: string;
 }
 
 export interface UserExtendedProfileMeta {
@@ -183,33 +194,143 @@ function savePremiumManifestLocal(manifest: PremiumManifest): void {
   try {
     localStorage.setItem(PREMIUM_LOCAL_KEY, JSON.stringify(manifest));
     window.dispatchEvent(new CustomEvent('pixchats:premium_updated', { detail: manifest }));
+    window.dispatchEvent(new CustomEvent('pixchats:premium_changed', { detail: manifest }));
   } catch {}
 }
 
 let lastPremiumFetchMs = 0;
 
+function broadcastProfileEnvelopeChanged(userId: string): void {
+  try {
+    if (typeof window !== 'undefined') {
+      const globalCh = (window as any).__pixchatsGlobalMsgChannel;
+      if (globalCh && typeof globalCh.send === 'function') {
+        void globalCh.send({
+          type: 'broadcast',
+          event: 'profile-envelope-updated',
+          payload: { userId, ts: Date.now() },
+        });
+      }
+    }
+  } catch {}
+}
+
+/**
+ * Мгновенно синхронизирует локальный кэш Premium и расширенного профиля из строки profiles (public_signed_prekey / signed_prekey_signature).
+ */
+export function hydratePremiumAndExtendedFromProfileRow(row?: Partial<Profile> | null): void {
+  if (!row || !row.id || typeof window === 'undefined') return;
+  const userId = row.id;
+  const cleanUser = row.username ? `@${String(row.username).replace(/^@/, '').toLowerCase()}` : '';
+
+  if (typeof row.public_signed_prekey === 'string' && row.public_signed_prekey.startsWith('pxadm:v1:')) {
+    const admEnv = parseProfileAdminEnvelope(row.public_signed_prekey);
+    if (admEnv.premium !== undefined) {
+      const manifest = getPremiumManifestSync();
+      const nextUsers = { ...manifest.users };
+      let changed = false;
+      if (!admEnv.premium || admEnv.premium.revoked) {
+        if (nextUsers[userId]) {
+          delete nextUsers[userId];
+          changed = true;
+        }
+        if (cleanUser && nextUsers[cleanUser]) {
+          delete nextUsers[cleanUser];
+          changed = true;
+        }
+      } else {
+        const rec: PremiumRecord = {
+          userId,
+          username: row.username || admEnv.premium.username,
+          expiresAt: admEnv.premium.expiresAt,
+          grantedBy: admEnv.premium.grantedBy,
+          reason: admEnv.premium.note,
+          grantedAt: admEnv.premium.grantedAt,
+        };
+        const existing = nextUsers[userId];
+        if (!existing || existing.expiresAt !== rec.expiresAt || existing.grantedAt !== rec.grantedAt) {
+          nextUsers[userId] = rec;
+          if (cleanUser) nextUsers[cleanUser] = rec;
+          changed = true;
+        }
+      }
+      if (changed) {
+        savePremiumManifestLocal({ users: nextUsers, updatedAt: new Date().toISOString() });
+      }
+    }
+  }
+
+  if (typeof row.signed_prekey_signature === 'string' && row.signed_prekey_signature.startsWith('pxext:v1:')) {
+    const userEnv = parseProfileUserEnvelope(row.signed_prekey_signature);
+    const allExt = getAllExtendedProfilesSync();
+    const existingExt = allExt[userId] || {};
+    const remoteMeta: UserExtendedProfileMeta = {
+      birthDate: userEnv.birthDate !== undefined ? userEnv.birthDate : existingExt.birthDate,
+      bannerUrl: userEnv.bannerUrl !== undefined ? userEnv.bannerUrl : existingExt.bannerUrl,
+      musicStatus: userEnv.musicStatus !== undefined ? userEnv.musicStatus : existingExt.musicStatus,
+      closeFriendsIds: userEnv.closeFriendsIds !== undefined ? userEnv.closeFriendsIds : existingExt.closeFriendsIds,
+      updatedAt: userEnv.updatedAt || existingExt.updatedAt || new Date().toISOString(),
+    };
+    if (JSON.stringify(existingExt) !== JSON.stringify(remoteMeta)) {
+      const nextAll = { ...allExt, [userId]: remoteMeta };
+      if (cleanUser) nextAll[cleanUser] = remoteMeta;
+      try {
+        localStorage.setItem(EXTENDED_PROFILE_LOCAL_KEY, JSON.stringify(nextAll));
+        window.dispatchEvent(new CustomEvent('pixchats:extended_profile_updated', { detail: nextAll }));
+      } catch {}
+    }
+  }
+}
+
+if (typeof window !== 'undefined' && !(window as any).__pixchatsProfileHydratorBound) {
+  (window as any).__pixchatsProfileHydratorBound = true;
+  window.addEventListener('pixchats:profile_row_hydrated', (e: Event) => {
+    const detail = (e as CustomEvent<Profile>).detail;
+    if (detail) hydratePremiumAndExtendedFromProfileRow(detail);
+  });
+}
+
 export async function syncPremiumManifestFromCloud(force = false): Promise<PremiumManifest> {
   const local = getPremiumManifestSync();
-  if (!force && Date.now() - lastPremiumFetchMs < 25_000) {
+  if (!force && Date.now() - lastPremiumFetchMs < 45_000) {
     return local;
   }
   lastPremiumFetchMs = Date.now();
   try {
     const supabase = getSupabaseClient();
-    const { data } = supabase.storage.from(CLOUD_BUCKET).getPublicUrl(PREMIUM_CLOUD_PATH);
-    if (!data?.publicUrl) return local;
-    const res = await fetch(`${data.publicUrl}?t=${Math.floor(Date.now() / 20000)}`);
-    if (!res.ok) return local;
-    const remote = (await res.json()) as PremiumManifest;
-    if (remote && remote.users) {
-      const merged: PremiumManifest = {
-        users: { ...local.users, ...remote.users },
-        updatedAt: remote.updatedAt || new Date().toISOString(),
-      };
-      // If remote explicitly removed a key and is newer, prefer remote
-      if (!local.updatedAt || (remote.updatedAt && remote.updatedAt >= local.updatedAt)) {
-        merged.users = remote.users;
+    const { data: rows } = await supabase
+      .from('profiles')
+      .select('id, username, public_signed_prekey')
+      .like('public_signed_prekey', 'pxadm:v1:%')
+      .limit(200);
+
+    if (rows) {
+      const nextUsers = { ...local.users };
+      for (const r of rows as any[]) {
+        const admEnv = parseProfileAdminEnvelope(r.public_signed_prekey);
+        const cleanUser = r.username ? `@${String(r.username).replace(/^@/, '').toLowerCase()}` : '';
+        if (admEnv.premium !== undefined) {
+          if (!admEnv.premium || admEnv.premium.revoked) {
+            delete nextUsers[r.id];
+            if (cleanUser) delete nextUsers[cleanUser];
+          } else {
+            const rec: PremiumRecord = {
+              userId: r.id,
+              username: r.username || admEnv.premium.username,
+              expiresAt: admEnv.premium.expiresAt,
+              grantedBy: admEnv.premium.grantedBy,
+              reason: admEnv.premium.note,
+              grantedAt: admEnv.premium.grantedAt,
+            };
+            nextUsers[r.id] = rec;
+            if (cleanUser) nextUsers[cleanUser] = rec;
+          }
+        }
       }
+      const merged: PremiumManifest = {
+        users: nextUsers,
+        updatedAt: new Date().toISOString(),
+      };
       savePremiumManifestLocal(merged);
       return merged;
     }
@@ -218,7 +339,7 @@ export async function syncPremiumManifestFromCloud(force = false): Promise<Premi
 }
 
 export function isRecordPremiumActive(rec?: PremiumRecord | null, nowMs = Date.now()): boolean {
-  if (!rec) return false;
+  if (!rec || rec.revoked) return false;
   if (rec.expiresAt === null) return true; // Навсегда
   const exp = new Date(rec.expiresAt).getTime();
   return Number.isFinite(exp) && exp > nowMs;
@@ -268,14 +389,15 @@ export async function grantUserPremium(params: {
     durationUnit: params.durationUnit,
   });
 
-  const current = await syncPremiumManifestFromCloud(true);
+  const current = getPremiumManifestSync();
   const record: PremiumRecord = {
     userId: params.userId,
     username: params.username,
     expiresAt,
     reason: params.reason || params.note || 'Выдано администратором PixChats',
-    grantedBy: params.grantedBy,
+    grantedBy: params.grantedBy || 'admin',
     grantedAt: new Date().toISOString(),
+    revoked: false,
   };
 
   const nextUsers = { ...current.users, [params.userId]: record };
@@ -290,21 +412,25 @@ export async function grantUserPremium(params: {
 
   savePremiumManifestLocal(nextManifest);
 
-  try {
-    const supabase = getSupabaseClient();
-    const blob = new Blob([JSON.stringify(nextManifest)], { type: 'application/json' });
-    await supabase.storage.from(CLOUD_BUCKET).upload(PREMIUM_CLOUD_PATH, blob, {
-      upsert: true,
-      contentType: 'application/json',
-      cacheControl: '15',
-    });
-  } catch {}
+  await updateProfileAdminEnvelope(params.userId, (prev) => ({
+    ...prev,
+    premium: {
+      userId: params.userId,
+      username: params.username,
+      grantedBy: record.grantedBy || 'admin',
+      grantedAt: record.grantedAt,
+      expiresAt: record.expiresAt,
+      note: record.reason,
+      revoked: false,
+    },
+  }));
 
+  broadcastProfileEnvelopeChanged(params.userId);
   return record;
 }
 
 export async function revokeUserPremium(userId: string, username?: string): Promise<void> {
-  const current = await syncPremiumManifestFromCloud(true);
+  const current = getPremiumManifestSync();
   const nextUsers = { ...current.users };
   delete nextUsers[userId];
   if (username) {
@@ -316,15 +442,19 @@ export async function revokeUserPremium(userId: string, username?: string): Prom
   };
   savePremiumManifestLocal(nextManifest);
 
-  try {
-    const supabase = getSupabaseClient();
-    const blob = new Blob([JSON.stringify(nextManifest)], { type: 'application/json' });
-    await supabase.storage.from(CLOUD_BUCKET).upload(PREMIUM_CLOUD_PATH, blob, {
-      upsert: true,
-      contentType: 'application/json',
-      cacheControl: '15',
-    });
-  } catch {}
+  await updateProfileAdminEnvelope(userId, (prev) => ({
+    ...prev,
+    premium: {
+      userId,
+      username,
+      grantedBy: 'admin',
+      grantedAt: new Date().toISOString(),
+      expiresAt: new Date(0).toISOString(),
+      revoked: true,
+    },
+  }));
+
+  broadcastProfileEnvelopeChanged(userId);
 }
 
 // ============================================================================
@@ -351,40 +481,101 @@ let lastExtProfileFetchMs = 0;
 
 export async function syncExtendedProfilesFromCloud(force = false): Promise<Record<string, UserExtendedProfileMeta>> {
   const local = getAllExtendedProfilesSync();
-  if (!force && Date.now() - lastExtProfileFetchMs < 30_000) {
+  if (!force && Date.now() - lastExtProfileFetchMs < 60_000) {
     return local;
   }
   lastExtProfileFetchMs = Date.now();
   try {
     const supabase = getSupabaseClient();
-    const { data } = supabase.storage.from(CLOUD_BUCKET).getPublicUrl(EXTENDED_PROFILE_CLOUD_PATH);
-    if (!data?.publicUrl) return local;
-    const res = await fetch(`${data.publicUrl}?t=${Math.floor(Date.now() / 30000)}`);
-    if (!res.ok) return local;
-    const remote = await res.json();
-    if (remote && typeof remote === 'object') {
-      const merged = { ...remote, ...local };
-      for (const [k, v] of Object.entries(remote as Record<string, UserExtendedProfileMeta>)) {
-        const loc = local[k];
-        if (!loc || (v.updatedAt && (!loc.updatedAt || v.updatedAt >= loc.updatedAt))) {
-          merged[k] = v;
-        }
+    const { data: rows } = await supabase
+      .from('profiles')
+      .select('id, username, public_signed_prekey, signed_prekey_signature')
+      .like('signed_prekey_signature', 'pxext:v1:%')
+      .limit(150);
+
+    if (rows && rows.length > 0) {
+      for (const r of rows as any[]) {
+        hydratePremiumAndExtendedFromProfileRow(r);
       }
-      if (typeof window !== 'undefined') {
-        localStorage.setItem(EXTENDED_PROFILE_LOCAL_KEY, JSON.stringify(merged));
-        window.dispatchEvent(new CustomEvent('pixchats:extended_profile_updated', { detail: merged }));
-      }
-      return merged;
+      return getAllExtendedProfilesSync();
     }
   } catch {}
   return local;
+}
+
+export async function fetchAndHydrateUserExtendedData(userId: string): Promise<UserExtendedProfileMeta> {
+  if (!userId) return {};
+  try {
+    const supabase = getSupabaseClient();
+    const { data: row } = await supabase
+      .from('profiles')
+      .select('id, username, public_signed_prekey, signed_prekey_signature')
+      .eq('id', userId)
+      .maybeSingle();
+    if (row) {
+      hydratePremiumAndExtendedFromProfileRow(row as any);
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('pixchats:profile_row_hydrated', { detail: row }));
+      }
+    }
+  } catch {}
+  return getExtendedProfile(userId);
+}
+
+/**
+ * Загружает аудиофайл любимой музыки (MP3/WAV/OGG/M4A/AAC/FLAC) в бакет avatars под папкой userId (100% совместимо с RLS avatars_owner_insert)
+ * с фолбэком на бесплатное облачное хранилище.
+ */
+export async function uploadFavoriteMusicAudio(
+  userId: string,
+  file: File
+): Promise<{ audioUrl: string; fileName: string }> {
+  if (!userId) throw new Error('Необходима авторизация для загрузки аудиофайла');
+  if (file.size > 25 * 1024 * 1024) {
+    throw new Error('Размер аудиофайла не должен превышать 25 МБ');
+  }
+  const rawExt = (file.name.split('.').pop() || 'mp3').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const safeExt = ['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac', 'webm'].includes(rawExt) ? rawExt : 'mp3';
+  const storagePath = `${userId}/favorite_music_${Date.now()}.${safeExt}`;
+
+  try {
+    const supabase = getSupabaseClient();
+    const { error } = await supabase.storage.from(CLOUD_BUCKET).upload(storagePath, file, {
+      upsert: true,
+      contentType: file.type || 'audio/mpeg',
+      cacheControl: '3600',
+    });
+    if (!error) {
+      const { data } = supabase.storage.from(CLOUD_BUCKET).getPublicUrl(storagePath);
+      if (data?.publicUrl) {
+        return { audioUrl: data.publicUrl, fileName: file.name };
+      }
+    }
+  } catch {}
+
+  const externalUrl = await uploadToFreeExternalHost(file);
+  if (externalUrl) {
+    return { audioUrl: externalUrl, fileName: file.name };
+  }
+
+  if (file.size <= 4 * 1024 * 1024 && typeof FileReader !== 'undefined') {
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(new Error('Не удалось прочитать аудиофайл'));
+      reader.readAsDataURL(file);
+    });
+    return { audioUrl: dataUrl, fileName: file.name };
+  }
+
+  throw new Error('Не удалось загрузить аудиофайл. Попробуйте файл меньшего размера или прямую ссылку.');
 }
 
 export async function updateUserExtendedProfile(
   userId: string,
   patch: Partial<UserExtendedProfileMeta>
 ): Promise<UserExtendedProfileMeta> {
-  const all = await syncExtendedProfilesFromCloud(false);
+  const all = getAllExtendedProfilesSync();
   const existing = all[userId] || {};
   const updated: UserExtendedProfileMeta = {
     ...existing,
@@ -400,13 +591,24 @@ export async function updateUserExtendedProfile(
   }
 
   try {
-    const supabase = getSupabaseClient();
-    const blob = new Blob([JSON.stringify(nextAll)], { type: 'application/json' });
-    await supabase.storage.from(CLOUD_BUCKET).upload(EXTENDED_PROFILE_CLOUD_PATH, blob, {
-      upsert: true,
-      contentType: 'application/json',
-      cacheControl: '30',
-    });
+    await updateProfileUserEnvelope(userId, (prev) => ({
+      ...prev,
+      birthDate: updated.birthDate !== undefined ? updated.birthDate : prev.birthDate,
+      bannerUrl: updated.bannerUrl !== undefined ? updated.bannerUrl : prev.bannerUrl,
+      musicStatus:
+        updated.musicStatus !== undefined
+          ? updated.musicStatus
+            ? {
+                title: updated.musicStatus.title,
+                artist: updated.musicStatus.artist,
+                audioUrl: updated.musicStatus.audioUrl || null,
+                fileName: updated.musicStatus.fileName || null,
+                updatedAt: updated.musicStatus.updatedAt || new Date().toISOString(),
+              }
+            : null
+          : prev.musicStatus,
+      closeFriendsIds: updated.closeFriendsIds !== undefined ? updated.closeFriendsIds : prev.closeFriendsIds,
+    }));
   } catch {}
 
   return updated;
@@ -491,15 +693,6 @@ export async function updateGroupExtraConfig(
       window.dispatchEvent(new CustomEvent('pixchats:group_extra_updated', { detail: { chatId, config: updated } }));
     } catch {}
   }
-  try {
-    const supabase = getSupabaseClient();
-    const blob = new Blob([JSON.stringify(nextAll)], { type: 'application/json' });
-    await supabase.storage.from(CLOUD_BUCKET).upload(GROUP_EXTRA_CLOUD_PATH, blob, {
-      upsert: true,
-      contentType: 'application/json',
-      cacheControl: '30',
-    });
-  } catch {}
   return updated;
 }
 

@@ -208,7 +208,7 @@ export async function getMuteStates(chatIds: string[], userId: string): Promise<
   if (
     muteStatesCache &&
     muteStatesCache.userId === userId &&
-    now - muteStatesCache.fetchedAt < 180_000
+    now - muteStatesCache.fetchedAt < 300_000
   ) {
     const out: Record<string, MuteState> = {};
     for (const cid of chatIds) {
@@ -222,7 +222,7 @@ export async function getMuteStates(chatIds: string[], userId: string): Promise<
   const supabase = getSupabaseClient();
   const { data } = await supabase
     .from('chat_mutes')
-    .select('chat_id, muted_forever, muted_until, is_penalty, reason')
+    .select('*')
     .eq('user_id', userId);
 
   const byChatId: Record<string, MuteState> = {};

@@ -34,16 +34,24 @@ import {
   getUserExtendedProfileSync,
   syncExtendedProfilesFromCloud,
   updateUserExtendedProfile,
+  hydratePremiumAndExtendedFromProfileRow,
+  uploadFavoriteMusicAudio,
   formatBirthdayHuman,
   PROFILE_BANNER_PRESETS,
   generatePixsetAvatarSvgDataUrl,
   type UserExtendedProfileMeta,
 } from '../../lib/premiumAndFeatures';
 import { compressImageToDataUrl } from '../../lib/fileStorage';
+import {
+  playGlobalAudioTrack,
+  getGlobalAudioState,
+  type GlobalAudioState,
+} from '../../lib/audioPlayerStore';
 
 export default function ProfilePage() {
   const router = useRouter();
   const bannerInputRef = useRef<HTMLInputElement>(null);
+  const musicFileInputRef = useRef<HTMLInputElement>(null);
   const [profile, setProfile] = useState<Profile | null>(() => getCachedCurrentProfile());
   const [showQrModal, setShowQrModal] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
@@ -51,15 +59,20 @@ export default function ProfilePage() {
   const [isPremium, setIsPremium] = useState(false);
   const [extMeta, setExtMeta] = useState<UserExtendedProfileMeta>({});
 
-  // Модалка настройки обложки, музыкального статуса и генератора аватара
+  // Модалка настройки обложки, любимой музыки и генератора аватара
   const [showCustomizeModal, setShowCustomizeModal] = useState(false);
   const [musicTitle, setMusicTitle] = useState('');
   const [musicArtist, setMusicArtist] = useState('');
+  const [musicAudioUrl, setMusicAudioUrl] = useState('');
+  const [musicFileName, setMusicFileName] = useState('');
+  const [uploadingMusic, setUploadingMusic] = useState(false);
+  const [musicUploadError, setMusicUploadError] = useState<string | null>(null);
   const [birthDateDraft, setBirthDateDraft] = useState('');
   const [avatarSeed, setAvatarSeed] = useState('');
   const [avatarStyle, setAvatarStyle] = useState<'pixel' | '3d'>('pixel');
   const [avatarPaletteIdx, setAvatarPaletteIdx] = useState(0);
   const [savingCustom, setSavingCustom] = useState(false);
+  const [globalAudio, setGlobalAudio] = useState<GlobalAudioState>(() => getGlobalAudioState());
 
   useEffect(() => {
     (async () => {
@@ -68,7 +81,7 @@ export default function ProfilePage() {
         router.push('/login/');
         return;
       }
-      const me = await getCurrentProfile();
+      const me = await getCurrentProfile(true);
       if (!me) {
         router.push('/complete-profile/');
         return;
@@ -77,6 +90,7 @@ export default function ProfilePage() {
         router.push('/banned/');
         return;
       }
+      hydratePremiumAndExtendedFromProfileRow(me);
       setProfile(me);
       setEmojiStatus(getUserEmojiStatus(me.id, me.username));
       setIsPremium(getUserPremiumStatus(me.id, me.username).active);
@@ -86,19 +100,38 @@ export default function ProfilePage() {
       setExtMeta(localMeta);
       setMusicTitle(localMeta.musicStatus?.title || '');
       setMusicArtist(localMeta.musicStatus?.artist || '');
+      setMusicAudioUrl(localMeta.musicStatus?.audioUrl || '');
+      setMusicFileName(localMeta.musicStatus?.fileName || '');
       setBirthDateDraft(localMeta.birthDate || '');
 
-      void syncPremiumManifestFromCloud(false).then(() => {
+      void syncPremiumManifestFromCloud(true).then(() => {
         setIsPremium(getUserPremiumStatus(me.id, me.username).active);
       });
       void syncExtendedProfilesFromCloud(false).then((all) => {
-        const m = all[me.id] || {};
+        const m = all[me.id] || getUserExtendedProfileSync(me.id);
         setExtMeta(m);
         setMusicTitle(m.musicStatus?.title || '');
         setMusicArtist(m.musicStatus?.artist || '');
+        setMusicAudioUrl(m.musicStatus?.audioUrl || '');
+        setMusicFileName(m.musicStatus?.fileName || '');
         setBirthDateDraft(m.birthDate || '');
       });
     })();
+
+    const onAudioState = (e: Event) => {
+      const detail = (e as CustomEvent<GlobalAudioState>).detail;
+      if (detail) setGlobalAudio(detail);
+    };
+    const onPremiumUpdated = () => {
+      const me = getCachedCurrentProfile();
+      if (me) setIsPremium(getUserPremiumStatus(me.id, me.username).active);
+    };
+    window.addEventListener('pixchats:global_audio_state', onAudioState);
+    window.addEventListener('pixchats:premium_updated', onPremiumUpdated);
+    return () => {
+      window.removeEventListener('pixchats:global_audio_state', onAudioState);
+      window.removeEventListener('pixchats:premium_updated', onPremiumUpdated);
+    };
   }, [router]);
 
   if (!profile) return null;
@@ -132,15 +165,54 @@ export default function ProfilePage() {
     if (bannerInputRef.current) bannerInputRef.current.value = '';
   }
 
+  async function handleMusicFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file || !profile) return;
+    setUploadingMusic(true);
+    setMusicUploadError(null);
+    try {
+      const { audioUrl, fileName } = await uploadFavoriteMusicAudio(profile.id, file);
+      setMusicAudioUrl(audioUrl);
+      setMusicFileName(fileName);
+      if (!musicTitle.trim()) {
+        const baseName = file.name.replace(/\.[^/.]+$/, '').replace(/[_-]+/g, ' ').trim();
+        if (baseName) setMusicTitle(baseName);
+      }
+    } catch (err: any) {
+      setMusicUploadError(err?.message || 'Не удалось загрузить аудиофайл');
+    } finally {
+      setUploadingMusic(false);
+      if (musicFileInputRef.current) musicFileInputRef.current.value = '';
+    }
+  }
+
+  function handlePlayProfileMusic() {
+    if (!profile || !extMeta.musicStatus?.audioUrl) return;
+    playGlobalAudioTrack({
+      id: `profile_music_${profile.id}`,
+      src: extMeta.musicStatus.audioUrl,
+      title: extMeta.musicStatus.title || 'Любимый трек',
+      senderName: extMeta.musicStatus.artist || profile.display_name,
+      chatId: '',
+      chatTitle: `Профиль @${profile.username}`,
+    });
+  }
+
   async function handleSaveCustomize(e: React.FormEvent) {
     e.preventDefault();
     if (!profile) return;
     setSavingCustom(true);
     try {
-      const musicStatus =
-        musicTitle.trim() || musicArtist.trim()
-          ? { title: musicTitle.trim() || 'Без названия', artist: musicArtist.trim() || 'Исполнитель' }
-          : null;
+      const hasMusic = Boolean(musicTitle.trim() || musicArtist.trim() || musicAudioUrl.trim());
+      const musicStatus = hasMusic
+        ? {
+            title: musicTitle.trim() || 'Любимый трек',
+            artist: musicArtist.trim() || profile.display_name,
+            audioUrl: musicAudioUrl.trim() || null,
+            fileName: musicFileName.trim() || null,
+            updatedAt: new Date().toISOString(),
+          }
+        : null;
       const updated = await updateUserExtendedProfile(profile.id, {
         musicStatus,
         birthDate: birthDateDraft.trim() || null,
@@ -262,27 +334,65 @@ export default function ProfilePage() {
             </p>
           )}
 
-          {/* Музыкальный статус в профиле (#1) */}
+          {/* Любимая музыка в профиле с кнопкой прослушивания */}
           {extMeta.musicStatus && (
             <div
-              onClick={() => setShowCustomizeModal(true)}
               style={{
                 marginTop: 10,
                 display: 'inline-flex',
+                flexDirection: 'column',
                 alignItems: 'center',
                 gap: 8,
-                padding: '6px 14px',
-                borderRadius: 999,
+                padding: '8px 14px',
+                borderRadius: 16,
                 background: 'rgba(255, 212, 0, 0.12)',
                 border: '1px solid rgba(255, 212, 0, 0.35)',
                 fontSize: 12.5,
-                cursor: 'pointer',
+                maxWidth: '100%',
               }}
-              title="Нажмите, чтобы изменить музыкальный статус"
             >
-              <span>🎵</span>
-              <span style={{ fontWeight: 700, color: 'var(--accent)' }}>{extMeta.musicStatus.title}</span>
-              <span style={{ color: 'var(--text-muted)' }}>— {extMeta.musicStatus.artist}</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
+                <span
+                  onClick={() => setShowCustomizeModal(true)}
+                  style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                  title="Нажмите, чтобы изменить любимую музыку"
+                >
+                  <span>🎵</span>
+                  <span style={{ fontWeight: 700, color: 'var(--accent)' }}>{extMeta.musicStatus.title}</span>
+                  <span style={{ color: 'var(--text-muted)' }}>— {extMeta.musicStatus.artist}</span>
+                </span>
+                {extMeta.musicStatus.audioUrl && (
+                  <button
+                    type="button"
+                    onClick={handlePlayProfileMusic}
+                    style={{
+                      padding: '4px 10px',
+                      borderRadius: 999,
+                      background: 'var(--accent)',
+                      color: '#000',
+                      border: 'none',
+                      fontWeight: 700,
+                      fontSize: 11.5,
+                      cursor: 'pointer',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 4,
+                    }}
+                  >
+                    {globalAudio.track?.id === `profile_music_${profile.id}` && globalAudio.playing
+                      ? '⏸ Пауза'
+                      : '▶️ Прослушать'}
+                  </button>
+                )}
+              </div>
+              {extMeta.musicStatus.audioUrl && (
+                <audio
+                  controls
+                  preload="metadata"
+                  src={extMeta.musicStatus.audioUrl}
+                  style={{ height: 32, maxWidth: 280, width: '100%' }}
+                />
+              )}
             </div>
           )}
 
@@ -545,10 +655,10 @@ export default function ProfilePage() {
                   />
                 </div>
 
-                {/* 3. Музыкальный статус */}
+                {/* 3. Любимая музыка с загрузкой аудиофайла */}
                 <div className="field">
-                  <label>🎵 Музыкальный статус в шапке профиля</label>
-                  <div style={{ display: 'flex', gap: 8 }}>
+                  <label>🎵 Любимая музыка в профиле (другие пользователи смогут её прослушать)</label>
+                  <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
                     <input
                       className="input"
                       placeholder="Название трека"
@@ -562,6 +672,53 @@ export default function ProfilePage() {
                       onChange={(e) => setMusicArtist(e.target.value)}
                     />
                   </div>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                    <input
+                      ref={musicFileInputRef}
+                      type="file"
+                      accept="audio/*,.mp3,.wav,.ogg,.m4a,.aac,.flac"
+                      style={{ display: 'none' }}
+                      onChange={handleMusicFileUpload}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-compact"
+                      disabled={uploadingMusic}
+                      onClick={() => musicFileInputRef.current?.click()}
+                    >
+                      {uploadingMusic ? '⏳ Загружаем трек…' : '📤 Загрузить аудиофайл (MP3/WAV/OGG/M4A)'}
+                    </button>
+                    {musicAudioUrl && (
+                      <button
+                        type="button"
+                        className="btn btn-compact"
+                        onClick={() => {
+                          setMusicAudioUrl('');
+                          setMusicFileName('');
+                        }}
+                      >
+                        ✕ Удалить аудиофайл
+                      </button>
+                    )}
+                  </div>
+                  <input
+                    className="input"
+                    style={{ marginTop: 8, fontSize: 12 }}
+                    placeholder="Или вставьте прямую ссылку на аудиофайл (https://…)"
+                    value={musicAudioUrl}
+                    onChange={(e) => setMusicAudioUrl(e.target.value)}
+                  />
+                  {musicUploadError && (
+                    <div style={{ color: '#ef4444', fontSize: 12, marginTop: 4 }}>{musicUploadError}</div>
+                  )}
+                  {musicAudioUrl && (
+                    <div style={{ marginTop: 8 }}>
+                      <div style={{ fontSize: 11.5, color: 'var(--accent)', marginBottom: 4 }}>
+                        ✅ Аудиофайл прикреплён{musicFileName ? `: ${musicFileName}` : ''} — предпрослушивание:
+                      </div>
+                      <audio controls preload="metadata" src={musicAudioUrl} style={{ width: '100%', height: 34 }} />
+                    </div>
+                  )}
                 </div>
 
                 {/* 4. Генератор пиксель-арт / 3D аватарок */}

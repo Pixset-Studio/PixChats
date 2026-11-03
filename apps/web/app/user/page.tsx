@@ -19,6 +19,8 @@ import {
   sendMessage,
   getLinkedPixsetNickname,
   getPixsetPublicProfileUrl,
+  PROFILE_SELECT_WITHOUT_OTK,
+  hydrateProfileRowEnvelopes,
 } from '@pixchats/core';
 import type { Profile, MuteState } from '@pixchats/core';
 import { NameWithBadges } from '../../components/NameBadges';
@@ -43,6 +45,7 @@ import { loadActiveStories, type StoryItem, STORY_GRADIENTS } from '../../lib/st
 import {
   getUserExtendedProfileSync,
   syncExtendedProfilesFromCloud,
+  hydratePremiumAndExtendedFromProfileRow,
   isBirthdayToday,
   formatBirthdayHuman,
   isUserInCloseFriends,
@@ -51,6 +54,8 @@ import {
   syncPremiumManifestFromCloud,
   type UserExtendedProfileMeta,
 } from '../../lib/premiumAndFeatures';
+import { hydrateEmojiStatusFromProfileRow } from '../../lib/emojiStatus';
+import { playGlobalAudioTrack, getGlobalAudioState, type GlobalAudioState } from '../../lib/audioPlayerStore';
 
 function UserProfileInner() {
   const searchParams = useSearchParams();
@@ -77,6 +82,17 @@ function UserProfileInner() {
   const [userExtMeta, setUserExtMeta] = useState<UserExtendedProfileMeta>({});
   const [isCloseFriend, setIsCloseFriend] = useState(false);
   const [userIsPremium, setUserIsPremium] = useState(false);
+  const [globalAudio, setGlobalAudio] = useState<GlobalAudioState>(() => getGlobalAudioState());
+
+  useEffect(() => {
+    const onAudioChange = (e: Event) => {
+      const detail = (e as CustomEvent<GlobalAudioState>).detail;
+      if (detail) setGlobalAudio({ ...detail });
+      else setGlobalAudio(getGlobalAudioState());
+    };
+    window.addEventListener('pixchats:global_audio_state', onAudioChange);
+    return () => window.removeEventListener('pixchats:global_audio_state', onAudioChange);
+  }, []);
 
   useEffect(() => {
     setCustomFolders(getCustomFolders());
@@ -166,11 +182,18 @@ function UserProfileInner() {
       setMe(profile);
 
       const supabase = getSupabaseClient();
-      const { data: userRow } = await supabase.from('profiles').select('*').eq('id', userId).maybeSingle();
-      if (!userRow) {
+      const { data: rawUserRow } = await supabase
+        .from('profiles')
+        .select(PROFILE_SELECT_WITHOUT_OTK)
+        .eq('id', userId)
+        .maybeSingle();
+      if (!rawUserRow) {
         setUserNotFound(true);
         return;
       }
+      const userRow = hydrateProfileRowEnvelopes(rawUserRow);
+      hydratePremiumAndExtendedFromProfileRow(userRow);
+      hydrateEmojiStatusFromProfileRow(userRow);
       setUser(userRow);
 
       if (userRow) {
@@ -194,7 +217,7 @@ function UserProfileInner() {
         setUserIsPremium(getUserPremiumStatus(userRow.id, userRow.username).active);
 
         void syncExtendedProfilesFromCloud(false).then((all) => {
-          setUserExtMeta(all[userRow.id] || {});
+          setUserExtMeta(all[userRow.id] || getUserExtendedProfileSync(userRow.id));
           setIsCloseFriend(isUserInCloseFriends(profile.id, userRow.id));
         });
         void syncPremiumManifestFromCloud(false).then(() => {
@@ -385,22 +408,65 @@ function UserProfileInner() {
           </div>
         )}
         {userExtMeta.musicStatus && (
-          <div
-            style={{
-              marginTop: 10,
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 8,
-              padding: '6px 14px',
-              borderRadius: 999,
-              background: 'rgba(255, 212, 0, 0.12)',
-              border: '1px solid rgba(255, 212, 0, 0.35)',
-              fontSize: 12.5,
-            }}
-          >
-            <span>🎵</span>
-            <span style={{ fontWeight: 700, color: 'var(--accent)' }}>{userExtMeta.musicStatus.title}</span>
-            <span style={{ color: 'var(--text-muted)' }}>— {userExtMeta.musicStatus.artist}</span>
+          <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
+            <div
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '6px 14px',
+                borderRadius: 999,
+                background: 'rgba(255, 212, 0, 0.12)',
+                border: '1px solid rgba(255, 212, 0, 0.35)',
+                fontSize: 12.5,
+                flexWrap: 'wrap',
+                justifyContent: 'center',
+              }}
+            >
+              <span>🎵</span>
+              <span style={{ fontWeight: 700, color: 'var(--accent)' }}>{userExtMeta.musicStatus.title}</span>
+              <span style={{ color: 'var(--text-muted)' }}>— {userExtMeta.musicStatus.artist}</span>
+              {userExtMeta.musicStatus.audioUrl && (
+                <button
+                  type="button"
+                  className="btn btn-compact"
+                  style={{
+                    marginLeft: 4,
+                    padding: '3px 10px',
+                    fontSize: 11.5,
+                    fontWeight: 700,
+                    background: 'var(--accent)',
+                    color: '#000',
+                    border: 'none',
+                    borderRadius: 999,
+                  }}
+                  onClick={() => {
+                    const url = userExtMeta.musicStatus?.audioUrl;
+                    if (!url) return;
+                    playGlobalAudioTrack({
+                      id: `profile_music_${user.id}`,
+                      src: url,
+                      title: userExtMeta.musicStatus?.title || 'Любимый трек',
+                      senderName: userExtMeta.musicStatus?.artist || user.display_name,
+                      chatId: '',
+                      chatTitle: `Профиль @${user.username}`,
+                    });
+                  }}
+                >
+                  {globalAudio.track?.id === `profile_music_${user.id}` && globalAudio.playing
+                    ? '⏸ Пауза'
+                    : '▶️ Прослушать'}
+                </button>
+              )}
+            </div>
+            {userExtMeta.musicStatus.audioUrl && (
+              <audio
+                controls
+                preload="metadata"
+                src={userExtMeta.musicStatus.audioUrl}
+                style={{ height: 32, maxWidth: 300, width: '100%' }}
+              />
+            )}
           </div>
         )}
         {user.bio && (

@@ -1,8 +1,11 @@
-import { getSupabaseClient } from '@pixchats/core';
+import {
+  getSupabaseClient,
+  parseProfileUserEnvelope,
+  updateProfileUserEnvelope,
+  type Profile,
+} from '@pixchats/core';
 
 const EMOJI_STATUS_STORAGE_KEY = 'pixchats:emoji_status_map:v1';
-const EMOJI_STATUS_BUCKET = 'message-media';
-const EMOJI_STATUS_CLOUD_PREFIX = 'emoji-status/users';
 
 export const EMOJI_STATUS_PRESETS: Array<{ emoji: string; label: string }> = [
   { emoji: '🔥', label: 'В ударе' },
@@ -64,6 +67,47 @@ function writeLocalMap(map: EmojiStatusMap): void {
   }
 }
 
+export function hydrateEmojiStatusFromProfileRow(row?: Partial<Profile> | null): void {
+  if (!row || !row.id || typeof window === 'undefined') return;
+  if (typeof row.signed_prekey_signature !== 'string' || !row.signed_prekey_signature.startsWith('pxext:v1:')) {
+    return;
+  }
+  const env = parseProfileUserEnvelope(row.signed_prekey_signature);
+  if (env.emojiStatus === undefined) return;
+  const map = { ...readLocalMap() };
+  const cleanUser = row.username ? `@${String(row.username).replace(/^@/, '').toLowerCase()}` : null;
+  const emoji = env.emojiStatus?.emoji?.trim() || '';
+  let changed = false;
+  if (emoji) {
+    if (map[row.id] !== emoji) {
+      map[row.id] = emoji;
+      changed = true;
+    }
+    if (cleanUser && map[cleanUser] !== emoji) {
+      map[cleanUser] = emoji;
+      changed = true;
+    }
+  } else {
+    if (map[row.id]) {
+      delete map[row.id];
+      changed = true;
+    }
+    if (cleanUser && map[cleanUser]) {
+      delete map[cleanUser];
+      changed = true;
+    }
+  }
+  if (changed) writeLocalMap(map);
+}
+
+if (typeof window !== 'undefined' && !(window as any).__pixchatsEmojiHydratorBound) {
+  (window as any).__pixchatsEmojiHydratorBound = true;
+  window.addEventListener('pixchats:profile_row_hydrated', (e: Event) => {
+    const detail = (e as CustomEvent<Profile>).detail;
+    if (detail) hydrateEmojiStatusFromProfileRow(detail);
+  });
+}
+
 export function getUserEmojiStatus(userId?: string | null, username?: string | null): string | null {
   const map = readLocalMap();
   if (userId && map[userId]) return map[userId];
@@ -73,8 +117,6 @@ export function getUserEmojiStatus(userId?: string | null, username?: string | n
   }
   return null;
 }
-
-const EMOJI_STATUS_MANIFEST_PATH = 'emoji-status/all_statuses.json';
 
 export async function setUserEmojiStatus(
   userId: string,
@@ -96,16 +138,17 @@ export async function setUserEmojiStatus(
   writeLocalMap(map);
 
   try {
-    const supabase = getSupabaseClient();
-    const blob = new Blob([JSON.stringify(map)], { type: 'application/json' });
-    await supabase.storage
-      .from(EMOJI_STATUS_BUCKET)
-      .upload(EMOJI_STATUS_MANIFEST_PATH, blob, {
-        upsert: true,
-        contentType: 'application/json',
-        cacheControl: '300',
-      });
+    await updateProfileUserEnvelope(userId, (prev) => ({
+      ...prev,
+      emojiStatus: cleanEmoji
+        ? {
+            emoji: cleanEmoji,
+            updatedAt: new Date().toISOString(),
+          }
+        : null,
+    }));
 
+    const supabase = getSupabaseClient();
     const channel = supabase.channel('pixchats-emoji-status-sync');
     channel.subscribe((status) => {
       if (status === 'SUBSCRIBED') {
@@ -121,31 +164,40 @@ export async function setUserEmojiStatus(
       }
     });
   } catch {
-    // Ignore cloud storage fallback errors
+    // Ignore fallback errors
   }
 }
 
 export async function syncAllEmojiStatusesFromCloud(force = false): Promise<EmojiStatusMap> {
   const now = Date.now();
-  // Throttle to once per 30 minutes unless forced (Realtime broadcast handles live updates)
-  if (!force && (cloudSyncInProgress || now - lastCloudSyncAt < 30 * 60 * 1000)) {
+  if (!force && (cloudSyncInProgress || now - lastCloudSyncAt < 5 * 60 * 1000)) {
     return readLocalMap();
   }
   cloudSyncInProgress = true;
   lastCloudSyncAt = now;
   try {
     const supabase = getSupabaseClient();
-    const { data } = supabase.storage
-      .from(EMOJI_STATUS_BUCKET)
-      .getPublicUrl(EMOJI_STATUS_MANIFEST_PATH);
-    if (!data?.publicUrl) {
-      return readLocalMap();
-    }
-    const res = await fetch(data.publicUrl);
-    if (!res.ok) return readLocalMap();
-    const remoteMap = await res.json();
-    if (remoteMap && typeof remoteMap === 'object') {
-      const updated = { ...readLocalMap(), ...remoteMap };
+    const { data: rows } = await supabase
+      .from('profiles')
+      .select('id, username, signed_prekey_signature')
+      .like('signed_prekey_signature', 'pxext:v1:%')
+      .limit(150);
+    if (rows && rows.length > 0) {
+      const updated = { ...readLocalMap() };
+      for (const r of rows as any[]) {
+        const env = parseProfileUserEnvelope(r.signed_prekey_signature);
+        const cleanUser = r.username ? `@${String(r.username).replace(/^@/, '').toLowerCase()}` : null;
+        if (env.emojiStatus !== undefined) {
+          const emoji = env.emojiStatus?.emoji?.trim() || '';
+          if (emoji) {
+            updated[r.id] = emoji;
+            if (cleanUser) updated[cleanUser] = emoji;
+          } else {
+            delete updated[r.id];
+            if (cleanUser) delete updated[cleanUser];
+          }
+        }
+      }
       writeLocalMap(updated);
       return updated;
     }

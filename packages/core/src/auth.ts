@@ -245,26 +245,68 @@ export async function signOut() {
  * генерирует и загружает. Нужно на случай, если при регистрации не было активной
  * сессии (email ещё не подтверждён) — тогда ключи появятся при первом успешном входе.
  */
+export const PROFILE_SELECT_WITHOUT_OTK =
+  'id, username, display_name, bio, avatar_url, role, is_verified, verified_at, is_pixset_employee, banned_until, banned_permanently, frozen, privacy_who_can_message, privacy_show_last_seen, privacy_who_can_add_to_groups, last_seen, theme, created_at, public_identity_key, public_signed_prekey, signed_prekey_signature';
+
+export function hydrateProfileRowEnvelopes(raw: any): Profile {
+  if (!raw || typeof raw !== 'object') return raw as Profile;
+  const p = { ...raw } as Profile;
+  const admStr = typeof p.public_signed_prekey === 'string' ? p.public_signed_prekey : '';
+  if (admStr.startsWith('pxadm:v1:')) {
+    try {
+      const parsed = JSON.parse(admStr.slice('pxadm:v1:'.length));
+      if (parsed && typeof parsed === 'object') {
+        if (parsed.penaltyMeta) {
+          if (!p.ban_reason && parsed.penaltyMeta.banReason) p.ban_reason = parsed.penaltyMeta.banReason;
+          if (!p.frozen_reason && parsed.penaltyMeta.frozenReason) p.frozen_reason = parsed.penaltyMeta.frozenReason;
+          if (!p.frozen_at && parsed.penaltyMeta.frozenAt) p.frozen_at = parsed.penaltyMeta.frozenAt;
+          if (!p.moderator_comment && parsed.penaltyMeta.moderatorComment) {
+            p.moderator_comment = parsed.penaltyMeta.moderatorComment;
+          }
+        }
+        if (!p.ban_reason && parsed.ban_reason) p.ban_reason = parsed.ban_reason;
+        if (!p.frozen_reason && parsed.frozen_reason) p.frozen_reason = parsed.frozen_reason;
+        if (!p.frozen_at && parsed.frozen_at) p.frozen_at = parsed.frozen_at;
+        if (!p.moderator_comment && parsed.moderator_comment) p.moderator_comment = parsed.moderator_comment;
+        if (Array.isArray(parsed.customRoleIds)) {
+          p.custom_role_ids = parsed.customRoleIds;
+        }
+      }
+    } catch {}
+  }
+  if (typeof window !== 'undefined') {
+    try {
+      window.dispatchEvent(new CustomEvent('pixchats:profile_row_hydrated', { detail: p }));
+    } catch {}
+  }
+  return p;
+}
+
 export async function ensureKeyBundle(profile: Profile): Promise<void> {
   if (profile.public_identity_key) return;
 
   const supabase = getSupabaseClient();
   const bundle = await generateAndStoreKeyBundle(profile.id);
+  const patch: Record<string, any> = {
+    public_identity_key: bundle.identityPublicKey,
+    public_one_time_prekeys: bundle.oneTimePreKeysPublic,
+  };
+  if (!profile.public_signed_prekey || !profile.public_signed_prekey.startsWith('pxadm:')) {
+    patch.public_signed_prekey = bundle.signedPreKeyPublic;
+  }
+  if (!profile.signed_prekey_signature || !profile.signed_prekey_signature.startsWith('pxext:')) {
+    patch.signed_prekey_signature = bundle.signedPreKeySignature;
+  }
   const { error } = await supabase
     .from('profiles')
-    .update({
-      public_identity_key: bundle.identityPublicKey,
-      public_signed_prekey: bundle.signedPreKeyPublic,
-      signed_prekey_signature: bundle.signedPreKeySignature,
-      public_one_time_prekeys: bundle.oneTimePreKeysPublic,
-    })
+    .update(patch)
     .eq('id', profile.id);
   if (error) throw error;
 }
 
 export async function getCurrentProfile(forceRefresh = false): Promise<Profile | null> {
   const now = Date.now();
-  if (!forceRefresh && memoryCachedProfile && now - memoryProfileFetchedAt < 120_000) {
+  if (!forceRefresh && memoryCachedProfile && now - memoryProfileFetchedAt < 180_000) {
     return memoryCachedProfile;
   }
 
@@ -282,18 +324,22 @@ export async function getCurrentProfile(forceRefresh = false): Promise<Profile |
         return null;
       }
 
-      if (!forceRefresh && memoryCachedProfile && memoryCachedProfile.id === userId && Date.now() - memoryProfileFetchedAt < 120_000) {
+      if (!forceRefresh && memoryCachedProfile && memoryCachedProfile.id === userId && Date.now() - memoryProfileFetchedAt < 180_000) {
         return memoryCachedProfile;
       }
 
-      const { data, error } = await supabase.from('profiles').select('*').eq('id', userId).maybeSingle();
+      const { data, error } = await supabase
+        .from('profiles')
+        .select(PROFILE_SELECT_WITHOUT_OTK)
+        .eq('id', userId)
+        .maybeSingle();
       if (error) throw error;
 
-      const profile = (data as Profile | null) ?? null;
+      const profile = data ? hydrateProfileRowEnvelopes(data) : null;
       setCachedCurrentProfile(profile);
 
-      // Обновляем last_seen не чаще чем раз в 5 минут, чтобы экономить квоты Supabase
-      if (profile && Date.now() - lastSeenUpdatedAt > 300_000) {
+      // Обновляем last_seen не чаще чем раз в 10 минут, чтобы экономить квоты Supabase
+      if (profile && Date.now() - lastSeenUpdatedAt > 600_000) {
         lastSeenUpdatedAt = Date.now();
         supabase.from('profiles').update({ last_seen: new Date().toISOString() }).eq('id', userId).then(() => {});
       }

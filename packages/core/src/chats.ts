@@ -1,4 +1,5 @@
 import { getSupabaseClient } from './supabaseClient';
+import { PROFILE_SELECT_WITHOUT_OTK, hydrateProfileRowEnvelopes } from './auth';
 import type { Chat, ChatType, ChatVisibility, Profile } from './types';
 
 export interface CreateChatParams {
@@ -111,9 +112,8 @@ export async function createDirectChat(otherUserId: string): Promise<Chat> {
   return chat as Chat;
 }
 
-// Лёгкий список колонок профиля без тяжёлого массива одноразовых криптоключей public_one_time_prekeys
-const LIGHT_PROFILE_FIELDS =
-  'id, username, display_name, bio, avatar_url, role, is_verified, is_pixset_staff, custom_badge_text, custom_role_id, banned_until, ban_reason, frozen, frozen_reason, moderator_comment, privacy_who_can_message, privacy_show_last_seen, privacy_who_can_add_to_groups, last_seen, theme, created_at';
+// Лёгкий список реальных колонок профиля без тяжёлого массива одноразовых криптоключей public_one_time_prekeys
+const LIGHT_PROFILE_FIELDS = PROFILE_SELECT_WITHOUT_OTK;
 
 const profileByIdCache = new Map<string, { profile: Profile; fetchedAt: number }>();
 const directPartnerIdByChatCache = new Map<string, string>();
@@ -152,20 +152,17 @@ export async function getDirectChatPartners(chatIds: string[], myUserId: string)
 
   const missingProfileIds = partnerIds.filter((pid) => {
     const cached = profileByIdCache.get(pid);
-    return !cached || now - cached.fetchedAt > 180_000;
+    return !cached || now - cached.fetchedAt > 300_000;
   });
 
   if (missingProfileIds.length > 0) {
-    let { data: profiles, error: profileError } = await supabase
+    const { data: profiles } = await supabase
       .from('profiles')
       .select(LIGHT_PROFILE_FIELDS)
       .in('id', missingProfileIds);
-    if (profileError) {
-      const fallback = await supabase.from('profiles').select('*').in('id', missingProfileIds);
-      profiles = fallback.data as any;
-    }
-    for (const p of (profiles ?? []) as any[]) {
-      profileByIdCache.set(p.id, { profile: p as Profile, fetchedAt: now });
+    for (const raw of (profiles ?? []) as any[]) {
+      const p = hydrateProfileRowEnvelopes(raw);
+      profileByIdCache.set(p.id, { profile: p, fetchedAt: now });
     }
   }
 
@@ -325,19 +322,16 @@ export async function getChatMembers(chatId: string): Promise<Profile[]> {
   const now = Date.now();
   const missingIds = ids.filter((id) => {
     const cached = profileByIdCache.get(id);
-    return !cached || now - cached.fetchedAt > 120_000;
+    return !cached || now - cached.fetchedAt > 300_000;
   });
   if (missingIds.length > 0) {
-    let { data: profiles, error: profileError } = await supabase
+    const { data: profiles } = await supabase
       .from('profiles')
       .select(LIGHT_PROFILE_FIELDS)
       .in('id', missingIds);
-    if (profileError) {
-      const fallback = await supabase.from('profiles').select('*').in('id', missingIds);
-      profiles = fallback.data as any;
-    }
-    for (const p of (profiles ?? []) as any[]) {
-      profileByIdCache.set(p.id, { profile: p as Profile, fetchedAt: now });
+    for (const raw of (profiles ?? []) as any[]) {
+      const p = hydrateProfileRowEnvelopes(raw);
+      profileByIdCache.set(p.id, { profile: p, fetchedAt: now });
     }
   }
   return ids.map((id) => profileByIdCache.get(id)?.profile).filter(Boolean) as Profile[];
@@ -408,14 +402,6 @@ export async function getOrCreateSavedMessagesChat(userId?: string): Promise<Cha
     .maybeSingle();
 
   if (existing) {
-    // Убедимся, что пользователь числится в chat_members
-    await supabase
-      .from('chat_members')
-      .upsert(
-        { chat_id: existing.id, user_id: uid, member_role: 'owner' },
-        { onConflict: 'chat_id,user_id' }
-      )
-      .then(() => {});
     return existing as Chat;
   }
 

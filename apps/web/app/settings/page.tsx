@@ -89,6 +89,8 @@ import {
   getExtendedProfile,
   saveExtendedProfile,
   syncExtendedProfilesFromCloud,
+  hydratePremiumAndExtendedFromProfileRow,
+  uploadFavoriteMusicAudio,
   BANNER_PRESETS,
   generatePixsetAvatarSvgDataUrl,
   getUnreadFirstSortEnabled,
@@ -145,6 +147,7 @@ export default function SettingsPage() {
   const [linkEmail, setLinkEmail] = useState('');
   const [linkPassword, setLinkPassword] = useState('');
 
+  const musicFileInputRef = useRef<HTMLInputElement>(null);
   // Extended profile (Birthday, Music Status, Cover Banner)
   const [extProfile, setExtProfile] = useState<ExtendedProfileData>(() =>
     getExtendedProfile(initialCachedMe?.id, initialCachedMe?.username)
@@ -152,6 +155,9 @@ export default function SettingsPage() {
   const [birthDateDraft, setBirthDateDraft] = useState(extProfile.birthDate || '');
   const [musicTitleDraft, setMusicTitleDraft] = useState(extProfile.musicStatus?.title || '');
   const [musicArtistDraft, setMusicArtistDraft] = useState(extProfile.musicStatus?.artist || '');
+  const [musicAudioUrlDraft, setMusicAudioUrlDraft] = useState(extProfile.musicStatus?.audioUrl || '');
+  const [musicFileNameDraft, setMusicFileNameDraft] = useState(extProfile.musicStatus?.fileName || '');
+  const [uploadingMusic, setUploadingMusic] = useState(false);
   const [showAvatarGenerator, setShowAvatarGenerator] = useState(false);
   const [avatarSeed, setAvatarSeed] = useState(initialCachedMe?.username || 'pixset');
   const [avatarStyle, setAvatarStyle] = useState<'pixel' | '3d'>('pixel');
@@ -487,6 +493,7 @@ export default function SettingsPage() {
       setShowLastSeen(me.privacy_show_last_seen);
       setWhoCanAdd(me.privacy_who_can_add_to_groups);
 
+      hydratePremiumAndExtendedFromProfileRow(me);
       const prem = getUserPremiumStatus(me.id, me.username);
       setIsPremium(prem.active);
       setPremiumExpiresAt(prem.expiresAt);
@@ -495,6 +502,8 @@ export default function SettingsPage() {
       setBirthDateDraft(ext.birthDate || '');
       setMusicTitleDraft(ext.musicStatus?.title || '');
       setMusicArtistDraft(ext.musicStatus?.artist || '');
+      setMusicAudioUrlDraft(ext.musicStatus?.audioUrl || '');
+      setMusicFileNameDraft(ext.musicStatus?.fileName || '');
 
       void syncPremiumRegistryFromCloud(false).then(() => {
         const p2 = getUserPremiumStatus(me.id, me.username);
@@ -507,6 +516,8 @@ export default function SettingsPage() {
         setBirthDateDraft(ext2.birthDate || '');
         setMusicTitleDraft(ext2.musicStatus?.title || '');
         setMusicArtistDraft(ext2.musicStatus?.artist || '');
+        setMusicAudioUrlDraft(ext2.musicStatus?.audioUrl || '');
+        setMusicFileNameDraft(ext2.musicStatus?.fileName || '');
       });
 
       try {
@@ -651,18 +662,46 @@ export default function SettingsPage() {
         profile.id,
         {
           birthDate: birthDateDraft || null,
-          musicStatus: musicTitleDraft.trim()
-            ? { title: musicTitleDraft.trim(), artist: musicArtistDraft.trim() || 'PixMusic' }
-            : null,
+          musicStatus:
+            musicTitleDraft.trim() || musicAudioUrlDraft.trim()
+              ? {
+                  title: musicTitleDraft.trim() || musicFileNameDraft.replace(/\.[^/.]+$/, '') || 'Любимый трек',
+                  artist: musicArtistDraft.trim() || 'PixMusic',
+                  audioUrl: musicAudioUrlDraft.trim() || null,
+                  fileName: musicFileNameDraft.trim() || null,
+                }
+              : null,
         },
         username
       );
       setExtProfile(nextExt);
       setProfile({ ...profile, display_name: displayName, username, bio });
-      setNotice('✅ Данные аккаунта, день рождения и музыкальный статус сохранены!');
+      setNotice('✅ Данные аккаунта, день рождения и любимая музыка сохранены!');
       setTimeout(() => setNotice(null), 2000);
     } catch (err: any) {
       setError(err.message ?? 'Не удалось сохранить');
+    }
+  }
+
+  async function handleMusicFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file || !profile) return;
+    setUploadingMusic(true);
+    setError(null);
+    try {
+      const { audioUrl, fileName } = await uploadFavoriteMusicAudio(profile.id, file);
+      setMusicAudioUrlDraft(audioUrl);
+      setMusicFileNameDraft(fileName);
+      if (!musicTitleDraft.trim()) {
+        setMusicTitleDraft(fileName.replace(/\.[^/.]+$/, ''));
+      }
+      setNotice(`🎵 Аудиофайл «${fileName}» загружен! Нажмите «Сохранить изменения аккаунта», чтобы закрепить его.`);
+      setTimeout(() => setNotice(null), 3500);
+    } catch (err: any) {
+      setError(err?.message || 'Не удалось загрузить аудиофайл');
+    } finally {
+      setUploadingMusic(false);
+      if (musicFileInputRef.current) musicFileInputRef.current.value = '';
     }
   }
 
@@ -1355,7 +1394,7 @@ export default function SettingsPage() {
 
                 {/* Музыкальный статус */}
                 <div className="field">
-                  <label>🎵 Музыкальный статус в профиле («Слушает сейчас»)</label>
+                  <label>🎵 Любимая музыка в профиле (можно загрузить файл, чтобы другие могли прослушать)</label>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 8 }}>
                     <input
                       className="input"
@@ -1370,6 +1409,63 @@ export default function SettingsPage() {
                       onChange={(e) => setMusicArtistDraft(e.target.value)}
                     />
                   </div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 8 }}>
+                    <input
+                      ref={musicFileInputRef}
+                      type="file"
+                      accept="audio/*,.mp3,.wav,.ogg,.m4a,.aac,.flac"
+                      style={{ display: 'none' }}
+                      onChange={handleMusicFileUpload}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-compact"
+                      disabled={uploadingMusic}
+                      style={{ borderColor: 'var(--accent)', color: 'var(--accent)', fontWeight: 700 }}
+                      onClick={() => musicFileInputRef.current?.click()}
+                    >
+                      {uploadingMusic ? '⏳ Загрузка трека…' : '📂 Загрузить аудиофайл (MP3/WAV/OGG/M4A)'}
+                    </button>
+                    {musicAudioUrlDraft && (
+                      <button
+                        type="button"
+                        className="btn btn-compact"
+                        style={{ color: 'var(--danger)' }}
+                        onClick={() => {
+                          setMusicAudioUrlDraft('');
+                          setMusicFileNameDraft('');
+                        }}
+                      >
+                        ✕ Удалить аудиофайл
+                      </button>
+                    )}
+                  </div>
+                  <input
+                    className="input"
+                    style={{ marginTop: 8, fontSize: 12 }}
+                    placeholder="Или вставьте прямую ссылку на аудиофайл (https://.../track.mp3)…"
+                    value={musicAudioUrlDraft}
+                    onChange={(e) => setMusicAudioUrlDraft(e.target.value)}
+                  />
+                  {musicAudioUrlDraft && (
+                    <div
+                      style={{
+                        marginTop: 8,
+                        padding: '8px 10px',
+                        borderRadius: 10,
+                        background: 'var(--surface-2)',
+                        border: '1px solid var(--border)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 6,
+                      }}
+                    >
+                      <div style={{ fontSize: 12, color: 'var(--accent)', fontWeight: 600 }}>
+                        🎧 Прикреплённый трек: {musicFileNameDraft || musicTitleDraft || 'Аудиофайл готов к прослушиванию'}
+                      </div>
+                      <audio controls preload="metadata" src={musicAudioUrlDraft} style={{ width: '100%', height: 34 }} />
+                    </div>
+                  )}
                 </div>
 
                 <button type="submit" className="btn btn-primary" style={{ width: 'auto' }}>

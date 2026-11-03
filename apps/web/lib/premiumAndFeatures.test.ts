@@ -95,3 +95,55 @@ test('generatePixsetAvatarSvgDataUrl generates deterministic SVG data URLs for p
   assert.ok(threeD.startsWith('data:image/svg+xml;utf8,'));
   assert.notEqual(pixel1, threeD);
 });
+
+test('parseProfileAdminEnvelope and parseProfileUserEnvelope preserve cross-device Premium and Favorite Music audioUrl', async () => {
+  const { parseProfileAdminEnvelope, parseProfileUserEnvelope, hydrateProfileRowEnvelopes } = await import(
+    '@pixchats/core'
+  );
+
+  const adminEnvRaw = `pxadm:v1:${JSON.stringify({
+    premium: {
+      userId: 'u_cross_device',
+      username: 'crossuser',
+      grantedBy: 'admin',
+      grantedAt: '2026-11-03T10:00:00Z',
+      expiresAt: null,
+      revoked: false,
+      note: 'VIP тест',
+    },
+    frozen_reason: 'Проверка безопасности',
+  })}`;
+
+  const parsedAdm = parseProfileAdminEnvelope(adminEnvRaw);
+  assert.ok(parsedAdm.premium);
+  assert.equal(parsedAdm.premium?.userId, 'u_cross_device');
+  assert.equal(parsedAdm.premium?.expiresAt, null);
+  assert.equal(parsedAdm.frozen_reason, 'Проверка безопасности');
+
+  const userEnvRaw = `pxext:v1:${JSON.stringify({
+    birthDate: '2000-05-15',
+    musicStatus: {
+      title: 'Starlight',
+      artist: 'Pixset Synth',
+      audioUrl: 'https://example.com/audio/starlight.mp3',
+      fileName: 'starlight.mp3',
+    },
+  })}`;
+
+  const parsedUser = parseProfileUserEnvelope(userEnvRaw);
+  assert.equal(parsedUser.birthDate, '2000-05-15');
+  assert.equal(parsedUser.musicStatus?.title, 'Starlight');
+  assert.equal(parsedUser.musicStatus?.artist, 'Pixset Synth');
+  assert.equal(parsedUser.musicStatus?.audioUrl, 'https://example.com/audio/starlight.mp3');
+  assert.equal(parsedUser.musicStatus?.fileName, 'starlight.mp3');
+
+  const hydratedRow = hydrateProfileRowEnvelopes({
+    id: 'u_cross_device',
+    username: 'crossuser',
+    display_name: 'Cross User',
+    public_signed_prekey: adminEnvRaw,
+    signed_prekey_signature: userEnvRaw,
+  });
+  assert.equal(hydratedRow.frozen_reason, 'Проверка безопасности');
+});
+

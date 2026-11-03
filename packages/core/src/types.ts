@@ -23,6 +23,8 @@ export interface Profile {
   last_seen: string | null;
   created_at: string;
   public_identity_key: string | null;
+  public_signed_prekey?: string | null;
+  signed_prekey_signature?: string | null;
   theme: 'pixchats' | 'industrial' | 'arcade' | 'minimal' | 'byteblaster' | 'byte_blaster' | 'dark' | 'light';
   privacy_who_can_message: 'everyone' | 'friends_only' | 'nobody';
   privacy_show_last_seen: 'everyone' | 'friends_only' | 'nobody';

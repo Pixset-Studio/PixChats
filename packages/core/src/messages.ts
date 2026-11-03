@@ -335,10 +335,26 @@ export async function sendMessage(chatId: string, text: string, options: SendMes
     // broadcast failure should not block message send
   }
 
+  const cachedChat = messagesByChatCache.get(chatId);
+  if (cachedChat) {
+    if (!cachedChat.messages.some((m) => m.id === mapped.id)) {
+      cachedChat.messages = [...cachedChat.messages, mapped];
+      cachedChat.fetchedAt = Date.now();
+    }
+  }
+
   return mapped;
 }
 
-export async function getMessages(chatId: string, limit = 300): Promise<Message[]> {
+const messagesByChatCache = new Map<string, { messages: Message[]; fetchedAt: number; limit: number }>();
+
+export async function getMessages(chatId: string, limit = 80): Promise<Message[]> {
+  const now = Date.now();
+  const cached = messagesByChatCache.get(chatId);
+  if (cached && cached.limit >= limit && now - cached.fetchedAt < 45_000) {
+    return cached.messages.filter((m) => !m.is_deleted && !isMessageDeletedForMe(m.id));
+  }
+
   const supabase = getSupabaseClient();
   const { data, error } = await supabase
     .from('messages')
@@ -350,7 +366,9 @@ export async function getMessages(chatId: string, limit = 300): Promise<Message[
   if (error) throw error;
   const chronologicalRows = [...(data ?? [])].reverse();
   const visibleRows = chronologicalRows.filter((row: any) => !row.is_deleted && !isMessageDeletedForMe(row.id));
-  return Promise.all(visibleRows.map(mapRowAsync));
+  const mapped = await Promise.all(visibleRows.map(mapRowAsync));
+  messagesByChatCache.set(chatId, { messages: mapped, fetchedAt: Date.now(), limit });
+  return mapped;
 }
 
 
@@ -375,11 +393,21 @@ export async function editMessage(messageId: string, newText: string, chatId?: s
     ? await encryptMessageE2EE(targetChatId, newText)
     : encodeLegacyBase64Text(newText);
 
+  const editedAt = new Date().toISOString();
   const { error } = await supabase
     .from('messages')
-    .update({ ciphertext, edited_at: new Date().toISOString() })
+    .update({ ciphertext, edited_at: editedAt })
     .eq('id', messageId);
   if (error) throw error;
+
+  if (targetChatId) {
+    const cached = messagesByChatCache.get(targetChatId);
+    if (cached) {
+      cached.messages = cached.messages.map((m) =>
+        m.id === messageId ? { ...m, text: newText, edited_at: editedAt } : m
+      );
+    }
+  }
 }
 
 /** "Удалить у всех" — полное удаление сообщения без плашки «Сообщение удалено» у всех участников чата. */
@@ -392,6 +420,13 @@ export async function deleteMessage(messageId: string, chatId?: string): Promise
       targetChatId = data?.chat_id;
     }
   } catch {}
+
+  if (targetChatId) {
+    const cached = messagesByChatCache.get(targetChatId);
+    if (cached) {
+      cached.messages = cached.messages.filter((m) => m.id !== messageId);
+    }
+  }
 
   // Снимаем закреп и очищаем ссылки reply_to_id, чтобы не блокировать полное удаление
   try {
@@ -612,6 +647,25 @@ export function subscribeToMessages(
     activeChatChannels.delete(topicName);
   }
 
+  const cacheInsert = (msg: Message) => {
+    const cached = messagesByChatCache.get(chatId);
+    if (cached && !cached.messages.some((m) => m.id === msg.id)) {
+      cached.messages = [...cached.messages, msg];
+      cached.fetchedAt = Date.now();
+    }
+  };
+
+  const cacheUpdate = (msg: Message) => {
+    const cached = messagesByChatCache.get(chatId);
+    if (cached) {
+      if (msg.is_deleted) {
+        cached.messages = cached.messages.filter((m) => m.id !== msg.id);
+      } else {
+        cached.messages = cached.messages.map((m) => (m.id === msg.id ? msg : m));
+      }
+    }
+  };
+
   const channel = supabase
     .channel(topicName)
     .on(
@@ -620,12 +674,14 @@ export function subscribeToMessages(
       async (payload) => {
         if (payload.new?.is_deleted || isMessageDeletedForMe(payload.new?.id)) return;
         const msg = await mapRowAsync(payload.new);
+        cacheInsert(msg);
         onInsert(msg);
       }
     )
     .on('broadcast', { event: 'new-message' }, async (payload: any) => {
       const msg = payload.payload?.message;
       if (msg && !msg.is_deleted && !isMessageDeletedForMe(msg.id)) {
+        cacheInsert(msg);
         onInsert(msg);
       }
     })
@@ -633,8 +689,9 @@ export function subscribeToMessages(
       'postgres_changes',
       { event: 'UPDATE', schema: 'public', table: 'messages', filter: `chat_id=eq.${chatId}` },
       async (payload) => {
+        const msg = await mapRowAsync(payload.new);
+        cacheUpdate(msg);
         if (onUpdate) {
-          const msg = await mapRowAsync(payload.new);
           onUpdate(msg);
         }
       }
@@ -644,15 +701,19 @@ export function subscribeToMessages(
       { event: 'DELETE', schema: 'public', table: 'messages' },
       (payload: any) => {
         const deletedId = payload.old?.id;
-        if (deletedId && onUpdate) {
-          onUpdate({ id: deletedId, chat_id: chatId, is_deleted: true, text: '' } as Message);
+        if (deletedId) {
+          const delMsg = { id: deletedId, chat_id: chatId, is_deleted: true, text: '' } as Message;
+          cacheUpdate(delMsg);
+          if (onUpdate) onUpdate(delMsg);
         }
       }
     )
     .on('broadcast', { event: 'delete-message' }, (payload: any) => {
       const deletedId = payload?.payload?.messageId;
-      if (deletedId && onUpdate) {
-        onUpdate({ id: deletedId, chat_id: chatId, is_deleted: true, text: '' } as Message);
+      if (deletedId) {
+        const delMsg = { id: deletedId, chat_id: chatId, is_deleted: true, text: '' } as Message;
+        cacheUpdate(delMsg);
+        if (onUpdate) onUpdate(delMsg);
       }
     })
     .on('broadcast', { event: 'reaction' }, (payload) => {

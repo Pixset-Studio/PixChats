@@ -113,7 +113,7 @@ export const FREE_TIER_AI_MODELS: FreeTierAiModelOption[] = [
 
 const AI_CONFIG_LS_KEY = 'pixchats_dev_ai_assistant_config_v1';
 const AI_BUCKET = 'avatars';
-const AI_CONFIG_CLOUD_PATH = 'system/dev_ai_assistant_config_v1.json';
+const AI_CONFIG_FILE_NAME = 'dev_ai_assistant_config_v1.json';
 
 export interface DeveloperAiConfig {
   apiKey: string;
@@ -152,9 +152,11 @@ export async function loadDeveloperAiConfig(actingProfile: Profile): Promise<Dev
     throw new Error('Доступ к AI ассистенту разрешён только разработчикам (developer)');
   }
   const local = getLocalDeveloperAiConfig();
+  if (local.apiKey) return local;
   try {
     const supabase = getSupabaseClient();
-    const { data, error } = await supabase.storage.from(AI_BUCKET).download(AI_CONFIG_CLOUD_PATH);
+    const userScopedPath = `${actingProfile.id}/${AI_CONFIG_FILE_NAME}`;
+    const { data, error } = await supabase.storage.from(AI_BUCKET).download(userScopedPath);
     if (!error && data) {
       const text = await data.text();
       const parsed = JSON.parse(text) as Partial<DeveloperAiConfig>;
@@ -197,8 +199,9 @@ export async function saveDeveloperAiConfig(
 
   try {
     const supabase = getSupabaseClient();
+    const userScopedPath = `${actingProfile.id}/${AI_CONFIG_FILE_NAME}`;
     const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
-    await supabase.storage.from(AI_BUCKET).upload(AI_CONFIG_CLOUD_PATH, blob, {
+    await supabase.storage.from(AI_BUCKET).upload(userScopedPath, blob, {
       upsert: true,
       contentType: 'application/json',
       cacheControl: '0',

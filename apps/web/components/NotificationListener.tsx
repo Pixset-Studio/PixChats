@@ -400,7 +400,7 @@ export function NotificationListener() {
         const supabase = getSupabaseClient();
         const { data: missedRows } = await supabase
           .from('messages')
-          .select('id, chat_id, sender_id, text, ciphertext, message_type, media_path, caption, sent_at, is_deleted')
+          .select('id, chat_id, sender_id, ciphertext, message_type, caption, sent_at, is_deleted')
           .in('chat_id', chatIds.slice(0, 60))
           .gt('sent_at', sinceIso)
           .neq('sender_id', me.id)
@@ -477,6 +477,9 @@ export function NotificationListener() {
             void handleIncomingMessage(msg, sender, payload?.chatType, payload?.chatTitle);
           }
         })
+        .on('broadcast', { event: 'profile-envelope-updated' }, () => {
+          void getCurrentProfile(true);
+        })
         .subscribe();
 
       // 2. Единый глобальный канал сообщений (переиспользуется sendMessage и ChatListPanel без коллизий!)
@@ -495,6 +498,12 @@ export function NotificationListener() {
               myMembershipSetRef.current.has(msg.chat_id))
           ) {
             void handleIncomingMessage(msg, sender, payload?.chatType, payload?.chatTitle);
+          }
+        })
+        .on('broadcast', { event: 'profile-envelope-updated' }, (data: any) => {
+          const targetUserId = data?.payload?.userId;
+          if (!targetUserId || targetUserId === me.id) {
+            void getCurrentProfile(true);
           }
         })
         .subscribe();
@@ -672,9 +681,13 @@ export function NotificationListener() {
         }
       } catch {}
 
-      // Фоновая подстраховка для телефонов и ПК + автоотправка отложенных сообщений
+      // Автоотправка отложенных сообщений (локальная проверка каждые 15с без запросов к БД) + редкая подстраховка пропущенных сообщений (раз в 3 мин при видимой вкладке)
+      let tickCounter = 0;
       wakeupInterval = setInterval(() => {
-        void checkMissedMessages();
+        tickCounter++;
+        if (tickCounter % 12 === 0 && typeof document !== 'undefined' && document.visibilityState === 'visible') {
+          void checkMissedMessages();
+        }
         const due = popDueScheduledMessages();
         if (due.length > 0) {
           for (const item of due) {

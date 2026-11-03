@@ -1,4 +1,6 @@
 import { getSupabaseClient } from './supabaseClient';
+import { PROFILE_SELECT_WITHOUT_OTK, hydrateProfileRowEnvelopes } from './auth';
+import { decryptMessageE2EE } from './crypto';
 import type {
   Chat,
   Profile,
@@ -46,12 +48,6 @@ export interface AdminAuditLogRow {
   created_at: string;
 }
 
-const PENALTY_CLOUD_BUCKET = 'avatars';
-const APPEALS_CLOUD_PATH = 'moderation/appeals_v1.json';
-const MUTES_CLOUD_PATH = 'moderation/penalty_mutes_v1.json';
-const PENALTY_META_CLOUD_PATH = 'moderation/user_penalties_v1.json';
-const CUSTOM_ROLES_CLOUD_PATH = 'moderation/custom_roles_v1.json';
-
 export interface UserPenaltyDetails {
   banReason: string | null;
   frozenReason: string | null;
@@ -67,9 +63,134 @@ export interface CustomRolesCloudManifest {
   updatedAt: string;
 }
 
+export interface ProfileAdminEnvelopeV1 {
+  premium?: {
+    userId: string;
+    username?: string;
+    grantedBy: string;
+    grantedAt: string;
+    expiresAt: string | null;
+    note?: string;
+    revoked?: boolean;
+  } | null;
+  customRoleIds?: string[];
+  customRolesCatalog?: CustomRoleDefinition[];
+  deletedRoleIds?: string[];
+  penaltyMeta?: UserPenaltyDetails;
+  chatMutes?: ChatMute[];
+  reviewedAppeals?: Record<
+    string,
+    {
+      status: AppealStatus;
+      admin_notes: string | null;
+      reviewed_by: string | null;
+      reviewed_at: string | null;
+    }
+  >;
+  updatedAt?: string;
+}
+
+export interface ProfileUserEnvelopeV1 {
+  birthDate?: string | null;
+  bannerUrl?: string | null;
+  musicStatus?: {
+    title: string;
+    artist: string;
+    audioUrl?: string | null;
+    fileName?: string | null;
+    updatedAt: string;
+  } | null;
+  emojiStatus?: {
+    emoji: string;
+    label?: string;
+    expiresAt?: string | null;
+    updatedAt: string;
+  } | null;
+  closeFriendsIds?: string[];
+  stories?: any[];
+  appeals?: AppealItem[];
+  updatedAt?: string;
+}
+
 const CUSTOM_ROLES_LOCAL_KEY = 'pixchats:custom_roles_manifest_v1';
-const cloudJsonMemCache = new Map<string, { data: any; ts: number }>();
-const CLOUD_JSON_TTL_MS = 20_000;
+const ADMIN_ENVELOPE_PREFIX = 'pxadm:v1:';
+const USER_ENVELOPE_PREFIX = 'pxext:v1:';
+
+export function parseProfileAdminEnvelope(raw?: string | null): ProfileAdminEnvelopeV1 {
+  if (!raw || typeof raw !== 'string' || !raw.startsWith(ADMIN_ENVELOPE_PREFIX)) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(raw.slice(ADMIN_ENVELOPE_PREFIX.length));
+    return parsed && typeof parsed === 'object' ? (parsed as ProfileAdminEnvelopeV1) : {};
+  } catch {
+    return {};
+  }
+}
+
+export function serializeProfileAdminEnvelope(env: ProfileAdminEnvelopeV1): string {
+  return `${ADMIN_ENVELOPE_PREFIX}${JSON.stringify({ ...env, updatedAt: new Date().toISOString() })}`;
+}
+
+export function parseProfileUserEnvelope(raw?: string | null): ProfileUserEnvelopeV1 {
+  if (!raw || typeof raw !== 'string' || !raw.startsWith(USER_ENVELOPE_PREFIX)) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(raw.slice(USER_ENVELOPE_PREFIX.length));
+    return parsed && typeof parsed === 'object' ? (parsed as ProfileUserEnvelopeV1) : {};
+  } catch {
+    return {};
+  }
+}
+
+export function serializeProfileUserEnvelope(env: ProfileUserEnvelopeV1): string {
+  return `${USER_ENVELOPE_PREFIX}${JSON.stringify({ ...env, updatedAt: new Date().toISOString() })}`;
+}
+
+export async function updateProfileAdminEnvelope(
+  userId: string,
+  updater: (prev: ProfileAdminEnvelopeV1) => ProfileAdminEnvelopeV1,
+  extraProfileColumns?: Record<string, any>
+): Promise<ProfileAdminEnvelopeV1> {
+  const supabase = getSupabaseClient();
+  const { data: row } = await supabase
+    .from('profiles')
+    .select('public_signed_prekey')
+    .eq('id', userId)
+    .maybeSingle();
+  const prev = parseProfileAdminEnvelope(row?.public_signed_prekey);
+  const next = updater(prev);
+  const serialized = serializeProfileAdminEnvelope(next);
+  const patch: Record<string, any> = {
+    ...(extraProfileColumns || {}),
+    public_signed_prekey: serialized,
+  };
+  const { error } = await supabase.from('profiles').update(patch).eq('id', userId);
+  if (error) throw error;
+  return next;
+}
+
+export async function updateProfileUserEnvelope(
+  userId: string,
+  updater: (prev: ProfileUserEnvelopeV1) => ProfileUserEnvelopeV1
+): Promise<ProfileUserEnvelopeV1> {
+  const supabase = getSupabaseClient();
+  const { data: row } = await supabase
+    .from('profiles')
+    .select('signed_prekey_signature')
+    .eq('id', userId)
+    .maybeSingle();
+  const prev = parseProfileUserEnvelope(row?.signed_prekey_signature);
+  const next = updater(prev);
+  const serialized = serializeProfileUserEnvelope(next);
+  const { error } = await supabase
+    .from('profiles')
+    .update({ signed_prekey_signature: serialized })
+    .eq('id', userId);
+  if (error) throw error;
+  return next;
+}
 
 /**
  * Вычисляет точную дату окончания наказания (ISO-строку) на основе:
@@ -139,67 +260,32 @@ export function computePenaltyExpirationIso(
   return null;
 }
 
-async function readCloudJson<T>(path: string, fallback: T): Promise<T> {
-  const cached = cloudJsonMemCache.get(path);
-  if (cached && Date.now() - cached.ts < CLOUD_JSON_TTL_MS) {
-    return cached.data as T;
-  }
-  try {
-    const supabase = getSupabaseClient();
-    const { data } = supabase.storage.from(PENALTY_CLOUD_BUCKET).getPublicUrl(path);
-    if (!data?.publicUrl) return fallback;
-    const res = await fetch(`${data.publicUrl}?v=${Math.floor(Date.now() / 30000)}`);
-    if (!res.ok) {
-      cloudJsonMemCache.set(path, { data: fallback, ts: Date.now() });
-      return fallback;
-    }
-    const parsed = await res.json();
-    const result = (parsed ?? fallback) as T;
-    cloudJsonMemCache.set(path, { data: result, ts: Date.now() });
-    return result;
-  } catch {
-    return fallback;
-  }
-}
-
-async function writeCloudJson<T>(path: string, value: T): Promise<void> {
-  cloudJsonMemCache.set(path, { data: value, ts: Date.now() });
-  try {
-    const supabase = getSupabaseClient();
-    const blob = new Blob([JSON.stringify(value)], { type: 'application/json' });
-    await supabase.storage.from(PENALTY_CLOUD_BUCKET).upload(path, blob, {
-      upsert: true,
-      contentType: 'application/json',
-      cacheControl: '30',
-    });
-  } catch {
-    // ignore storage fallback errors
-  }
-}
-
 export async function saveUserPenaltyMetaToCloud(
   userId: string,
   patch: Partial<UserPenaltyDetails>
 ): Promise<void> {
   try {
-    const current = await readCloudJson<Record<string, UserPenaltyDetails>>(PENALTY_META_CLOUD_PATH, {});
-    const existing = current[userId] || {
-      banReason: null,
-      frozenReason: null,
-      moderatorComment: null,
-    };
-    current[userId] = {
-      ...existing,
-      ...patch,
-      updatedAt: new Date().toISOString(),
-    };
-    await writeCloudJson(PENALTY_META_CLOUD_PATH, current);
+    await updateProfileAdminEnvelope(userId, (prev) => {
+      const existing: UserPenaltyDetails = prev.penaltyMeta || {
+        banReason: null,
+        frozenReason: null,
+        moderatorComment: null,
+      };
+      return {
+        ...prev,
+        penaltyMeta: {
+          ...existing,
+          ...patch,
+          updatedAt: new Date().toISOString(),
+        },
+      };
+    });
   } catch {}
 }
 
 /**
  * Возвращает причину бана/заморозки и комментарий модератора для показа пользователю.
- * Проверяет поля профиля, облачный манифест модерации и журнал admin_audit_log.
+ * Проверяет поля профиля (включая public_signed_prekey) и журнал admin_audit_log.
  */
 export async function getUserPenaltyDetails(
   userId: string,
@@ -209,17 +295,33 @@ export async function getUserPenaltyDetails(
   let frozenReason = profile?.frozen_reason || null;
   let moderatorComment = profile?.moderator_comment || null;
 
+  if (profile?.public_signed_prekey) {
+    const env = parseProfileAdminEnvelope(profile.public_signed_prekey);
+    if (env.penaltyMeta) {
+      if (!banReason && env.penaltyMeta.banReason) banReason = env.penaltyMeta.banReason;
+      if (!frozenReason && env.penaltyMeta.frozenReason) frozenReason = env.penaltyMeta.frozenReason;
+      if (!moderatorComment && env.penaltyMeta.moderatorComment) moderatorComment = env.penaltyMeta.moderatorComment;
+    }
+  }
+
   if (banReason && frozenReason && moderatorComment) {
     return { banReason, frozenReason, moderatorComment };
   }
 
   try {
-    const cloudMap = await readCloudJson<Record<string, UserPenaltyDetails>>(PENALTY_META_CLOUD_PATH, {});
-    const cloudEntry = cloudMap[userId];
-    if (cloudEntry) {
-      if (!banReason && cloudEntry.banReason) banReason = cloudEntry.banReason;
-      if (!frozenReason && cloudEntry.frozenReason) frozenReason = cloudEntry.frozenReason;
-      if (!moderatorComment && cloudEntry.moderatorComment) moderatorComment = cloudEntry.moderatorComment;
+    const supabase = getSupabaseClient();
+    const { data: profRow } = await supabase
+      .from('profiles')
+      .select('public_signed_prekey')
+      .eq('id', userId)
+      .maybeSingle();
+    if (profRow?.public_signed_prekey) {
+      const env = parseProfileAdminEnvelope(profRow.public_signed_prekey);
+      if (env.penaltyMeta) {
+        if (!banReason && env.penaltyMeta.banReason) banReason = env.penaltyMeta.banReason;
+        if (!frozenReason && env.penaltyMeta.frozenReason) frozenReason = env.penaltyMeta.frozenReason;
+        if (!moderatorComment && env.penaltyMeta.moderatorComment) moderatorComment = env.penaltyMeta.moderatorComment;
+      }
     }
   } catch {}
 
@@ -313,12 +415,12 @@ export async function searchProfilesByUsername(query: string): Promise<Profile[]
   }
   const { data, error } = await supabase
     .from('profiles')
-    .select('*')
+    .select(PROFILE_SELECT_WITHOUT_OTK)
     .or(`username.ilike.%${clean}%,display_name.ilike.%${clean}%`)
     .order('created_at', { ascending: false })
     .limit(30);
   if (error) throw error;
-  return (data ?? []) as Profile[];
+  return (data ?? []).map((r) => hydrateProfileRowEnvelopes(r));
 }
 
 export async function listProfilesForAdmin(options?: {
@@ -331,7 +433,7 @@ export async function listProfilesForAdmin(options?: {
   const cleanQuery = (options?.query ?? '').trim().replace(/^@/, '');
   const limit = options?.limit ?? 40;
 
-  let req = supabase.from('profiles').select('*');
+  let req = supabase.from('profiles').select(PROFILE_SELECT_WITHOUT_OTK);
 
   if (cleanQuery) {
     req = req.or(`username.ilike.%${cleanQuery}%,display_name.ilike.%${cleanQuery}%`);
@@ -351,7 +453,7 @@ export async function listProfilesForAdmin(options?: {
 
   const { data, error } = await req.order('created_at', { ascending: false }).limit(limit);
   if (error) throw error;
-  return (data ?? []) as Profile[];
+  return (data ?? []).map((r) => hydrateProfileRowEnvelopes(r));
 }
 
 export async function listGroupAndChannelChatsForAdmin(query = '', limit = 40): Promise<Chat[]> {
@@ -453,40 +555,27 @@ export async function banAccount(targetUserId: string, params: BanAccountParams,
   if (actingProfile.role !== 'admin' && actingProfile.role !== 'developer' && actingProfile.role !== 'moderator') {
     throw new Error('Недостаточно прав');
   }
-  const supabase = getSupabaseClient();
   const bannedUntil = computePenaltyExpirationIso(params);
   const isPermanent = Boolean(params.permanent || (!bannedUntil && !params.durationDays && !params.durationValue && !params.untilDate));
   const cleanReason = params.reason?.trim() || 'Нарушение правил PixChats';
   const cleanComment = params.moderatorComment?.trim() || null;
 
-  const fullPatch: Record<string, any> = {
-    banned_permanently: isPermanent,
-    banned_until: isPermanent ? null : bannedUntil,
-    ban_reason: cleanReason,
-    moderator_comment: cleanComment,
-  };
-
-  const { error } = await supabase
-    .from('profiles')
-    .update(fullPatch)
-    .eq('id', targetUserId);
-
-  if (error) {
-    // Фолбэк, если миграция 0030 ещё не применена к таблице profiles
-    const { error: fallbackErr } = await supabase
-      .from('profiles')
-      .update({
-        banned_permanently: isPermanent,
-        banned_until: isPermanent ? null : bannedUntil,
-      })
-      .eq('id', targetUserId);
-    if (fallbackErr) throw fallbackErr;
-  }
-
-  await saveUserPenaltyMetaToCloud(targetUserId, {
-    banReason: cleanReason,
-    moderatorComment: cleanComment,
-  });
+  await updateProfileAdminEnvelope(
+    targetUserId,
+    (prev) => ({
+      ...prev,
+      penaltyMeta: {
+        ...(prev.penaltyMeta || { banReason: null, frozenReason: null, moderatorComment: null }),
+        banReason: cleanReason,
+        moderatorComment: cleanComment,
+        updatedAt: new Date().toISOString(),
+      },
+    }),
+    {
+      banned_permanently: isPermanent,
+      banned_until: isPermanent ? null : bannedUntil,
+    }
+  );
 
   await logAdminAction('ban_account', 'user', targetUserId, {
     ...params,
@@ -500,29 +589,24 @@ export async function unbanAccount(targetUserId: string, actingProfile: Profile)
   if (actingProfile.role !== 'admin' && actingProfile.role !== 'developer' && actingProfile.role !== 'moderator') {
     throw new Error('Недостаточно прав');
   }
-  const supabase = getSupabaseClient();
-  const { error } = await supabase
-    .from('profiles')
-    .update({
+
+  await updateProfileAdminEnvelope(
+    targetUserId,
+    (prev) => ({
+      ...prev,
+      penaltyMeta: {
+        ...(prev.penaltyMeta || { banReason: null, frozenReason: null, moderatorComment: null }),
+        banReason: null,
+        moderatorComment: null,
+        updatedAt: new Date().toISOString(),
+      },
+    }),
+    {
       banned_permanently: false,
       banned_until: null,
-      ban_reason: null,
-      moderator_comment: null,
-    } as any)
-    .eq('id', targetUserId);
+    }
+  );
 
-  if (error) {
-    const { error: fallbackErr } = await supabase
-      .from('profiles')
-      .update({ banned_permanently: false, banned_until: null })
-      .eq('id', targetUserId);
-    if (fallbackErr) throw fallbackErr;
-  }
-
-  await saveUserPenaltyMetaToCloud(targetUserId, {
-    banReason: null,
-    moderatorComment: null,
-  });
   await logAdminAction('unban_account', 'user', targetUserId);
 }
 
@@ -537,37 +621,26 @@ export async function setAccountFrozen(
   if (actingProfile.role !== 'admin' && actingProfile.role !== 'developer' && actingProfile.role !== 'moderator') {
     throw new Error('Недостаточно прав');
   }
-  const supabase = getSupabaseClient();
   const cleanReason = frozen ? (reason?.trim() || 'Заморожен модерацией для проверки') : null;
   const cleanComment = frozen ? (moderatorComment?.trim() || null) : null;
   const nowIso = frozen ? new Date().toISOString() : null;
 
-  const { error } = await supabase
-    .from('profiles')
-    .update({
+  await updateProfileAdminEnvelope(
+    targetUserId,
+    (prev) => ({
+      ...prev,
+      penaltyMeta: {
+        ...(prev.penaltyMeta || { banReason: null, frozenReason: null, moderatorComment: null }),
+        frozenReason: cleanReason,
+        frozenAt: nowIso,
+        moderatorComment: cleanComment,
+        updatedAt: new Date().toISOString(),
+      },
+    }),
+    {
       frozen,
-      frozen_at: nowIso,
-      frozen_reason: cleanReason,
-      moderator_comment: cleanComment,
-    } as any)
-    .eq('id', targetUserId);
-
-  if (error) {
-    // Фолбэк для БД без колонок frozen_at / frozen_reason / moderator_comment (миграции 0029 / 0030)
-    const { error: fallbackErr } = await supabase
-      .from('profiles')
-      .update({
-        frozen,
-      } as any)
-      .eq('id', targetUserId);
-    if (fallbackErr) throw fallbackErr;
-  }
-
-  await saveUserPenaltyMetaToCloud(targetUserId, {
-    frozenReason: cleanReason,
-    frozenAt: nowIso,
-    moderatorComment: cleanComment,
-  });
+    }
+  );
 
   await logAdminAction(frozen ? 'freeze_account' : 'unfreeze_account', 'user', targetUserId, {
     reason: cleanReason,
@@ -575,31 +648,29 @@ export async function setAccountFrozen(
   });
 }
 
-/** Безопасная автозаморозка аккаунта при автомодерации или жалобах (работает даже без колонки frozen_at в БД) */
+/** Безопасная автозаморозка аккаунта при автомодерации или жалобах */
 export async function autoFreezeUserAccount(targetUserId: string, freezeReason: string): Promise<void> {
-  const supabase = getSupabaseClient();
   const nowIso = new Date().toISOString();
-
-  const { error } = await supabase
-    .from('profiles')
-    .update({
-      frozen: true,
-      frozen_at: nowIso,
-      frozen_reason: freezeReason,
-    } as any)
-    .eq('id', targetUserId);
-
-  if (error) {
-    await supabase
-      .from('profiles')
-      .update({ frozen: true } as any)
-      .eq('id', targetUserId);
+  try {
+    await updateProfileAdminEnvelope(
+      targetUserId,
+      (prev) => ({
+        ...prev,
+        penaltyMeta: {
+          ...(prev.penaltyMeta || { banReason: null, frozenReason: null, moderatorComment: null }),
+          frozenReason: freezeReason,
+          frozenAt: nowIso,
+          updatedAt: nowIso,
+        },
+      }),
+      {
+        frozen: true,
+      }
+    );
+  } catch {
+    const supabase = getSupabaseClient();
+    await supabase.from('profiles').update({ frozen: true }).eq('id', targetUserId);
   }
-
-  await saveUserPenaltyMetaToCloud(targetUserId, {
-    frozenReason: freezeReason,
-    frozenAt: nowIso,
-  });
 }
 
 /** Автоматическая очистка замороженных аккаунтов, если заморозка не снята в течение 90 дней */
@@ -609,19 +680,15 @@ export async function cleanupExpiredFrozenAccounts(): Promise<number> {
 
   const { data: frozenUsers, error } = await supabase
     .from('profiles')
-    .select('*')
+    .select('id, public_signed_prekey')
     .eq('frozen', true);
 
   if (error || !frozenUsers || frozenUsers.length === 0) return 0;
 
-  let cloudMeta: Record<string, UserPenaltyDetails> = {};
-  try {
-    cloudMeta = await readCloudJson<Record<string, UserPenaltyDetails>>(PENALTY_META_CLOUD_PATH, {});
-  } catch {}
-
   let count = 0;
   for (const user of frozenUsers as any[]) {
-    const frozenIso = user.frozen_at || cloudMeta[user.id]?.frozenAt || cloudMeta[user.id]?.updatedAt;
+    const env = parseProfileAdminEnvelope(user.public_signed_prekey);
+    const frozenIso = env.penaltyMeta?.frozenAt || env.penaltyMeta?.updatedAt;
     if (!frozenIso) continue;
     const frozenMs = new Date(frozenIso).getTime();
     if (Number.isFinite(frozenMs) && frozenMs < ninetyDaysAgoMs) {
@@ -823,13 +890,24 @@ export async function getMessageReportsForAdmin(): Promise<MessageReport[]> {
   const chatIds = Array.from(new Set(reports.map((r) => r.chat_id).filter(Boolean))) as string[];
 
   const [{ data: profiles }, { data: messages }, { data: chats }] = await Promise.all([
-    supabase.from('profiles').select('*').in('id', userIds),
-    supabase.from('messages').select('id, ciphertext, text').in('id', msgIds),
+    supabase.from('profiles').select(PROFILE_SELECT_WITHOUT_OTK).in('id', userIds),
+    supabase.from('messages').select('id, chat_id, ciphertext, caption').in('id', msgIds),
     chatIds.length > 0 ? supabase.from('chats').select('id, title').in('id', chatIds) : Promise.resolve({ data: [] }),
   ]);
 
-  const profileMap = new Map((profiles || []).map((p) => [p.id, p as Profile]));
-  const msgMap = new Map((messages || []).map((m) => [m.id, m.text || m.ciphertext || '']));
+  const profileMap = new Map((profiles || []).map((p) => [p.id, hydrateProfileRowEnvelopes(p)]));
+  const msgMap = new Map<string, string>();
+  for (const m of (messages || []) as any[]) {
+    let text = '';
+    if (m.ciphertext && m.chat_id) {
+      try {
+        text = await decryptMessageE2EE(m.chat_id, m.ciphertext);
+      } catch {
+        text = m.ciphertext;
+      }
+    }
+    msgMap.set(m.id, text || m.caption || '');
+  }
   const chatMap = new Map((chats || []).map((c) => [c.id, c.title || 'Чат']));
 
   return reports.map((r) => {
@@ -892,7 +970,6 @@ export async function muteUserInChat(params: {
   moderatorComment?: string;
   actingProfile?: Profile | null;
 }): Promise<void> {
-  const supabase = getSupabaseClient();
   let mutedUntil: string | null = null;
   if (params.untilDate || params.durationValue !== undefined || params.permanent !== undefined) {
     mutedUntil = computePenaltyExpirationIso({
@@ -920,31 +997,14 @@ export async function muteUserInChat(params: {
     created_at: new Date().toISOString(),
   };
 
-  // Сохраняем в облачный манифест модерации (гарантированная работа даже без миграции 0030)
-  const cloudMutes = await readCloudJson<ChatMute[]>(MUTES_CLOUD_PATH, []);
-  const filteredCloud = cloudMutes.filter(
-    (m) => !(m.user_id === params.userId && m.chat_id === params.chatId)
-  );
-  filteredCloud.unshift(muteRecord);
-  await writeCloudJson(MUTES_CLOUD_PATH, filteredCloud);
-
-  // Пробуем записать в таблицу chat_mutes
-  await supabase
-    .from('chat_mutes')
-    .upsert(
-      {
-        user_id: params.userId,
-        chat_id: params.chatId,
-        muted_forever: false,
-        muted_until: mutedUntil,
-        reason: cleanReason,
-        moderator_comment: cleanComment,
-        muted_by: params.actingProfile?.id || null,
-        is_penalty: true,
-      } as any,
-      { onConflict: 'user_id,chat_id' }
-    )
-    .then(() => {});
+  await updateProfileAdminEnvelope(params.userId, (prev) => {
+    const existing = Array.isArray(prev.chatMutes) ? prev.chatMutes : [];
+    const filtered = existing.filter((m) => m.chat_id !== params.chatId);
+    return {
+      ...prev,
+      chatMutes: [muteRecord, ...filtered],
+    };
+  });
 
   if (params.actingProfile) {
     await logAdminAction('mute_user_in_chat', 'chat', params.chatId, {
@@ -957,91 +1017,62 @@ export async function muteUserInChat(params: {
 }
 
 export async function unmuteUserInChat(userId: string, chatId: string, actingProfile?: Profile | null): Promise<void> {
-  const supabase = getSupabaseClient();
-  const cloudMutes = await readCloudJson<ChatMute[]>(MUTES_CLOUD_PATH, []);
-  const nextCloud = cloudMutes.filter((m) => !(m.user_id === userId && m.chat_id === chatId));
-  await writeCloudJson(MUTES_CLOUD_PATH, nextCloud);
+  try {
+    await updateProfileAdminEnvelope(userId, (prev) => {
+      const existing = Array.isArray(prev.chatMutes) ? prev.chatMutes : [];
+      return {
+        ...prev,
+        chatMutes: existing.filter((m) => m.chat_id !== chatId),
+      };
+    });
+  } catch {}
 
-  await supabase.from('chat_mutes').delete().eq('user_id', userId).eq('chat_id', chatId);
   if (actingProfile) {
     await logAdminAction('unmute_user_in_chat', 'chat', chatId, { targetUserId: userId });
   }
 }
 
-function isPenaltyMuteRow(row: any): boolean {
-  if (!row) return false;
-  // Отличаем штрафной мут модерации от пользовательского отключения уведомлений (muted_forever без reason)
-  return Boolean(row.is_penalty || (row.reason && String(row.reason).trim().length > 0) || row.muted_by);
-}
-
 export async function getUserChatMute(userId: string, chatId: string): Promise<ChatMute | null> {
-  const supabase = getSupabaseClient();
-  const { data } = await supabase
-    .from('chat_mutes')
-    .select('*')
-    .eq('user_id', userId)
-    .eq('chat_id', chatId)
-    .maybeSingle();
-
-  if (data && isPenaltyMuteRow(data)) {
-    if (data.muted_until && new Date(data.muted_until).getTime() <= Date.now()) {
-      void unmuteUserInChat(userId, chatId);
-      return null;
+  try {
+    const supabase = getSupabaseClient();
+    const { data: row } = await supabase
+      .from('profiles')
+      .select('public_signed_prekey')
+      .eq('id', userId)
+      .maybeSingle();
+    const env = parseProfileAdminEnvelope(row?.public_signed_prekey);
+    const mutes = Array.isArray(env.chatMutes) ? env.chatMutes : [];
+    const found = mutes.find((m) => m.chat_id === chatId);
+    if (found) {
+      if (found.muted_until && new Date(found.muted_until).getTime() <= Date.now()) {
+        void unmuteUserInChat(userId, chatId);
+        return null;
+      }
+      return found;
     }
-    return {
-      ...data,
-      id: data.id || `mute_${userId}_${chatId}`,
-    } as ChatMute;
-  }
-
-  const cloudMutes = await readCloudJson<ChatMute[]>(MUTES_CLOUD_PATH, []);
-  const found = cloudMutes.find((m) => m.user_id === userId && m.chat_id === chatId);
-  if (found) {
-    if (found.muted_until && new Date(found.muted_until).getTime() <= Date.now()) {
-      void unmuteUserInChat(userId, chatId);
-      return null;
-    }
-    return found;
-  }
-
+  } catch {}
   return null;
 }
 
 export async function getUserAllMutes(userId: string): Promise<ChatMute[]> {
   const supabase = getSupabaseClient();
-  const { data } = await supabase
-    .from('chat_mutes')
-    .select('*')
-    .eq('user_id', userId);
+  const { data: row } = await supabase
+    .from('profiles')
+    .select('public_signed_prekey')
+    .eq('id', userId)
+    .maybeSingle();
 
-  const cloudMutes = await readCloudJson<ChatMute[]>(MUTES_CLOUD_PATH, []);
-  const myCloudMutes = cloudMutes.filter((m) => m.user_id === userId);
+  const env = parseProfileAdminEnvelope(row?.public_signed_prekey);
+  const rawMutes = Array.isArray(env.chatMutes) ? env.chatMutes : [];
+  const validMutes: ChatMute[] = [];
 
-  const byChat = new Map<string, ChatMute>();
-
-  for (const item of data ?? []) {
-    if (!isPenaltyMuteRow(item)) continue;
-    if (item.muted_until && new Date(item.muted_until).getTime() <= Date.now()) {
-      void unmuteUserInChat(userId, item.chat_id);
-      continue;
-    }
-    byChat.set(item.chat_id, {
-      ...(item as ChatMute),
-      id: item.id || `mute_${userId}_${item.chat_id}`,
-    });
-  }
-
-  for (const cm of myCloudMutes) {
+  for (const cm of rawMutes) {
     if (cm.muted_until && new Date(cm.muted_until).getTime() <= Date.now()) {
       void unmuteUserInChat(userId, cm.chat_id);
       continue;
     }
-    if (!byChat.has(cm.chat_id)) {
-      byChat.set(cm.chat_id, cm);
-    }
+    validMutes.push(cm);
   }
-
-  const validMutes = Array.from(byChat.values());
 
   if (validMutes.length > 0) {
     const chatIds = validMutes.map((m) => m.chat_id);
@@ -1106,7 +1137,7 @@ export async function isIpBanned(ipAddress: string): Promise<boolean> {
 }
 
 /* ============================================================================
- * АПЕЛЛЯЦИИ И ОБЖАЛОВАНИЕ НАКАЗАНИЙ (Appeals — БД + Облачный фолбэк)
+ * АПЕЛЛЯЦИИ И ОБЖАЛОВАНИЕ НАКАЗАНИЙ (Appeals в PostgreSQL profiles)
  * ============================================================================ */
 
 export async function submitAppeal(params: {
@@ -1115,9 +1146,8 @@ export async function submitAppeal(params: {
   chatId?: string;
   reason: string;
 }): Promise<AppealItem> {
-  const supabase = getSupabaseClient();
   const nowIso = new Date().toISOString();
-  const fallbackItem: AppealItem = {
+  const item: AppealItem = {
     id: `appeal_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
     user_id: params.userId,
     penalty_type: params.penaltyType,
@@ -1130,109 +1160,76 @@ export async function submitAppeal(params: {
     created_at: nowIso,
   };
 
-  let finalItem = fallbackItem;
-  try {
-    const { data, error } = await supabase
-      .from('appeals')
-      .insert({
-        user_id: params.userId,
-        penalty_type: params.penaltyType,
-        chat_id: params.chatId || null,
-        reason: params.reason.trim(),
-        status: 'pending',
-      })
-      .select('*')
-      .single();
+  await updateProfileUserEnvelope(params.userId, (prev) => {
+    const existing = Array.isArray(prev.appeals) ? prev.appeals : [];
+    return {
+      ...prev,
+      appeals: [item, ...existing].slice(0, 50),
+    };
+  });
 
-    if (!error && data) {
-      finalItem = data as AppealItem;
-    }
-  } catch {}
-
-  const cloudList = await readCloudJson<AppealItem[]>(APPEALS_CLOUD_PATH, []);
-  cloudList.unshift(finalItem);
-  await writeCloudJson(APPEALS_CLOUD_PATH, cloudList.slice(0, 200));
-
-  return finalItem;
+  return item;
 }
 
 export async function getMyAppeals(userId: string): Promise<AppealItem[]> {
   const supabase = getSupabaseClient();
-  const byId = new Map<string, AppealItem>();
+  const { data: row } = await supabase
+    .from('profiles')
+    .select('public_signed_prekey, signed_prekey_signature')
+    .eq('id', userId)
+    .maybeSingle();
 
-  try {
-    const { data } = await supabase
-      .from('appeals')
-      .select('*')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false });
+  const userEnv = parseProfileUserEnvelope(row?.signed_prekey_signature);
+  const admEnv = parseProfileAdminEnvelope(row?.public_signed_prekey);
+  const reviewedMap = admEnv.reviewedAppeals || {};
+  const list = Array.isArray(userEnv.appeals) ? userEnv.appeals : [];
 
-    for (const row of data ?? []) {
-      byId.set(row.id, row as AppealItem);
-    }
-  } catch {}
-
-  const cloudList = await readCloudJson<AppealItem[]>(APPEALS_CLOUD_PATH, []);
-  for (const item of cloudList) {
-    if (item.user_id === userId && !byId.has(item.id)) {
-      byId.set(item.id, item);
-    }
-  }
-
-  return Array.from(byId.values()).sort(
-    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-  );
+  return list
+    .map((a) => {
+      const rev = reviewedMap[a.id];
+      return rev ? { ...a, ...rev } : a;
+    })
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 }
 
 export async function listAppealsForAdmin(): Promise<AppealItem[]> {
   const supabase = getSupabaseClient();
-  const byId = new Map<string, AppealItem>();
+  const { data: rows } = await supabase
+    .from('profiles')
+    .select('id, display_name, username, avatar_url, public_signed_prekey, signed_prekey_signature')
+    .like('signed_prekey_signature', `${USER_ENVELOPE_PREFIX}%`)
+    .limit(150);
 
-  try {
-    const { data: dbAppeals } = await supabase
-      .from('appeals')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .limit(100);
-
-    for (const row of dbAppeals ?? []) {
-      byId.set(row.id, row as AppealItem);
-    }
-  } catch {}
-
-  const cloudList = await readCloudJson<AppealItem[]>(APPEALS_CLOUD_PATH, []);
-  for (const item of cloudList) {
-    if (!byId.has(item.id)) {
-      byId.set(item.id, item);
+  const appeals: AppealItem[] = [];
+  for (const r of (rows || []) as any[]) {
+    const userEnv = parseProfileUserEnvelope(r.signed_prekey_signature);
+    const admEnv = parseProfileAdminEnvelope(r.public_signed_prekey);
+    const reviewedMap = admEnv.reviewedAppeals || {};
+    for (const item of userEnv.appeals || []) {
+      const rev = reviewedMap[item.id];
+      appeals.push({
+        ...item,
+        ...(rev || {}),
+        user_id: r.id,
+        user_name: r.display_name || r.username || 'Пользователь',
+        user_username: r.username || 'user',
+        user_avatar: r.avatar_url || null,
+      });
     }
   }
 
-  const appeals = Array.from(byId.values()).sort(
-    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-  );
+  appeals.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   if (appeals.length === 0) return [];
 
-  const userIds = Array.from(new Set(appeals.map((a) => a.user_id)));
   const chatIds = Array.from(new Set(appeals.map((a) => a.chat_id).filter(Boolean))) as string[];
+  const { data: chats } =
+    chatIds.length > 0 ? await supabase.from('chats').select('id, title').in('id', chatIds) : { data: [] };
+  const chatMap = new Map((chats || []).map((c: any) => [c.id, c.title || 'Чат']));
 
-  const [{ data: profiles }, { data: chats }] = await Promise.all([
-    supabase.from('profiles').select('id, display_name, username, avatar_url').in('id', userIds),
-    chatIds.length > 0 ? supabase.from('chats').select('id, title').in('id', chatIds) : Promise.resolve({ data: [] }),
-  ]);
-
-  const profileMap = new Map((profiles || []).map((p) => [p.id, p]));
-  const chatMap = new Map((chats || []).map((c) => [c.id, c.title || 'Чат']));
-
-  return appeals.map((a) => {
-    const prof = profileMap.get(a.user_id);
-    return {
-      ...a,
-      user_name: prof?.display_name || prof?.username || 'Пользователь',
-      user_username: prof?.username || 'user',
-      user_avatar: prof?.avatar_url || null,
-      chat_title: a.chat_id ? chatMap.get(a.chat_id) || 'Чат' : undefined,
-    };
-  });
+  return appeals.map((a) => ({
+    ...a,
+    chat_title: a.chat_id ? chatMap.get(a.chat_id) || 'Чат' : undefined,
+  }));
 }
 
 export async function reviewAppeal(params: {
@@ -1249,53 +1246,32 @@ export async function reviewAppeal(params: {
     throw new Error('Недостаточно прав для рассмотрения апелляции');
   }
 
-  const supabase = getSupabaseClient();
-  let appeal: AppealItem | null = null;
-
-  try {
-    const { data } = await supabase.from('appeals').select('*').eq('id', params.appealId).maybeSingle();
-    if (data) appeal = data as AppealItem;
-  } catch {}
-
-  const cloudList = await readCloudJson<AppealItem[]>(APPEALS_CLOUD_PATH, []);
-  if (!appeal) {
-    appeal = cloudList.find((a) => a.id === params.appealId) || null;
-  }
+  const allAppeals = await listAppealsForAdmin();
+  const appeal = allAppeals.find((a) => a.id === params.appealId);
   if (!appeal) throw new Error('Апелляция не найдена');
 
   const nowIso = new Date().toISOString();
   const cleanNotes = params.adminNotes?.trim() || null;
 
-  try {
-    await supabase
-      .from('appeals')
-      .update({
+  await updateProfileAdminEnvelope(appeal.user_id, (prev) => ({
+    ...prev,
+    reviewedAppeals: {
+      ...(prev.reviewedAppeals || {}),
+      [params.appealId]: {
         status: params.status,
         admin_notes: cleanNotes,
         reviewed_by: params.actingProfile.id,
         reviewed_at: nowIso,
-      })
-      .eq('id', params.appealId);
-  } catch {}
-
-  const updatedCloud = cloudList.map((a) =>
-    a.id === params.appealId
+      },
+    },
+    penaltyMeta: cleanNotes
       ? {
-          ...a,
-          status: params.status,
-          admin_notes: cleanNotes,
-          reviewed_by: params.actingProfile.id,
-          reviewed_at: nowIso,
+          ...(prev.penaltyMeta || { banReason: null, frozenReason: null, moderatorComment: null }),
+          moderatorComment: cleanNotes,
+          updatedAt: nowIso,
         }
-      : a
-  );
-  await writeCloudJson(APPEALS_CLOUD_PATH, updatedCloud);
-
-  if (cleanNotes) {
-    await saveUserPenaltyMetaToCloud(appeal.user_id, {
-      moderatorComment: cleanNotes,
-    });
-  }
+      : prev.penaltyMeta,
+  }));
 
   // Если апелляция ОДОБРЕНА — автоматически снимаем наказание!
   if (params.status === 'approved') {
@@ -1316,7 +1292,7 @@ export async function reviewAppeal(params: {
 }
 
 /* ============================================================================
- * КАСТОМНЫЕ РОЛИ И ИКОНКИ (Custom Roles & Icons)
+ * КАСТОМНЫЕ РОЛИ И ИКОНКИ (Custom Roles & Icons в PostgreSQL profiles)
  * ============================================================================ */
 
 const DEFAULT_CUSTOM_ROLES: CustomRoleDefinition[] = [];
@@ -1358,32 +1334,54 @@ let lastCustomRolesSyncTs = 0;
 
 export async function syncCustomRolesFromCloud(force = false): Promise<CustomRolesCloudManifest> {
   const local = readLocalCustomRolesManifest();
-  if (!force && Date.now() - lastCustomRolesSyncTs < 30_000) {
+  if (!force && Date.now() - lastCustomRolesSyncTs < 60_000) {
     return local;
   }
   lastCustomRolesSyncTs = Date.now();
   try {
-    const cloud = await readCloudJson<CustomRolesCloudManifest | null>(CUSTOM_ROLES_CLOUD_PATH, null);
-    if (cloud && Array.isArray(cloud.roles)) {
-      const deletedSet = new Set<string>([
-        ...(local.deletedRoleIds || []),
-        ...(Array.isArray(cloud.deletedRoleIds) ? cloud.deletedRoleIds : []),
-      ]);
-      const useLocalInstead =
-        Boolean(local.updatedAt) &&
-        (!cloud.updatedAt || new Date(local.updatedAt).getTime() >= new Date(cloud.updatedAt).getTime());
-      const sourceRoles = useLocalInstead ? local.roles : cloud.roles;
-      const filteredRoles = sourceRoles.filter((r) => r && r.id && !deletedSet.has(r.id));
-      const sourceAssignments = useLocalInstead ? local.assignments : (cloud.assignments || {});
+    const supabase = getSupabaseClient();
+    const { data: rows } = await supabase
+      .from('profiles')
+      .select('id, username, role, public_signed_prekey')
+      .like('public_signed_prekey', `${ADMIN_ENVELOPE_PREFIX}%`)
+      .limit(200);
+
+    if (rows && rows.length > 0) {
+      const deletedSet = new Set<string>(local.deletedRoleIds || []);
+      const rolesMap = new Map<string, CustomRoleDefinition>();
+      for (const r of local.roles) {
+        if (r && r.id) rolesMap.set(r.id, r);
+      }
+      const assignments: Record<string, string[]> = { ...local.assignments };
+
+      for (const row of rows as any[]) {
+        const env = parseProfileAdminEnvelope(row.public_signed_prekey);
+        if (Array.isArray(env.deletedRoleIds)) {
+          for (const did of env.deletedRoleIds) deletedSet.add(did);
+        }
+        if ((row.role === 'developer' || row.role === 'admin') && Array.isArray(env.customRolesCatalog)) {
+          for (const roleDef of env.customRolesCatalog) {
+            if (roleDef && roleDef.id) rolesMap.set(roleDef.id, roleDef);
+          }
+        }
+        if (Array.isArray(env.customRoleIds)) {
+          assignments[row.id] = env.customRoleIds;
+          if (row.username) {
+            assignments[`@${String(row.username).toLowerCase().replace(/^@/, '')}`] = env.customRoleIds;
+          }
+        }
+      }
+
+      const finalRoles = Array.from(rolesMap.values()).filter((r) => !deletedSet.has(r.id));
       const cleanedAssignments: Record<string, string[]> = {};
-      for (const [k, ids] of Object.entries(sourceAssignments)) {
+      for (const [k, ids] of Object.entries(assignments)) {
         cleanedAssignments[k] = (ids || []).filter((id) => !deletedSet.has(id));
       }
       const merged: CustomRolesCloudManifest = {
-        roles: filteredRoles,
+        roles: finalRoles,
         assignments: cleanedAssignments,
         deletedRoleIds: Array.from(deletedSet),
-        updatedAt: (useLocalInstead ? local.updatedAt : cloud.updatedAt) || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
       };
       saveLocalCustomRolesManifest(merged);
       return merged;
@@ -1452,7 +1450,11 @@ export async function createCustomRole(
   };
 
   saveLocalCustomRolesManifest(nextManifest);
-  await writeCloudJson(CUSTOM_ROLES_CLOUD_PATH, nextManifest);
+  await updateProfileAdminEnvelope(actingProfile.id, (prev) => ({
+    ...prev,
+    customRolesCatalog: nextManifest.roles,
+    deletedRoleIds: nextManifest.deletedRoleIds,
+  }));
   await logAdminAction('create_custom_role', 'role', newRole.id, { name: cleanName, icon: cleanIcon, color: cleanColor });
   return newRole;
 }
@@ -1474,7 +1476,11 @@ export async function deleteCustomRole(roleId: string, actingProfile: Profile): 
     updatedAt: new Date().toISOString(),
   };
   saveLocalCustomRolesManifest(nextManifest);
-  await writeCloudJson(CUSTOM_ROLES_CLOUD_PATH, nextManifest);
+  await updateProfileAdminEnvelope(actingProfile.id, (prev) => ({
+    ...prev,
+    customRolesCatalog: nextManifest.roles,
+    deletedRoleIds: nextManifest.deletedRoleIds,
+  }));
   await logAdminAction('delete_custom_role', 'role', roleId);
 }
 
@@ -1496,7 +1502,11 @@ export async function clearAllCustomRoles(actingProfile: Profile): Promise<void>
     updatedAt: new Date().toISOString(),
   };
   saveLocalCustomRolesManifest(nextManifest);
-  await writeCloudJson(CUSTOM_ROLES_CLOUD_PATH, nextManifest);
+  await updateProfileAdminEnvelope(actingProfile.id, (prev) => ({
+    ...prev,
+    customRolesCatalog: [],
+    deletedRoleIds: nextManifest.deletedRoleIds,
+  }));
   await logAdminAction('clear_all_custom_roles', 'role', 'all');
 }
 
@@ -1528,10 +1538,20 @@ export async function toggleUserCustomRole(
   const nextManifest: CustomRolesCloudManifest = {
     roles: manifest.roles,
     assignments: nextAssignments,
+    deletedRoleIds: manifest.deletedRoleIds || [],
     updatedAt: new Date().toISOString(),
   };
   saveLocalCustomRolesManifest(nextManifest);
-  await writeCloudJson(CUSTOM_ROLES_CLOUD_PATH, nextManifest);
+
+  await updateProfileAdminEnvelope(targetUserId, (prev) => ({
+    ...prev,
+    customRoleIds: updatedList,
+  }));
+  await updateProfileAdminEnvelope(actingProfile.id, (prev) => ({
+    ...prev,
+    customRolesCatalog: manifest.roles,
+  }));
+
   await logAdminAction('toggle_custom_role', 'user', targetUserId, { roleId, assigned: updatedList });
   return updatedList;
 }
